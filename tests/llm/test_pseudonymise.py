@@ -390,3 +390,120 @@ def test_single_word_names_title_case_caps_and_mixed_case():
     assert q.redact("I will pay Will, WILL") == "I will pay Adult A, Adult A"
     m = Pseudonymiser([("Sam McDonald", "adult")])
     assert m.redact("McDonald MCDONALD Mcdonald mcdonald") == "Adult A Adult A Adult A mcdonald"
+
+
+def _r(text: str) -> str:
+    return Pseudonymiser([]).redact(text)
+
+
+def test_bare_six_digit_sort_code_and_account_pairs():
+    # R-M1b-18: the standard UK payee line, no keyword needed.
+    assert _r("Payee JOHN 090128 12345678") == "Payee JOHN SORTCODE_1 ACCT_1 ending ••78"
+    assert _r("FASTER PAYMENT 090128 12345678 JOHN") == (
+        "FASTER PAYMENT SORTCODE_1 ACCT_1 ending ••78 JOHN"
+    )
+    for join in ["-", " - ", "\t", "   ", "–", " ‑ "]:
+        out = _r(f"090128{join}12345678")
+        assert out.startswith("SORTCODE_1") and out.endswith("ACCT_1 ending ••78"), join
+    # 14 digits that pass Luhn are still a sort code and an account, not one card
+    assert _r("090130 12345678") == "SORTCODE_1 ACCT_1 ending ••78"
+    # amounts are never accounts
+    for text in ["123456 12345678.00", "£123456 12345678", "123456.12345678"]:
+        assert _r(text) == text, text
+
+
+def test_sort_code_account_pairs_any_joiner_and_either_order():
+    assert _r("12345678 09-01-28") == "ACCT_1 ending ••78 SORTCODE_1"
+    assert _r("1234 5678 09 01 28") == "ACCT_1 ending ••78 SORTCODE_1"
+    for join in [" and ", " AND ", " & ", " / ", ", ", ",", "; ", " | ", ", and "]:
+        assert _r(f"09-01-28{join}12345678") == f"SORTCODE_1{join}ACCT_1 ending ••78", join
+        assert _r(f"090128{join}12345678") == f"SORTCODE_1{join}ACCT_1 ending ••78", join
+    assert _r("07/10/2026,JOHN SMITH,23-11-84,43766589,45.00") == (
+        "07/10/2026,JOHN SMITH,SORTCODE_1,ACCT_1 ending ••89,45.00"
+    )
+    assert _r("07/10/2026,JOHN SMITH,830735,17088206,45.00") == (
+        "07/10/2026,JOHN SMITH,SORTCODE_1,ACCT_1 ending ••06,45.00"
+    )
+    assert _r("Sort Code,Account Number\n15-11-95,66243323") == (
+        "Sort Code,Account Number\nSORTCODE_1,ACCT_1 ending ••23"
+    )
+    assert _r("sort code 40-47-84,12345678") == "sort code SORTCODE_1,ACCT_1 ending ••78"
+    assert _r("Sort code,090128") == "Sort code,SORTCODE_1"
+    assert _r("Account,12345678") == "Account,ACCT_1 ending ••78"
+    # dates stay visible without an account beside them on the same line
+    for text in ["Paid 07-10-26 £12.00", "07-10-26 TESCO 12.50", "07-10-26\n12345678"]:
+        assert _r(text) == text, text
+
+
+def test_overlapping_card_windows_never_leave_card_digits():
+    # a Luhn-valid 8+4+4 window must not hide the real card behind it
+    assert _r("12345678 5431 6241 8767 4671") == "12345678 ACCT_1 ending ••71"
+    assert _r("Ref 1234 4111 1111 1111 1111") == "Ref 1234 ACCT_1 ending ••11"
+    assert _r("07/10/2026 4111 1111 1111 1111") == "07/10/2026 ACCT_1 ending ••11"
+    out = _r("Ref 1234 4111 1111 1111 1112")  # typo'd card: mask every candidate digit
+    assert out.startswith("Ref ACCT_") and "1111" not in out and "1112" not in out
+    # stand-ins already in the text are never eaten by a later number rule
+    p = Pseudonymiser([])
+    out = p.redact("GB33BUKB20201555555555 4111 1111 1111 2811")
+    assert out == "IBAN_1 ACCT_1 ending ••11", out
+
+
+def test_overlapping_iban_candidates_are_masked_together():
+    out = _r("ref FP12 3456 7890 1234 GB66 MIDL 1188 6135 4947 42")
+    assert out == "ref IBAN_1", out
+
+
+def test_sort_code_windows_retry_and_columns_follow_the_separator():
+    assert _r("Paid £45.12 40-47-84") == "Paid £45.12 SORTCODE_1"
+    assert _r("12 40-47-84") == "12 SORTCODE_1"
+    assert _r("40-47-84 12 Oct") == "SORTCODE_1 12 Oct"
+    assert _r("TO 40-47-84 15 OCT 2026") == "TO SORTCODE_1 15 OCT 2026"
+    # a spaced column of digit pairs, and ISO dates with times, are left alone
+    for text in ["2026 10 07 12 34 56 78", "2026-12-31 14:22", "Paid 2026-12-31 14:22:05"]:
+        assert _r(text) == text, text
+
+
+def test_accounts_with_dashes_and_runs():
+    assert _r("account 3766-7591") == "account ACCT_1 ending ••91"
+    assert _r("a/c 3766 - 7591") == "a/c ACCT_1 ending ••91"
+    out = _r("account 1234 5678 9012")
+    assert "1234" not in out and "5678" not in out, out
+    # a tax year is not an account
+    for text in ["ISA account 2025-2026", "ISA account 2025 2026"]:
+        assert _r(text) == text, text
+    assert _r("account number 2025-2026") == "account number ACCT_1 ending ••26"
+
+
+def test_names_next_to_digits_but_not_inside_stand_ins():
+    p = Pseudonymiser([("Alex Example", "adult")], ["Iban"])
+    assert p.redact("ALEX EXAMPLE1 and EXAMPLE2") == "Adult A1 and Adult A2"
+    assert p.redact("Iban GB33BUKB20201555555555") == "Person 1 IBAN_1"
+
+
+def test_phone_and_postcode_forms():
+    for text in [
+        "07700-900123",
+        "+44 (0)7700 900123",
+        "+44 20 7946 0958",
+        "0044 7700 900123",
+        "+44-7700-900-123",
+        "TEL07700900123",
+    ]:
+        out = _r(text)
+        assert "PHONE_1" in out and not any(c.isdigit() for c in out.replace("PHONE_1", "")), (
+            text,
+            out,
+        )
+    assert _r("ls6 2ab") == "POSTCODE_1"
+    assert _r("my postcode is sw1a 1aa") == "my postcode is POSTCODE_1"
+
+
+def test_date_like_account_beside_a_sort_code_is_still_an_account():
+    assert _r("Sort code\t09  48  05\tAccount\t19930429") == (
+        "Sort code\tSORTCODE_1\tAccount\tACCT_1 ending ••29"
+    )
+    assert _r("s/c 40-47-84 acc 20201007") == "s/c SORTCODE_1 acc ACCT_1 ending ••07"
+    assert _r("Account balance 20201007") == "Account balance 20201007"
+    assert _r("Account number (please quote on all payments): 91350877") == (
+        "Account number (please quote on all payments): ACCT_1 ending ••77"
+    )
