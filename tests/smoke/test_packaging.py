@@ -15,3 +15,27 @@ def test_docker_image_serves_health():
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "smoke: ok" in result.stdout
+
+
+@pytest.mark.slow
+def test_desktop_bundle_smoke():
+    if not (ROOT / "src" / "tuppence" / "web_dist" / "index.html").is_file():
+        pytest.skip("UI not built")
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--group",
+            "build",
+            "--extra",
+            "desktop",
+            "python",
+            "scripts/build_desktop.py",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
+    assert "smoke: ok desktop" in result.stdout
