@@ -19,6 +19,7 @@
   let error = $state('')
   let saved = $state('')
   let yearError = $state('')
+  let adding = $state(false)
 
   const fail = (err: unknown) => { saved = ''; error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
 
@@ -45,13 +46,14 @@
   async function addPerson(e: SubmitEvent) {
     e.preventDefault(); error = ''; yearError = ''
     if (birthYear && !/^\d{4}$/.test(birthYear.trim())) { yearError = 'Enter a 4-digit year'; return }
+    adding = true
     try {
       const body: Record<string, unknown> = { display_name: name, role }
       if (birthYear) body.birth_year = Number(birthYear.trim())
       const p = await api<Person>('/api/household/people', { method: 'POST', body })
       people = [...people, p]; name = ''; birthYear = ''; role = 'adult'
       saved = `${p.display_name} added.`
-    } catch (err) { fail(err) }
+    } catch (err) { fail(err) } finally { adding = false }
   }
 
   async function retire(p: Person) {
@@ -94,7 +96,8 @@
         </li>
       {/each}
     </ul>
-    <form onsubmit={addPerson} class="row">
+    <form onsubmit={addPerson} aria-busy={adding}>
+      <fieldset disabled={adding} class="row bare">
       <div><label for="np-name">Name</label><input id="np-name" required maxlength="60" bind:value={name} /></div>
       <div>
         <label for="np-role">Role</label>
@@ -104,6 +107,7 @@
       </div>
       <div><label for="np-year">Birth year (children)</label><input id="np-year" inputmode="numeric" bind:value={birthYear} aria-invalid={yearError ? 'true' : undefined} aria-describedby={yearError ? 'np-year-err' : undefined} />{#if yearError}<span id="np-year-err" class="warn" role="alert">{yearError}</span>{/if}</div>
       <button type="submit">Add person</button>
+      </fieldset>
     </form>
   </div>
 </section>

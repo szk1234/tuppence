@@ -55,3 +55,26 @@ it('rejects an invalid birth year without sending it', async () => {
   expect(await screen.findByText('Enter a 4-digit year')).toBeInTheDocument()
   expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'POST')).toBe(false)
 })
+
+it('locks the add-person form until the new person is saved', async () => {
+  let release: (r: Response) => void = () => {}
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/household') return json({ nation: null, postcode_district: null, currency: 'GBP', period_mode: 'calendar_month', period_anchor_person_id: null, version: 1 })
+    if (url.startsWith('/api/household/people') && (!init || !init.method || init.method === 'GET')) return json({ people: [] })
+    if (url === '/api/household/people' && init?.method === 'POST') {
+      return new Promise<Response>((resolve) => { release = resolve })
+    }
+    return json({ detail: 'unexpected' }, 500)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(Household)
+  const nameInput = await screen.findByLabelText('Name')
+  await fireEvent.input(nameInput, { target: { value: 'Alex Example' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add person' }))
+  await vi.waitFor(() => expect(screen.getByLabelText('Name')).toBeDisabled())
+  expect(screen.getByRole('button', { name: 'Add person' })).toBeDisabled()
+  release(json({ id: 'p_1', display_name: 'Alex Example', role: 'adult', birth_year: null, status: 'active', version: 1 }, 201))
+  await vi.waitFor(() => expect(screen.getByLabelText('Name')).toBeEnabled())
+  expect(screen.getByLabelText('Name')).toHaveValue('')
+  expect(await screen.findByText('Alex Example added.')).toBeInTheDocument()
+})

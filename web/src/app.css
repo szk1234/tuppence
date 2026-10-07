@@ -26,5 +26,6 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .badge { font-size: .8rem; background: var(--ok-bg); color: var(--ok); border-radius: 999px; padding: .1rem .5rem; margin-left: .5rem; }
 .warn { color: var(--danger); }
 fieldset { border: 1px solid var(--line); border-radius: 8px; margin: .75rem 0; }
+fieldset.bare { border: 0; margin: 0; padding: 0; min-width: 0; }
 .field { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
 .field label { min-width: 16rem; font-weight: 500; }

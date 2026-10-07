@@ -17,6 +17,7 @@ test('add people, set district, reject a full postcode, remove a person', async 
 
   await page.getByLabel('Name').fill('Alex Example')
   await page.getByRole('button', { name: 'Add person' }).click()
+  await expect(page.getByText('Alex Example added.')).toBeVisible()
   await page.getByLabel('Name').fill('Kid A')
   await page.getByLabel('Role').selectOption('child')
   await page.getByLabel('Birth year (children)').fill('2019')
