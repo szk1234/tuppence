@@ -83,10 +83,10 @@ tests/desktop/test_launcher.py, tests/smoke/test_packaging.py
 
 - [ ] **Step 1: Initialise the uv project**
 
-Working directory: `/ASH/HFA/tuppence` (already a git repo with the spec committed).
+Working directory: the repository root (already a git repo with the spec committed).
 
 ```bash
-cd /ASH/HFA/tuppence
+cd .
 uv python install 3.12
 echo "3.12" > .python-version
 ```
@@ -482,7 +482,7 @@ Then enable it for this clone and point at the private list (outside the repo):
 
 ```bash
 git config core.hooksPath .githooks
-git config tuppence.denylistFile /ASH/HFA/.private/denylist.txt
+git config tuppence.denylistFile /path/outside/the/repo/denylist.txt
 ```
 
 - [ ] **Step 6: Run tests to verify they pass**
@@ -1198,7 +1198,7 @@ Run: `uv run pytest -q` → Expected: all pass.
 - [ ] **Step 5: Scaffold the Svelte app**
 
 ```bash
-cd /ASH/HFA/tuppence
+cd .
 npm create vite@latest web -- --template svelte-ts
 cd web && npm install && npm install -D vitest @testing-library/svelte @testing-library/jest-dom jsdom
 ```
@@ -2110,7 +2110,7 @@ Claude-Session: https://claude.ai/code/session_01NJjEQDR3UGuFJz6TzhmiFM"
 - Modify: `README.md` only if a command in it turned out wrong during verification.
 
 **Interfaces:**
-- Consumes: everything above; private denylist at `/ASH/HFA/.private/denylist.txt`.
+- Consumes: everything above; private denylist at `/path/outside/the/repo/denylist.txt`.
 - Produces: public `https://github.com/szk1234/tuppence` with green CI; repo secret `TUPPENCE_DENYLIST`.
 
 - [ ] **Step 1: Full local verification**
@@ -2120,8 +2120,8 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright
 uv run pytest -q
 npm --prefix web test && npm --prefix web run build
 uv run pytest -m slow -q          # docker + wheel + desktop smoke
-TUPPENCE_DENYLIST_FILE=/ASH/HFA/.private/denylist.txt uv run python scripts/denylist_guard.py --require
-git log --all -p | grep -i -w -f <(grep -v '^#' /ASH/HFA/.private/denylist.txt | sed '/^$/d') && echo "HISTORY LEAK" || echo "history clean"
+TUPPENCE_DENYLIST_FILE=/path/outside/the/repo/denylist.txt uv run python scripts/denylist_guard.py --require
+git log --all -p | grep -i -w -f <(grep -v '^#' /path/outside/the/repo/denylist.txt | sed '/^$/d') && echo "HISTORY LEAK" || echo "history clean"
 ```
 
 Expected: everything green; final line `history clean`. **If history is not clean, stop and fix before publishing** (rewrite the offending local commits; the repo is unpublished so rewriting is safe).
@@ -2132,7 +2132,7 @@ Expected: everything green; final line `history clean`. **If history is not clea
 gh repo create szk1234/tuppence --public \
   --description "A private AI money coach for UK households. Your statements never leave your machine." \
   --homepage "https://github.com/szk1234/tuppence" --source . --remote origin --push
-grep -v '^#' /ASH/HFA/.private/denylist.txt | sed '/^$/d' | gh secret set TUPPENCE_DENYLIST --repo szk1234/tuppence
+grep -v '^#' /path/outside/the/repo/denylist.txt | sed '/^$/d' | gh secret set TUPPENCE_DENYLIST --repo szk1234/tuppence
 gh repo edit szk1234/tuppence --add-topic personal-finance --add-topic uk --add-topic local-first \
   --add-topic self-hosted --add-topic llm --add-topic privacy --add-topic ai-agents --add-topic budgeting
 ```
