@@ -9,6 +9,7 @@ from tuppence.config.models import Budgets
 from tuppence.core.household import PersonIn
 from tuppence.llm.budget import RunBudget
 from tuppence.llm.types import AllModelsFailed, BudgetExceeded, LLMBadResponse, Message
+from tuppence.net.client import LocalOnlyBlocked
 
 
 def setup_local(services, model="m-small"):
@@ -108,7 +109,7 @@ def test_local_only_blocks_cloud_before_sending(env):
     services, scripted = env
     setup_cloud(services)
     services.settings.set("privacy.local_only", True, expected_version=0)
-    with pytest.raises(AllModelsFailed, match="Local only"):
+    with pytest.raises(LocalOnlyBlocked, match="Local only"):
         services.llm.chat("coach", U)
     assert scripted.requests == []
     assert services.privacy_log.list()[0].outcome == "blocked"
@@ -395,7 +396,7 @@ def test_pinned_local_task_is_blocked_at_http_even_if_locality_is_stale(env, mon
         local_only=True,
         expected_version=0,
     )
-    with pytest.raises(AllModelsFailed, match="Local only"):
+    with pytest.raises(AllModelsFailed, match="only local models"):
         services.llm.chat("coach", U)
     assert sent_chats(scripted) == []
     assert services.privacy_log.list()[0].outcome == "blocked"
@@ -408,7 +409,7 @@ def test_blocked_cloud_call_is_logged_not_a_notice_error(env):
         conn.execute("UPDATE llm_connection SET notice_acknowledged_at = NULL")
     assert services.connections.get(c.id).needs_notice
     services.settings.set("privacy.local_only", True, expected_version=0)
-    with pytest.raises(AllModelsFailed) as exc:
+    with pytest.raises(LocalOnlyBlocked) as exc:
         services.llm.chat("coach", U)
     assert "Confirm what" not in str(exc.value) and "Local only" in str(exc.value)
     assert services.privacy_log.list()[0].outcome == "blocked"
@@ -584,3 +585,237 @@ def test_concurrent_calls_cannot_both_fit_under_the_monthly_cap(env):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert sorted(results) == ["capped", "ok"]
+
+
+def two_models(services, first, second, local_only=False):
+    services.settings.set("llm.mode", "advanced", expected_version=0)
+    services.router.set_task(
+        "coach",
+        [
+            {"connection_id": first.id, "model_id": "m-small"},
+            {"connection_id": second.id, "model_id": "m-small"},
+        ],
+        local_only=local_only,
+        expected_version=0,
+    )
+
+
+def new_local(services):
+    c = services.connections.create("custom", base_url="http://127.0.0.1:9000/v1")
+    services.connections.test(c.id)
+    return c
+
+
+def drop_key(services, connection):
+    with services.db.transaction() as conn:
+        conn.execute("UPDATE llm_connection SET secret_ref = NULL WHERE id = ?", [connection.id])
+
+
+def blocked_rows(services):
+    return [e for e in services.privacy_log.list() if e.outcome == "blocked"]
+
+
+def test_local_only_skips_keyless_cloud_and_local_answers(env):
+    services, scripted = env
+    cloud = setup_cloud(services)
+    local = new_local(services)
+    drop_key(services, cloud)
+    two_models(services, cloud, local)
+    services.settings.set("privacy.local_only", True, expected_version=0)
+    r = services.llm.chat("coach", U)  # no ApiKeyMissing
+    assert r.connection_id == local.id
+    assert len(blocked_rows(services)) == 1
+    assert len(sent_chats(scripted)) == 1
+
+
+def test_local_only_keyless_cloud_alone_is_a_block_not_a_key_error(env):
+    services, _ = env
+    cloud = setup_cloud(services)
+    drop_key(services, cloud)
+    services.settings.set("privacy.local_only", True, expected_version=0)
+    with pytest.raises(LocalOnlyBlocked):
+        services.llm.chat("coach", U)
+    assert len(blocked_rows(services)) == 1
+
+
+def test_local_only_block_comes_before_the_monthly_cap(env):
+    services, _ = env
+    setup_cloud(services)
+    services.settings.set("privacy.local_only", True, expected_version=0)
+    services.settings.set("llm.monthly_cap_gbp", 0.0, expected_version=0)
+    with pytest.raises(LocalOnlyBlocked):
+        services.llm.chat("coach", U)
+    assert len(blocked_rows(services)) == 1
+
+
+def test_pin_message_names_the_task_not_the_global_setting(env):
+    services, _ = env
+    cloud = setup_cloud(services)
+    local = new_local(services)
+    two_models(services, cloud, local, local_only=True)
+    # The pin filters the cloud model out of the chain; point the chain at cloud only.
+    services.router.set_task(
+        "coach",
+        [{"connection_id": cloud.id, "model_id": "m-small"}],
+        local_only=False,
+        expected_version=1,
+    )
+    block = services.llm._log_block(cloud, "coach", True)
+    assert "This task is set to use only local models" in str(block)
+
+
+def test_zero_run_cap_skips_paid_model_and_local_answers(env):
+    services, scripted = env
+    cloud = cloud_priced(services, price=1.0)
+    local = new_local(services)
+    two_models(services, cloud, local)
+    services.settings.set("llm.run_cap_gbp", 0.0, expected_version=0)
+    run = services.llm.new_run(
+        Budgets(max_llm_calls=5, max_tokens=100_000, max_gbp=1.0, max_seconds=60)
+    )
+    r = services.llm.chat("coach", U, run=run)
+    assert r.connection_id == local.id and len(sent_chats(scripted)) == 1
+
+
+def test_partly_spent_run_falls_back_to_the_cheaper_model(env):
+    services, _ = env
+    cloud = cloud_priced(services, price=60.0)
+    local = new_local(services)
+    two_models(services, cloud, local)
+    run = RunBudget(max_calls=10, max_tokens=1_000_000, max_gbp=0.25, max_seconds=600)
+    run.gbp = 0.10
+    assert services.llm.chat("coach", U, run=run).connection_id == local.id
+
+
+def test_run_cap_with_no_model_that_fits_raises_budget_exceeded(env):
+    services, scripted = env
+    cloud = cloud_priced(services, price=1.0)
+    services.settings.set("llm.mode", "advanced", expected_version=0)
+    chain = [
+        {"connection_id": cloud.id, "model_id": "m-small"},
+        {"connection_id": cloud.id, "model_id": "m-big"},
+    ]
+    services.router.set_task("coach", chain, local_only=False, expected_version=0)
+    run = RunBudget(max_calls=10, max_tokens=1_000_000, max_gbp=0.0, max_seconds=600)
+    with pytest.raises(BudgetExceeded, match="spending limit"):
+        services.llm.chat("coach", U, run=run)
+    assert sent_chats(scripted) == []
+
+
+def test_run_call_limit_still_ends_the_run(env):
+    services, _ = env
+    cloud = cloud_priced(services, price=1.0)
+    local = new_local(services)
+    two_models(services, cloud, local)
+    run = RunBudget(max_calls=0, max_tokens=1_000_000, max_gbp=1.0, max_seconds=600)
+    with pytest.raises(BudgetExceeded, match="calls"):
+        services.llm.chat("coach", U, run=run)
+
+
+def test_guard_enforces_the_decision_if_local_only_flips_mid_call(env, monkeypatch):
+    services, scripted = env
+    setup_cloud(services)
+    with services.db.transaction() as conn:
+        conn.execute("UPDATE llm_connection SET notice_acknowledged_at = NULL")
+    services.settings.set("privacy.local_only", True, expected_version=0)
+    real_get = services.settings.get
+    reads = {"n": 0}
+
+    def get(key):
+        if key == "privacy.local_only":
+            reads["n"] += 1
+            if reads["n"] > 1:
+                return False  # the user switches Local only off right after chat() decided
+        return real_get(key)
+
+    monkeypatch.setattr(services.settings, "get", get)
+    with pytest.raises(LocalOnlyBlocked):
+        services.llm.chat("coach", U)
+    assert sent_chats(scripted) == []
+
+
+def test_local_only_decision_reaches_the_guard_for_a_local_connection(env, monkeypatch):
+    services, _ = env
+    setup_local(services)
+    seen = []
+    real = services.connections.provider
+
+    def provider(*args, **kwargs):
+        seen.append(kwargs["require_local"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(services.connections, "provider", provider)
+    services.settings.set("privacy.local_only", True, expected_version=0)
+    services.llm.chat("coach", U)
+    assert seen == [True]
+
+
+def test_cooldown_wait_is_skipped_for_a_model_that_is_then_skipped(env):
+    services, scripted = env
+    a = new_local(services)
+    b = new_local(services)
+    with services.db.transaction() as conn:
+        conn.execute(
+            "UPDATE llm_model SET context_window = 300"
+            " WHERE connection_id = ? AND model_id = 'm-small'",
+            [a.id],
+        )
+    services.settings.set("llm.mode", "advanced", expected_version=0)
+    services.router.set_task(
+        "coach",
+        [
+            {"connection_id": a.id, "model_id": "m-big"},
+            {"connection_id": a.id, "model_id": "m-small"},
+            {"connection_id": b.id, "model_id": "m-small"},
+        ],
+        local_only=False,
+        expected_version=0,
+    )
+    t = [0.0]
+    run = RunBudget(
+        max_calls=10, max_tokens=1_000_000, max_gbp=1, max_seconds=80, monotonic=lambda: t[0]
+    )
+    services.llm.sleep = lambda s: t.__setitem__(0, t[0] + s)
+    scripted.replies = [httpx.Response(429, headers={"Retry-After": "30"}, json={})] * 3
+    r = services.llm.chat("coach", [Message(role="user", content="y" * 400)], run=run)
+    assert r.connection_id == b.id
+
+
+def test_partial_usage_is_filled_in_per_side(env):
+    services, scripted = env
+    cloud_priced(services, price=10.0)
+    scripted.replies = [
+        lambda req: httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 5}},
+        )
+    ]
+    r = services.llm.chat("coach", [Message(role="user", content="x" * 40_000)])
+    assert r.usage.input_tokens > 9000 and r.usage.output_tokens == 5
+
+
+def test_a_clamped_timeout_is_the_runs_limit_not_a_sick_server(env):
+    from tuppence.llm.types import LLMTimeout
+
+    services, _ = env
+    setup_local(services)
+    t = [0.0]
+    run = RunBudget(
+        max_calls=10, max_tokens=1_000_000, max_gbp=1, max_seconds=50, monotonic=lambda: t[0]
+    )
+    t[0] = 20.0
+
+    def timeout(req):
+        raise LLMTimeout("timed out")
+
+    real = services.connections.provider
+
+    def provider(*args, **kwargs):
+        p = real(*args, **kwargs)
+        p.chat = timeout
+        return p
+
+    services.connections.provider = provider
+    with pytest.raises(BudgetExceeded, match="time"):
+        services.llm.chat("coach", U, run=run)
+    assert services.breakers.failures == {}

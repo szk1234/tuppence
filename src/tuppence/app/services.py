@@ -130,6 +130,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
         settings=settings_store,
         household=household,
         breakers=breakers,
+        privacy_log=privacy_log,
     )
 
     services = Services(

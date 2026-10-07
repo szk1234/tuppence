@@ -1,7 +1,7 @@
 import pytest
 
 from tuppence.config.models import Budgets
-from tuppence.llm.budget import BreakerBoard, RunBudget, cost_gbp, estimate_tokens
+from tuppence.llm.budget import BreakerBoard, RunBudget, estimate_tokens, priced_cost
 from tuppence.llm.connections import ModelInfo
 from tuppence.llm.types import BudgetExceeded, Message, Usage
 
@@ -29,10 +29,9 @@ def test_estimate_tokens():
 
 
 def test_cost():
-    assert cost_gbp(
-        model(), Usage(input_tokens=1_000_000, output_tokens=500_000), 0.75
-    ) == pytest.approx(4.5)
-    assert cost_gbp(model(price_in_usd_per_mtok=None), Usage(input_tokens=10), 0.75) is None
+    usage = Usage(input_tokens=1_000_000, output_tokens=500_000)
+    assert priced_cost(model(), usage, 0.75) == (pytest.approx(4.5), False)
+    assert priced_cost(model(price_in_usd_per_mtok=None), Usage(input_tokens=10), 0.75)[1]
 
 
 def test_run_budget_caps():
@@ -40,19 +39,19 @@ def test_run_budget_caps():
     b = RunBudget(
         max_calls=2, max_tokens=1000, max_gbp=0.10, max_seconds=30, monotonic=lambda: t[0]
     )
-    b.check(400)
+    b.check(400, 0.0)
     b.record(400, 0.05)
     with pytest.raises(BudgetExceeded, match="tokens"):
-        b.check(700)
+        b.check(700, 0.0)
     b.record(100, 0.06)
     with pytest.raises(BudgetExceeded, match="calls"):
-        b.check(1)
+        b.check(1, 0.0)
     b2 = RunBudget(
         max_calls=10, max_tokens=10_000, max_gbp=1, max_seconds=30, monotonic=lambda: t[0]
     )
     t[0] = 31
     with pytest.raises(BudgetExceeded, match="time"):
-        b2.check(1)
+        b2.check(1, 0.0)
 
 
 def test_breaker_opens_and_resets():
@@ -78,16 +77,14 @@ def test_run_gbp_cap_uses_the_projected_cost():
     b = RunBudget(max_calls=5, max_tokens=10_000, max_gbp=0.10, max_seconds=30)
     with pytest.raises(BudgetExceeded, match="spending limit"):
         b.check(10, projected_gbp=9.0)
-    b.check(10, projected_gbp=0.0)  # a free call is always allowed
+    b.check(10, 0.0)  # a free call is always allowed
     zero = RunBudget(max_calls=5, max_tokens=10_000, max_gbp=0.0, max_seconds=30)
-    zero.check(10)
+    zero.check(10, 0.0)
     with pytest.raises(BudgetExceeded):
         zero.check(10, projected_gbp=0.001)
 
 
 def test_priced_cost_falls_back_for_unknown_prices():
-    from tuppence.llm.budget import priced_cost
-
     usage = Usage(input_tokens=1_000_000, output_tokens=1_000_000)
     cost, fallback = priced_cost(model(price_in_usd_per_mtok=None), usage, 1.0)
     assert fallback and cost == pytest.approx(5.0 + 8.0)  # only the missing price falls back

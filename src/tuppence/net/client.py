@@ -18,9 +18,14 @@ _log = logging.getLogger("tuppence.privacy")
 
 
 class LocalOnlyBlocked(Exception):
-    def __init__(self, host: str) -> None:
-        super().__init__(f"Local only is on, so Tuppence didn't contact {host}.")
+    def __init__(self, host: str, *, pinned: bool = False) -> None:
+        if pinned:
+            msg = f"This task is set to use only local models, so Tuppence didn't contact {host}."
+        else:
+            msg = f"Local only is on, so Tuppence didn't contact {host}."
+        super().__init__(msg)
         self.host = host
+        self.pinned = pinned
 
 
 @dataclass
@@ -76,8 +81,10 @@ class GuardedTransport(httpx.BaseTransport):
             and (self.ctx.require_local or self.local_only())
             and not (self.ctx.local and is_local_host(host))
         ):
-            self.log.record(self._event(request, outcome="blocked", note="Local only is on"))
-            raise LocalOnlyBlocked(host)
+            pinned = self.ctx.require_local and not self.local_only()
+            note = "Task is set to local models only" if pinned else "Local only is on"
+            self.log.record(self._event(request, outcome="blocked", note=note))
+            raise LocalOnlyBlocked(host, pinned=pinned)
         body = request.read()
         try:
             response = self.inner.handle_request(request)

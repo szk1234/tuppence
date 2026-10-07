@@ -49,16 +49,6 @@ def priced_cost(model: ModelInfo, usage: Usage, usd_to_gbp: float) -> tuple[floa
     return round(usd * usd_to_gbp, 6), fallback
 
 
-def cost_gbp(model: ModelInfo, usage: Usage, usd_to_gbp: float) -> float | None:
-    if model.price_in_usd_per_mtok is None or model.price_out_usd_per_mtok is None:
-        return None
-    usd = (
-        usage.input_tokens * model.price_in_usd_per_mtok
-        + usage.output_tokens * model.price_out_usd_per_mtok
-    ) / 1e6
-    return round(usd * usd_to_gbp, 6)
-
-
 @dataclass
 class RunBudget:
     max_calls: int
@@ -90,19 +80,25 @@ class RunBudget:
                 f"This run reached its time limit of {self.max_seconds:.0f} seconds."
             )
 
-    def check(self, estimated_tokens: int, projected_gbp: float = 0.0) -> None:
+    def check_limits(self) -> None:
+        """Limits no other model can help with: calls and time."""
         if self.calls + 1 > self.max_calls:
             raise BudgetExceeded(f"This run reached its limit of {self.max_calls} AI calls.")
+        self.check_time()
+
+    def over_cap(self, estimated_tokens: int, projected_gbp: float) -> str | None:
+        """Why this call doesn't fit the run's token or £ cap (another model might)."""
         if self.tokens + estimated_tokens > self.max_tokens:
-            raise BudgetExceeded(f"This run reached its limit of {self.max_tokens:,} tokens.")
+            return f"This run reached its limit of {self.max_tokens:,} tokens."
         if self.gbp + projected_gbp > self.max_gbp:
-            raise BudgetExceeded(
-                f"This call could take this run past its £{self.max_gbp:.2f} spending limit."
-            )
-        if self.monotonic() - self.started > self.max_seconds:
-            raise BudgetExceeded(
-                f"This run reached its time limit of {self.max_seconds:.0f} seconds."
-            )
+            return f"This call could take this run past its £{self.max_gbp:.2f} spending limit."
+        return None
+
+    def check(self, estimated_tokens: int, projected_gbp: float) -> None:
+        self.check_limits()
+        reason = self.over_cap(estimated_tokens, projected_gbp)
+        if reason:
+            raise BudgetExceeded(reason)
 
     def record(self, tokens: int, gbp: float | None) -> None:
         self.calls += 1

@@ -8,10 +8,12 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ValidationError
 
 from tuppence.config.models import Budgets
+from tuppence.core.clock import to_iso
 from tuppence.core.household import HouseholdService
 from tuppence.core.settings_store import SettingsStore
 from tuppence.llm.budget import BreakerBoard, RunBudget, UsageLedger, estimate_tokens, priced_cost
@@ -28,12 +30,14 @@ from tuppence.llm.types import (
     LLMBadResponse,
     LLMError,
     LLMHTTPError,
+    LLMTimeout,
     Message,
     NoticeRequired,
     ToolSpec,
     Usage,
 )
 from tuppence.net.client import LocalOnlyBlocked
+from tuppence.net.privacy_log import PrivacyEvent, PrivacyLog
 
 T = TypeVar("T", bound=BaseModel)
 MAX_RETRIES = 2
@@ -79,9 +83,11 @@ class LLMClient:
         settings: SettingsStore,
         household: HouseholdService,
         breakers: BreakerBoard,
+        privacy_log: PrivacyLog,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.connections, self.router, self.usage = connections, router, usage
+        self.privacy_log = privacy_log
         self._spend_lock = threading.Lock()
         self._reserved = 0.0  # £ projected for calls in flight
         self.settings, self.household, self.breakers, self.sleep = (
@@ -122,22 +128,34 @@ class LLMClient:
         task: str,
         req: ChatRequest,
         redactions: int,
-        pinned: bool,
+        require_local: bool,
         run: RunBudget | None,
     ) -> ChatResponse:
         """One model, with up to two retries; the run's time limit bounds every attempt."""
         attempt = 0
         while True:
             timeout = timeout_for(task, conn.is_local)
+            clamped = False
             if run is not None:
                 run.check_time()
-                timeout = min(timeout, run.remaining_seconds())
+                left = max(run.remaining_seconds(), 1.0)
+                clamped = left < timeout
+                timeout = min(timeout, left)
             provider = self.connections.provider(
-                conn.id, task=task, redactions=redactions, timeout=timeout, require_local=pinned
+                conn.id,
+                task=task,
+                redactions=redactions,
+                timeout=timeout,
+                require_local=require_local,
             )
             try:
                 return provider.chat(req)
             except LLMError as exc:
+                if clamped and run is not None and isinstance(exc, LLMTimeout):
+                    # Our own shortened timeout ran out: that's the run's limit, not a sick server.
+                    raise BudgetExceeded(
+                        f"This run reached its time limit of {run.max_seconds:.0f} seconds."
+                    ) from exc
                 if not exc.retryable or attempt >= MAX_RETRIES:
                     raise
                 wait = self._retry_after(exc)
@@ -166,21 +184,24 @@ class LLMClient:
         never retried and never passed on to the next model.
         """
         attempts: list[str] = []
+        blocks: list[LocalOnlyBlocked] = []
+        run_skips: list[str] = []
         pinned = self.router.is_pinned_local(task)
+        # Read once: the guard enforces this decision even if the setting changes mid-call.
+        require_local = pinned or bool(self.settings.get("privacy.local_only"))
         cooldown: dict[str, float] = {}
         for conn, model in self.router.chain_for(task):
             label = f"{conn.name} / {model.model_id}"
+            if require_local and not conn.is_local:
+                # Decided first: no key lookup, no cap or notice checks, just the block.
+                block = self._log_block(conn, task, pinned)
+                blocks.append(block)
+                attempts.append(f"{label}: {block}")
+                continue
             if not self.breakers.allow(conn.id):
                 attempts.append(f"{label}: paused after repeated failures")
                 continue
-            wait = cooldown.pop(conn.id, None)
-            if wait:
-                self._wait(wait, run)  # the provider asked us to slow down
-            blocked = (pinned or bool(self.settings.get("privacy.local_only"))) and (
-                not conn.is_local
-            )
-            # A blocked call goes on to the guarded client, which logs it and says why.
-            if conn.needs_notice and not blocked:
+            if conn.needs_notice:
                 notice = NoticeRequired(
                     f"Confirm what {conn.name} will see before Tuppence uses it (Settings › AI)."
                 )
@@ -197,14 +218,43 @@ class LLMClient:
                 max_tokens,
                 run,
                 run_id,
-                pinned,
+                require_local,
                 cooldown,
+                run_skips,
             )
             if isinstance(outcome, str):
                 attempts.append(f"{label}: {outcome}")
                 continue
             return outcome
+        if blocks and len(blocks) == len(attempts):
+            raise blocks[0]
+        if run_skips and len(run_skips) == len(attempts):
+            raise BudgetExceeded(run_skips[0])
         raise AllModelsFailed(attempts)
+
+    def _log_block(self, conn: Connection, task: str, pinned: bool) -> LocalOnlyBlocked:
+        """Record a cloud call that Local only (or a task pin) stopped before it was built."""
+        url = urlparse(conn.base_url)
+        host = url.hostname or conn.base_url
+        note = "Task is set to local models only" if pinned else "Local only is on"
+        self.privacy_log.record(
+            PrivacyEvent(
+                ts=to_iso(self.usage.clock()),
+                purpose="llm",
+                task=task,
+                connection_id=conn.id,
+                destination=host,
+                method="POST",
+                path=url.path or "/",
+                bytes_out=0,
+                bytes_in=0,
+                status=None,
+                redactions=0,
+                outcome="blocked",
+                note=note,
+            )
+        )
+        return LocalOnlyBlocked(host, pinned=pinned)
 
     def _try_model(
         self,
@@ -218,8 +268,9 @@ class LLMClient:
         max_tokens: int,
         run: RunBudget | None,
         run_id: str | None,
-        pinned: bool,
+        require_local: bool,
         cooldown: dict[str, float],
+        run_skips: list[str],
     ) -> ChatResult | str:
         """A ChatResult, or the reason this model couldn't answer."""
         estimate = estimate_tokens(messages, tools)
@@ -251,7 +302,11 @@ class LLMClient:
             self._reserved += projected
         try:
             if run is not None:
-                run.check(estimate + max_tokens_eff, projected)
+                run.check_limits()  # calls and time end the run; a cap only skips this model
+                reason = run.over_cap(estimate + max_tokens_eff, projected)
+                if reason:
+                    run_skips.append(reason)
+                    return reason
             use_pseudo = not conn.is_local and self.settings.get("privacy.pseudonymise")
             pseudo = self._pseudonymiser() if use_pseudo else None
             sent = [self._redacted(m, pseudo) for m in messages] if pseudo else list(messages)
@@ -264,7 +319,12 @@ class LLMClient:
                 max_tokens=max_tokens_eff,
             )
             try:
-                resp = self._send(conn, task, req, pseudo.count if pseudo else 0, pinned, run)
+                wait = cooldown.pop(conn.id, None)
+                if wait:
+                    self._wait(wait, run)  # the provider asked us to slow down
+                resp = self._send(
+                    conn, task, req, pseudo.count if pseudo else 0, require_local, run
+                )
             except LocalOnlyBlocked as exc:
                 return str(exc)
             except BudgetExceeded:
@@ -291,13 +351,16 @@ class LLMClient:
                 return str(exc)
             self.breakers.success(conn.id)
             usage, estimated = resp.usage, False
-            if usage.input_tokens == 0 and usage.output_tokens == 0:
-                # The provider didn't say what it used: count it from the text instead.
+            if usage.input_tokens == 0 or usage.output_tokens == 0:
+                # The provider left out a count: fill it in from the text instead.
                 out_chars = len(resp.text) + sum(
                     len(json.dumps(c.arguments)) + len(c.name) for c in resp.tool_calls
                 )
-                usage = Usage(input_tokens=estimate, output_tokens=math.ceil(out_chars / 4))
-                estimated = True
+                usage = Usage(
+                    input_tokens=usage.input_tokens or estimate,
+                    output_tokens=usage.output_tokens or math.ceil(out_chars / 4),
+                )
+                estimated = usage != resp.usage
             if conn.is_local:
                 cost = 0.0
             else:
