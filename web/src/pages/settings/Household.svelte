@@ -20,6 +20,7 @@
   let saved = $state('')
   let yearError = $state('')
   let adding = $state(false)
+  let loaded = $state(false)
 
   const fail = (err: unknown) => { saved = ''; error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
 
@@ -28,6 +29,7 @@
     nation = household.nation ?? ''
     district = household.postcode_district ?? ''
     people = (await api<{ people: Person[] }>('/api/household/people')).people
+    loaded = true
   }
   onMount(() => { load().catch(fail) })
 
@@ -71,8 +73,9 @@
   <Notice message={error} />
   <Notice message={saved} kind="ok" />
 
-  <form class="card" onsubmit={saveHousehold}>
+  <form class="card" onsubmit={saveHousehold} aria-busy={!loaded}>
     <h2>Where you live</h2>
+    <fieldset class="bare" disabled={!loaded}>
     <label for="hh-nation">Nation</label>
     <select id="hh-nation" bind:value={nation}>
       <option value="">Choose…</option>
@@ -82,6 +85,7 @@
     <input id="hh-district" placeholder="e.g. LS6" bind:value={district} autocomplete="off" />
     <p class="hint">Only the first part of your postcode. Tuppence never needs your full address.</p>
     <button type="submit">Save household</button>
+    </fieldset>
   </form>
 
   <div class="card">
@@ -97,7 +101,7 @@
       {/each}
     </ul>
     <form onsubmit={addPerson} aria-busy={adding}>
-      <fieldset disabled={adding} class="row bare">
+      <fieldset disabled={adding || !loaded} class="row bare">
       <div><label for="np-name">Name</label><input id="np-name" required maxlength="60" bind:value={name} /></div>
       <div>
         <label for="np-role">Role</label>

@@ -69,6 +69,7 @@ it('locks the add-person form until the new person is saved', async () => {
   vi.stubGlobal('fetch', fetchMock)
   render(Household)
   const nameInput = await screen.findByLabelText('Name')
+  await vi.waitFor(() => expect(nameInput).toBeEnabled())
   await fireEvent.input(nameInput, { target: { value: 'Alex Example' } })
   await fireEvent.click(screen.getByRole('button', { name: 'Add person' }))
   await vi.waitFor(() => expect(screen.getByLabelText('Name')).toBeDisabled())
@@ -77,4 +78,19 @@ it('locks the add-person form until the new person is saved', async () => {
   await vi.waitFor(() => expect(screen.getByLabelText('Name')).toBeEnabled())
   expect(screen.getByLabelText('Name')).toHaveValue('')
   expect(await screen.findByText('Alex Example added.')).toBeInTheDocument()
+})
+
+it('keeps the forms locked until the household has loaded', async () => {
+  let release: (r: Response) => void = () => {}
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url === '/api/household') return new Promise<Response>((resolve) => { release = resolve })
+    if (url.startsWith('/api/household/people')) return json({ people: [] })
+    return json({ detail: 'unexpected' }, 500)
+  }))
+  render(Household)
+  expect(screen.getByLabelText('Postcode district')).toBeDisabled()
+  expect(screen.getByLabelText('Name')).toBeDisabled()
+  release(json({ nation: 'england', postcode_district: 'LS6', currency: 'GBP', period_mode: 'calendar_month', period_anchor_person_id: null, version: 1 }))
+  await vi.waitFor(() => expect(screen.getByLabelText('Postcode district')).toBeEnabled())
+  expect(screen.getByLabelText('Postcode district')).toHaveValue('LS6')
 })

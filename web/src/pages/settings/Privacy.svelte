@@ -29,11 +29,14 @@
   // Stored in UTC; always shown in UK time, whatever the browser's own time zone.
   const when = (ts: string) => new Date(ts).toLocaleString('en-GB', { timeZone: 'Europe/London' })
 
+  let loaded = $state(false)
+
   async function load() {
     const res = await api<{ settings: Entry[] }>('/api/settings')
     settings = Object.fromEntries(res.settings.map((s) => [s.key, s]))
     const hidden = settings[NAMES_KEY]?.value
     names = Array.isArray(hidden) ? hidden.join('\n') : ''
+    loaded = true
     log = (await api<{ entries: LogEntry[] }>('/api/privacy/log?limit=100')).entries
   }
   onMount(() => { load().catch(fail) })
@@ -63,7 +66,7 @@
   <Notice message={saved} kind="ok" />
   {#if !canEdit}<p class="hint">Only the household admin can change these settings.</p>{/if}
   <div class="card">
-    <fieldset class="bare" disabled={busy || !canEdit}>
+    <fieldset class="bare" disabled={busy || !canEdit || !loaded}>
       {#each TOGGLES as [key, label, help] (key)}
         {#if settings[key]}
           <div class="toggle">
@@ -77,7 +80,7 @@
   </div>
   {#if settings[NAMES_KEY]}
     <form class="card" onsubmit={saveNames}>
-      <fieldset class="bare" disabled={busy || !canEdit}>
+      <fieldset class="bare" disabled={busy || !canEdit || !loaded}>
         <label for="hidden-names">Names to hide</label>
         <p class="hint">One per line, for example your landlord or an employer. They are swapped for stand-ins before anything goes to a cloud AI, when "Pseudonymise before cloud AI" is on.</p>
         <textarea id="hidden-names" rows="4" bind:value={names}></textarea>

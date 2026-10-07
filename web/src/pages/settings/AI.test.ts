@@ -265,6 +265,7 @@ it('reloads connections after a 409 on edit so a retry uses the fresh version', 
   await fireEvent.click(within(card).getByRole('button', { name: 'Save changes' }))
   expect(await screen.findByText('This was changed somewhere else. Reload and try again.')).toBeInTheDocument()
   await waitFor(() => expect(calls.filter(([u]) => u === '/api/llm/connections').length).toBeGreaterThan(1))
+  await waitFor(() => expect(within(card).getByRole('button', { name: 'Save changes' })).toBeEnabled())
   await fireEvent.click(within(card).getByRole('button', { name: 'Save changes' }))
   await waitFor(() => expect(calls.filter(([, i]) => i?.method === 'PATCH').length).toBe(2))
   const second = calls.filter(([, i]) => i?.method === 'PATCH')[1]
