@@ -69,6 +69,15 @@ If a configured denylist file is missing or unreadable, the guard fails closed
 Never commit real statements, even redacted ones. Test data uses invented
 people and companies, for example "Alex Example" paid by "Acme Payroll".
 
+## Adding or confirming a bank layout
+
+1. Never commit or attach a real statement. Compare only the heading row and the date and amount formats of your own export with the entry in `src/tuppence/datapacks/baseline/uk-banks/layouts.yaml`.
+2. Edit or add the entry. `signature` lists headings that must all be present; refer to columns by heading, or `#0`, `#1`... for files without a heading row. Use `perspective: card` when purchases are positive.
+3. Add a synthetic fixture `tests/fixtures/statements/csv/<id>.csv` with invented merchants and amounts (the October story used by the other fixtures is easiest), and a row in `EXPECTED` in `tests/ingest/test_csv_layouts.py`.
+4. Set `confirmed: true` only after checking against a real export, and say so in the pull request.
+5. Run `uv run python scripts/build_pack_manifest.py src/tuppence/datapacks/baseline/uk-banks` and `uv run pytest tests/ingest -q`.
+6. Your own layouts can also live outside the app, in `<data folder>/config/importers/*.yaml` with the same format.
+
 ## Style
 
 - Python: `uv run ruff check .`, `uv run ruff format .` and `uv run pyright`.

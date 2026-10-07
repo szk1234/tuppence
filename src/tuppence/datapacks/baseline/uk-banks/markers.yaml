@@ -1,0 +1,52 @@
+# uk-banks: how to recognise a bank from a PDF, OFX or CAMT.053 file.
+# PDF markers are tried in order, so a more specific one (Barclaycard) comes
+# before a broader one (Barclays). Sort codes: a six-digit entry beats a
+# two-digit prefix. None of these are confirmed against real statements yet.
+pdf_markers:
+  - {provider: barclaycard, kind: credit_card, any: ["Barclaycard is a trading name of Barclays Bank UK PLC", "barclaycard.co.uk"]}
+  - {provider: amex, kind: credit_card, any: ["American Express Services Europe Limited", "americanexpress.co.uk"]}
+  - {provider: monzo, any: ["Monzo Bank Limited", "monzo.com"]}
+  - {provider: starling, any: ["Starling Bank Limited", "starlingbank.com"]}
+  - {provider: revolut, any: ["Revolut Ltd", "Revolut NewCo UK Ltd"]}
+  - {provider: chase, any: ["J.P. Morgan Europe Limited", "chase.co.uk"]}
+  - {provider: halifax, any: ["Halifax is a division of Bank of Scotland plc"]}
+  - {provider: bank_of_scotland, any: ["Bank of Scotland plc"]}
+  - {provider: lloyds, any: ["Lloyds Bank plc"]}
+  - {provider: hsbc, any: ["HSBC UK Bank plc"]}
+  - {provider: barclays, any: ["Barclays Bank UK PLC"]}
+  - {provider: natwest, any: ["National Westminster Bank Plc"]}
+  - {provider: rbs, any: ["The Royal Bank of Scotland plc"]}
+  - {provider: santander, any: ["Santander UK plc"]}
+  - {provider: nationwide, any: ["Nationwide Building Society"]}
+sort_codes:
+  "040004": monzo
+  "608371": starling
+  "608407": chase
+  "040075": revolut
+  "40": hsbc
+  "20": barclays
+  "30": lloyds
+  "77": lloyds
+  "11": halifax
+  "12": bank_of_scotland
+  "60": natwest
+  "50": natwest
+  "56": natwest
+  "83": rbs
+  "09": santander
+  "07": nationwide
+bics:
+  MONZGB2L: monzo
+  SRLGGB2L: starling
+  REVOGB21: revolut
+  CHASGB2L: chase
+  HBUKGB4B: hsbc
+  BUKBGB22: barclays
+  LOYDGB2L: lloyds
+  LOYDGB21: lloyds
+  HLFXGB21: halifax
+  BOFSGBS1: bank_of_scotland
+  NWBKGB2L: natwest
+  RBOSGB2L: rbs
+  ABBYGB2L: santander
+  NAIAGB21: nationwide

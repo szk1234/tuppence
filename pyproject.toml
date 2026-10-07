@@ -25,6 +25,8 @@ dependencies = [
   "keyring>=25.7.0",
   "cryptography>=50.0.2",
   "idna>=3.20",
+  "pyyaml>=6.0.3",
+  "openpyxl>=3.1.5",
 ]
 
 [project.optional-dependencies]
@@ -34,7 +36,12 @@ desktop = ["pywebview>=6.2"]
 tuppence = "tuppence.cli:run"
 
 [dependency-groups]
-dev = ["pytest>=9.1", "ruff>=0.16", "pyright>=1.1.414"]
+dev = [
+    "pytest>=9.1",
+    "ruff>=0.16",
+    "pyright>=1.1.414",
+    "types-pyyaml>=6.0.12.20260906",
+]
 build = ["pyinstaller>=6.22"]
 
 [build-system]

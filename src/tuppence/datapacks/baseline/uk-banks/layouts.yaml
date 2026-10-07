@@ -1,0 +1,191 @@
+# uk-banks: CSV layouts for UK bank and card exports (community-maintained).
+#
+# Every layout here is a *plausible* reading of the bank's export, written from
+# public descriptions. `confirmed: false` means nobody has yet checked it against
+# a real download. If you have one, compare the headings (never share the file)
+# and open a pull request setting `confirmed: true`. See CONTRIBUTING.md.
+#
+# Columns are referred to by heading (case and spacing don't matter), or as
+# "#0", "#1"… for files without a heading row. `perspective: card` means the
+# export prints purchases as positive numbers (the card's view); Tuppence stores
+# them as money out.
+layouts:
+  - id: monzo
+    name: Monzo current account export
+    providers: [monzo]
+    kind: current
+    signature: [Transaction ID, Date, Time, Type, Name, Emoji, Category, Amount]
+    date: Date
+    date_formats: ["%d/%m/%Y"]
+    description: [Name, Description]
+    merchant: Name
+    amount: Amount
+    category: Category
+    type: Type
+    confirmed: false
+    notes: Money Out and Money In repeat the signed Amount column, so they're ignored.
+
+  - id: starling
+    name: Starling current account export
+    providers: [starling]
+    kind: current
+    signature: [Date, Counter Party, Reference, Type, Amount (GBP), Balance (GBP), Spending Category]
+    date: Date
+    date_formats: ["%d/%m/%Y"]
+    description: [Counter Party, Reference]
+    merchant: Counter Party
+    amount: Amount (GBP)
+    balance: Balance (GBP)
+    category: Spending Category
+    type: Type
+    confirmed: false
+
+  - id: hsbc
+    name: HSBC UK current account download (no heading row)
+    providers: [hsbc]
+    kind: current
+    columns: 3
+    date: "#0"
+    date_formats: ["%d/%m/%Y", "%d %b %Y"]
+    description: ["#1"]
+    amount: "#2"
+    confirmed: false
+    notes: >-
+      Three columns and no heading row: date, description, signed amount. Other
+      banks export the same shape, so this layout is only a hint for the account
+      question, never proof that the file is from HSBC.
+
+  - id: barclays
+    name: Barclays current account export
+    providers: [barclays]
+    kind: current
+    signature: [Number, Date, Account, Amount, Subcategory, Memo]
+    date: Date
+    date_formats: ["%d/%m/%Y"]
+    description: [Memo]
+    amount: Amount
+    type: Subcategory
+    account_number: Account
+    confirmed: false
+
+  - id: lloyds-halifax
+    name: Lloyds Banking Group export (Lloyds, Halifax, Bank of Scotland)
+    providers: [lloyds, halifax, bank_of_scotland]
+    kind: current
+    signature: [Transaction Date, Transaction Type, Sort Code, Account Number, Transaction Description, Debit Amount, Credit Amount, Balance]
+    date: Transaction Date
+    date_formats: ["%d/%m/%Y"]
+    description: [Transaction Description]
+    money_out: Debit Amount
+    money_in: Credit Amount
+    balance: Balance
+    type: Transaction Type
+    account_number: Account Number
+    confirmed: false
+    notes: Lists the newest transaction first.
+
+  - id: natwest
+    name: NatWest Group export (NatWest, RBS, Ulster Bank)
+    providers: [natwest, rbs, ulster_bank]
+    kind: current
+    signature: [Date, Type, Description, Value, Balance, Account Name, Account Number]
+    date: Date
+    date_formats: ["%d %b %Y", "%d/%m/%Y"]
+    description: [Description]
+    amount: Value
+    balance: Balance
+    type: Type
+    account_number: Account Number
+    confirmed: false
+
+  - id: santander
+    name: Santander current account export
+    providers: [santander]
+    kind: current
+    signature: [Date, Description, Money in, Money out, Balance]
+    date: Date
+    date_formats: ["%d/%m/%Y"]
+    description: [Description]
+    money_out: Money out
+    money_in: Money in
+    balance: Balance
+    confirmed: false
+    notes: Starts with a few lines naming the period and the masked account number.
+
+  - id: nationwide
+    name: Nationwide current account export
+    providers: [nationwide]
+    kind: current
+    signature: [Date, Transaction type, Description, Paid out, Paid in, Balance]
+    date: Date
+    date_formats: ["%d %b %Y", "%d/%m/%Y"]
+    description: [Description]
+    money_out: Paid out
+    money_in: Paid in
+    balance: Balance
+    type: Transaction type
+    confirmed: false
+    notes: Starts with account name and balance lines; amounts carry a £ sign.
+
+  - id: chase
+    name: Chase UK current account export
+    providers: [chase]
+    kind: current
+    signature: [Date, Time, Transaction Type, Description, Amount, Currency, Balance]
+    date: Date
+    date_formats: ["%d %b %Y", "%d/%m/%Y"]
+    description: [Description]
+    amount: Amount
+    balance: Balance
+    type: Transaction Type
+    skip:
+      - {column: Currency, not_in: [GBP], reason: "not in pounds"}
+    confirmed: false
+
+  - id: revolut
+    name: Revolut account statement (CSV)
+    providers: [revolut]
+    kind: current
+    signature: [Type, Product, Started Date, Completed Date, Description, Amount, Fee, Currency, State, Balance]
+    date: Completed Date
+    date_formats: ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]
+    description: [Description]
+    amount: Amount
+    fee: Fee
+    balance: Balance
+    type: Type
+    skip:
+      - {column: State, not_in: [COMPLETED], reason: "not completed (pending, declined or reverted)"}
+      - {column: Product, not_in: [Current], reason: "a savings pocket or another product, not this account"}
+      - {column: Currency, not_in: [GBP], reason: "not in pounds"}
+    confirmed: false
+    notes: A non-zero Fee becomes its own row just before the payment.
+
+  - id: amex
+    name: American Express UK card export
+    providers: [amex]
+    kind: credit_card
+    signature: [Date, Description, Amount, Extended Details, Appears On Your Statement As, Reference, Category]
+    date: Date
+    date_formats: ["%d/%m/%Y"]
+    description: [Description]
+    amount: Amount
+    perspective: card
+    category: Category
+    confirmed: false
+    notes: Purchases are positive and payments negative (the card's view).
+
+  - id: barclaycard
+    name: Barclaycard export
+    providers: [barclaycard]
+    kind: credit_card
+    signature: [Transaction Date, Posting Date, Card Number, Description, Category, Amount]
+    date: Transaction Date
+    date_formats: ["%d/%m/%Y", "%d %b %Y"]
+    description: [Description]
+    amount: Amount
+    perspective: card
+    category: Category
+    account_number: Card Number
+    confirmed: false
+    notes: Purchases are positive; payments and refunds are negative or marked CR.

@@ -1,0 +1,12 @@
+Transaction ID,Date,Time,Type,Name,Emoji,Category,Amount,Currency,Local amount,Local currency,Notes and #tags,Address,Receipt,Description,Category split,Money Out,Money In
+tx_syn_001,01/10/2026,01:15:00,Card payment,Greenbasket Stores,,Groceries,-42.18,GBP,-42.18,GBP,"Weekly shop
+for the house",,,,,-42.18,
+tx_syn_002,03/10/2026,02:15:00,Direct Debit,Home Cover Ltd,,Bills,-48.20,GBP,-48.20,GBP,,,,REF 100200300,,-48.20,
+tx_syn_900,04/10/2026,09:00:00,Card payment,Active card check,,General,0.00,GBP,0.00,GBP,,,,,,,
+tx_syn_003,05/10/2026,03:15:00,Card payment,Little Cafe,,Eating out,-3.40,GBP,-3.40,GBP,,,,,,-3.40,
+tx_syn_004,07/10/2026,04:15:00,Card payment,Cash machine,,Cash,-50.00,GBP,-50.00,GBP,,,,,,-50.00,
+tx_syn_005,12/10/2026,05:15:00,Direct Debit,City Water,,Bills,-31.15,GBP,-31.15,GBP,,,,REF 556677889,,-31.15,
+tx_syn_006,17/10/2026,06:15:00,Faster payment,Acme Payroll Ltd,,Income,1650.00,GBP,1650.00,GBP,,,,OCT WAGES,,,1650.00
+tx_syn_007,20/10/2026,07:15:00,Card payment,Northline Rail,,Transport,-28.90,GBP,-28.90,GBP,,,,,,-28.90,
+tx_syn_008,25/10/2026,08:15:00,Card payment,Harbour Pharmacy,,Shopping,6.15,GBP,6.15,GBP,,,,,,,6.15
+tx_syn_009,28/10/2026,09:15:00,Faster payment,Pat Example,,Transfers,-200.00,GBP,-200.00,GBP,,,,P EXAMPLE RENT SHARE,,-200.00,
