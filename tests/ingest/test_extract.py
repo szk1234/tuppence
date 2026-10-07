@@ -35,7 +35,7 @@ def test_screenshot_is_read_on_this_device(fixtures):
         "Mon 5 Oct   Little Cafe   -£3.40" in texts
         and "Wed 7 Oct   Acme Payroll Ltd   +£250.00" in texts
     )
-    assert doc.preamble_refs == [] and doc.ocr_pages == [1]
+    assert doc.preamble_refs == ["P1L1"] and doc.ocr_pages == [1]  # the title is withheld
 
 
 def test_page_limit_is_reported(fixtures):

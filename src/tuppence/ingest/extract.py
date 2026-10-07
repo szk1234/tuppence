@@ -175,7 +175,7 @@ def _image(
     else:
         result = clock.run(parse_image_rows, image_rows, str(path))
         rows, confidence = result.rows, result.ocr_confidence
-    doc = pages_document([rows], sha256=sha256, kind="image", preamble=False)
+    doc = pages_document([rows], sha256=sha256, kind="image")
     doc.pages, doc.ocr_pages, doc.ocr_confidence = 1, [1], confidence
     if confidence is not None and confidence < LOW_OCR_CONFIDENCE:
         doc.warnings.append(
