@@ -285,24 +285,56 @@ def test_a_second_hostname_on_the_same_client_is_refused(log, monkeypatch):
     assert reached == ["10.1.2.3", "10.1.2.3"]
 
 
-def test_a_localhost_server_on_ipv6_only_works_under_local_only(log):
-    try:
-        srv = HTTPServer(("::1", 0), Hello, bind_and_activate=False)
-        srv.address_family = socket.AF_INET6
-        srv.server_bind()
-        srv.server_activate()
-    except OSError:
-        pytest.skip("no IPv6 loopback")
-    srv.address_family = socket.AF_INET6
+class _HelloV6Only(HTTPServer):
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        super().server_bind()
+
+
+def _ipv6_only_server():
+    """A server on [::1]:P only, plus a bound but not listening socket holding 127.0.0.1:P.
+
+    Holding the IPv4 port means a connection to 127.0.0.1:P is refused, not answered by
+    another process on this machine.
+    """
+    for _ in range(20):
+        try:
+            srv = _HelloV6Only(("::1", 0), Hello)
+        except OSError:
+            pytest.skip("no IPv6 loopback")
+        v4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            v4.bind(("127.0.0.1", srv.server_port))
+        except OSError:  # that IPv4 port is taken; try another
+            v4.close()
+            srv.server_close()
+            continue
+        return srv, v4
+    pytest.fail("couldn't find a port that is free on both loopback addresses")
+
+
+@pytest.mark.parametrize("order", [["::1", "127.0.0.1"], ["127.0.0.1", "::1"]])
+def test_a_localhost_server_on_ipv6_only_works_under_local_only(log, monkeypatch, order):
+    srv, held_v4 = _ipv6_only_server()
+    port = srv.server_port
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    asked = []
+    monkeypatch.setattr(hosts, "_system_resolve", lambda h: asked.append(h) or list(order))
     try:
+        with pytest.raises(ConnectionRefusedError):  # the IPv4 address really refuses
+            socket.create_connection(("127.0.0.1", port), timeout=5).close()
         ctx = CallContext(purpose="llm", local=True)
         with make_client(ctx, privacy_log=log, local_only=lambda: True, timeout=5) as c:
-            r = c.get(f"http://localhost:{srv.server_port}/x")
+            r = c.get(f"http://localhost:{port}/x")
         assert r.status_code == 200
+        assert r.text == f"host=localhost:{port}"
+        assert asked == ["localhost"]
     finally:
         srv.shutdown()
         srv.server_close()
+        held_v4.close()
 
 
 def test_the_next_address_is_used_when_the_first_refuses(log, server, monkeypatch):

@@ -7,6 +7,7 @@ from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+import idna
 
 from tuppence.core.errors import InputError
 
@@ -75,6 +76,22 @@ PRESETS: dict[str, Preset] = {
 }
 
 
+def _check_host(url: httpx.URL) -> None:
+    """Put the host through the IDNA handling it will meet later; ValueError if it fails.
+
+    httpx decodes a host that starts with an A-label (`.host`, which the connection code
+    reads) and connects with the re-encoded form; the resolver IDNA-encodes that form again.
+    """
+    wire = url.raw_host.decode("ascii")
+    decoded = url.host
+    for label in wire.split("."):
+        if label.startswith("xn--"):
+            idna.decode(label)  # every A-label must decode, not only a leading one
+    if url.copy_with(host=decoded).raw_host != url.raw_host:
+        raise ValueError("the host doesn't survive an IDNA round trip")
+    wire.encode("idna")  # what socket.getaddrinfo does: empty or over-long labels fail
+
+
 def normalise_base_url(url: str, api_style: str) -> str:
     raw = url.strip()
     if len(raw) > 2048:
@@ -91,6 +108,10 @@ def normalise_base_url(url: str, api_style: str) -> str:
         ) from None
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise InputError("The base URL must start with http:// or https://")
+    try:
+        _check_host(httpx.URL(raw))
+    except (ValueError, httpx.InvalidURL):  # IDNAError and UnicodeError are ValueErrors
+        raise InputError("That address isn't valid.") from None
     if parts.username is not None or parts.password is not None or "@" in parts.netloc:
         raise InputError("Put credentials in the API key or header fields, not the address.")
     if parts.query:

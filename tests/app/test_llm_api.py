@@ -444,15 +444,20 @@ def test_bad_inputs_are_422_not_500(client, scripted):
     assert client.post("/api/llm/try", json={"task": "dancing", "prompt": "hi"}).status_code == 422
     assert client.post("/api/llm/try", json={"task": "coach", "prompt": ""}).status_code == 422
     conn2 = make_conn(client, preset="custom")
-    for bad in ("http://[::1", "http://host:99999999", "http://", "http://" + "a" * 3000):
+    bad_idna = ("http://xn--/", "http://api.xn--/v1", "http://xn--bcher-kva.my_box/")
+    too_long = "http://" + "a" * 3000
+    for bad in ("http://[::1", "http://host:99999999", "http://", too_long, *bad_idna):
         up = client.patch(
             f"/api/llm/connections/{conn2['id']}",
             json={"changes": {"base_url": bad}, "expected_version": 1},
         )
         assert up.status_code == 422, bad
-    for bad in ("http://[::1", "http://host:99999999"):
+    for bad in ("http://[::1", "http://host:99999999", *bad_idna):
         made = client.post("/api/llm/connections", json={"preset": "custom", "base_url": bad})
         assert made.status_code == 422, bad
+    for bad in bad_idna:
+        made = client.post("/api/llm/connections", json={"preset": "custom", "base_url": bad})
+        assert made.json()["detail"] == "That address isn't valid.", bad
     assert client.get("/api/usage?month=9999-12").status_code == 422
     assert client.get("/api/usage?month=0001-01").status_code == 422
     huge = client.patch(

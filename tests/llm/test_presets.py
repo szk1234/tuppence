@@ -36,3 +36,34 @@ def test_normalise_base_url(raw, style, expected):
 def test_rejects_bad_scheme():
     with pytest.raises(InputError):
         normalise_base_url("ftp://x", "openai")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "http://xn--/",  # an A-label with nothing after the prefix
+        "http://xn--zz-/v1",  # an A-label ending in a hyphen
+        "http://api.xn--/v1",  # malformed, but not the leading label
+        "http://xn--ls8h.la/",  # decodes to a code point IDNA 2008 disallows
+        "http://xn--bcher-kva.my_box/",  # httpx can't decode the host as a whole
+        "http://a..b/",  # an empty label: the resolver can't encode it
+        "http://" + "a" * 64 + ".example/",  # a label over 63 characters
+    ],
+)
+def test_malformed_host_labels_are_input_errors(raw):
+    with pytest.raises(InputError, match="That address isn't valid."):
+        normalise_base_url(raw, "openai")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("http://bücher.example:8080", "http://bücher.example:8080/v1"),
+        ("http://xn--bcher-kva.example", "http://xn--bcher-kva.example/v1"),
+        ("http://my_server:11434/v1", "http://my_server:11434/v1"),
+        ("http://localhost.:11434/v1", "http://localhost.:11434/v1"),
+        ("http://[::1]:8080/v1", "http://[::1]:8080/v1"),
+    ],
+)
+def test_well_formed_hosts_are_kept(raw, expected):
+    assert normalise_base_url(raw, "openai") == expected
