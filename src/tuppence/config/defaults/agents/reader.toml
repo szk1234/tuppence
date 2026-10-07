@@ -1,0 +1,16 @@
+name = "reader"
+description = "Reads statements: fixed importers first; the AI only for PDFs, scans, screenshots and unfamiliar CSV layouts."
+task = "read"
+triggers = ["statement_uploaded"]
+[budgets]
+max_llm_calls = 40
+max_tokens = 400000
+max_gbp = 0.40
+max_seconds = 900
+[limits]
+max_attempts_per_chunk = 3
+rows_per_chunk = 40
+parallel_chunks = 2
+max_pages = 50
+extract_timeout_seconds = 180
+extract_memory_mb = 2048

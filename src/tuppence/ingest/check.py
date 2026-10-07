@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
+from tuppence.core.money import MAX_PENCE
 from tuppence.ingest.models import (
     CheckLevel,
     Document,
@@ -63,8 +64,9 @@ def check_rows(
 ) -> list[str]:
     lines = _combine(all_lines, chunk)
     if level == "screenshot":
-        return _evidence_only(parsed.rows, lines)
-    errors = _coverage(parsed.rows, parsed.skipped, context_refs, data_refs)
+        return _too_large(parsed.rows) + _evidence_only(parsed.rows, lines)
+    errors = _too_large(parsed.rows)
+    errors.extend(_coverage(parsed.rows, parsed.skipped, context_refs, data_refs))
     period_errors = _period(parsed)
     errors.extend(_rows(parsed, lines, context_refs))
     errors.extend(_skipped(parsed.skipped))
@@ -133,6 +135,14 @@ def balance_verified(parsed: ParsedStatement, errors: Sequence[str], level: Chec
 
 
 # --- helpers -------------------------------------------------------------------------------
+
+
+def _too_large(rows: Sequence[ParsedRow]) -> list[str]:
+    return [
+        f"{row.ref}: amount {pounds(row.amount_pence)} is larger than any real transaction"
+        for row in rows
+        if abs(row.amount_pence) > MAX_PENCE
+    ]
 
 
 def _grouped(text: str) -> str:

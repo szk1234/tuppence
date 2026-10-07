@@ -298,3 +298,16 @@ def test_only_split_out_fee_rows_skip_the_plain_charge_sign_check():
     typed = check_document(d, statement(row("L2", 1, -500, "5.00", bank_type="fee")))
     assert "L2: sign mismatch (line shows 5.00, amount is -5.00)" in typed
     # Split-out fee rows ("L2#fee") are covered by test_one_line_may_give_two_rows.
+
+
+def test_an_absurd_amount_is_reported():
+    big = row("L2", 1, -100_000_000_001, "1,000,000,000.01")
+    d = doc("01/10/2026,Shop,1000000000.01,,0.00")
+    errors = check_rows(
+        d.lines,
+        all_lines=d.lines,
+        context_refs=d.header_refs,
+        data_refs=d.data_refs,
+        parsed=statement(big),
+    )
+    assert any("larger than any real transaction" in e for e in errors)

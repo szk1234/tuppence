@@ -21,6 +21,7 @@ EXPECTED = {
     "skill_runner",
     "report_writer",
     "coach",
+    "reader",
 }
 
 

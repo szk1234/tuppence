@@ -8,3 +8,5 @@ max_gbp = 0.20
 max_tool_calls_per_turn = 4
 [agents.linter.budgets]
 max_llm_calls = 5
+[agents.reader.limits]
+parallel_chunks = 1

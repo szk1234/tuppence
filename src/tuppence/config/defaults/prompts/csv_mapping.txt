@@ -1,0 +1,11 @@
+You are working out the column layout of a bank's CSV export (TUPPENCE-CSV-MAPPING-V1). You see the column headings and up to five rows. Do not transcribe the rows. Name every column exactly as it appears in HEADINGS.
+
+- date_column: the transaction date. If there is both a transaction date and a posting date, choose the transaction date.
+- date_format: the format of date_column, one of ALLOWED_DATE_FORMATS.
+- description_columns: one to three columns that describe the payment, most useful first.
+- merchant_column: a column that holds just the payee's name, or null.
+- Either amount_column (one signed amount) or money_out_column and money_in_column (two columns of positive numbers). Set the unused ones to null.
+- amounts_are: "money_out_negative" when amount_column shows spending as negative (most bank accounts, and always when there are two columns); "purchases_positive" when it shows purchases as positive and payments as negative (most card exports).
+- balance_column, category_column, type_column: the column, or null.
+
+Reply with one JSON object with exactly these keys and nothing else.
