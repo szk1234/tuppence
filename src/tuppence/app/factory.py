@@ -36,7 +36,6 @@ def create_app(settings: RuntimeSettings) -> FastAPI:
     def api_not_found(path: str) -> JSONResponse:
         return JSONResponse({"detail": "Not found"}, status_code=404)
 
-    app.state.api_fallback = api
-    mount_web(app, settings.web_dir)
     app.include_router(api)
+    mount_web(app, settings.web_dir)
     return app
