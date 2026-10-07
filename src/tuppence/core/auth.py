@@ -256,6 +256,15 @@ class LoginLimiter:
             )
         return None
 
+    def refund_attempt(self, key: str) -> None:
+        """Undo one begin_attempt charge (e.g. the server was too busy to check the password)."""
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE login_attempt SET failures = max(failures - 1, 0), locked_until = NULL"
+                " WHERE key = ? AND (locked_until IS NULL OR failures >= ?)",
+                [key, self.max_failures],
+            )
+
     def record_failure(self, key: str) -> None:
         now = utcnow()
         with self.db.transaction() as conn:

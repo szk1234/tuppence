@@ -17,7 +17,7 @@ from tuppence.app.deps import (
     set_session_cookie,
 )
 from tuppence.app.services import Services
-from tuppence.app.session_cookie import RENEW_KEY
+from tuppence.app.session_cookie import RENEW_KEY, clear_session_cookie
 from tuppence.core.auth import AuthBusy, SetupComplete, WeakPassword
 
 Svc = Annotated[Services, Depends(get_services)]
@@ -54,12 +54,12 @@ def _info(services: Services, token: str | None, request: Request | None = None)
     mode = services.runtime.mode
     needs_setup = mode == "server" and services.users.count() == 0
     session = services.sessions.get(token)
-    if session is not None and session.renewed and request is not None:
-        setattr(request.state, RENEW_KEY, token)
     if session is None or (session.kind == "launch" and mode == "server"):
         return SessionInfo(
             authenticated=False, mode=mode, needs_setup=needs_setup, user=None, csrf_token=None
         )
+    if session.renewed and request is not None:
+        setattr(request.state, RENEW_KEY, token)
     user = services.users.get(session.user_id) if session.user_id is not None else None
     return SessionInfo(
         authenticated=True,
@@ -138,6 +138,7 @@ def login(body: Credentials, request: Request, services: Svc) -> JSONResponse:
     try:
         user = services.users.authenticate(body.username, body.password)
     except AuthBusy:
+        services.limiter.refund_attempt(key)  # a busy server isn't the user's failed guess
         return _busy()
     if user is None:
         raise HTTPException(status_code=401, detail="Wrong username or password.")
@@ -149,5 +150,6 @@ def login(body: Credentials, request: Request, services: Svc) -> JSONResponse:
 def logout(request: Request, services: Svc) -> Response:
     services.sessions.delete(request.cookies.get(SESSION_COOKIE))
     response = Response(status_code=204)
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    clear_session_cookie(response)
+    setattr(request.state, RENEW_KEY, None)  # don't re-issue the token we just deleted
     return response

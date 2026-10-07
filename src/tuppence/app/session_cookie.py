@@ -28,6 +28,10 @@ def set_session_cookie(response: Response, token: str, *, secure: bool) -> None:
     response.set_cookie(**_cookie_kwargs(token, secure))
 
 
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+
+
 def session_cookie_header(token: str, *, secure: bool) -> bytes:
     probe = Response()
     set_session_cookie(probe, token, secure=secure)
@@ -55,6 +59,10 @@ class SessionCookieRefreshMiddleware:
             token = state.get(RENEW_KEY)
             if message["type"] == "http.response.start" and token:
                 headers = list(message.get("headers", []))
+                prefix = SESSION_COOKIE.encode() + b"="
+                if any(k.lower() == b"set-cookie" and v.startswith(prefix) for k, v in headers):
+                    await send(message)  # the route already set or cleared it
+                    return
                 headers.append((b"set-cookie", session_cookie_header(token, secure=self.secure)))
                 message["headers"] = headers
             await send(message)

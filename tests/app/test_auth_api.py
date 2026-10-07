@@ -328,3 +328,41 @@ def test_login_returns_503_when_hashing_is_saturated(make_app, monkeypatch):
     assert r.status_code == 503 and r.headers["retry-after"] == "5"
     assert r.json()["detail"] == "Tuppence is busy. Try again in a moment."
     assert time.monotonic() - start < 2
+
+
+def test_logout_on_stale_session_sets_exactly_one_clearing_cookie(make_app):
+    c, csrf = _signed_in(make_app)
+    _stale(c)
+    r = c.post("/api/auth/logout", headers={"X-CSRF-Token": csrf})
+    assert r.status_code == 204
+    cookies = [v for k, v in r.headers.multi_items() if k.lower() == "set-cookie"]
+    assert len(cookies) == 1
+    low = cookies[0].lower()
+    assert low.startswith("tuppence_session=") and "max-age=0" in low and "samesite=strict" in low
+
+
+def test_rejected_launch_session_gets_no_refreshed_cookie(make_app):
+    c, _ = _signed_in(make_app)
+    token, _s = c.app.state.services.sessions.create("launch")
+    with c.app.state.services.db.transaction() as conn:
+        conn.execute("UPDATE session SET last_seen_at = '2020-01-01T00:00:00Z'")
+    c.cookies.set("tuppence_session", token)
+    r = c.get("/api/auth/session")
+    assert r.json()["authenticated"] is False and "set-cookie" not in r.headers
+
+
+def test_busy_logins_do_not_count_towards_lockout(make_app, monkeypatch):
+    import threading
+
+    from tuppence.core import auth
+
+    c, _ = _signed_in(make_app)
+    c.cookies.clear()
+    real = auth._hash_slots
+    monkeypatch.setattr(auth, "_hash_slots", threading.BoundedSemaphore(0))
+    monkeypatch.setattr(auth, "HASH_WAIT_SECONDS", 0.01)
+    body = {"username": "alex", "password": "correct-horse-battery"}
+    for _ in range(6):
+        assert c.post("/api/auth/login", json=body).status_code == 503
+    monkeypatch.setattr(auth, "_hash_slots", real)
+    assert c.post("/api/auth/login", json=body).status_code == 200
