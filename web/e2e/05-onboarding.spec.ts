@@ -136,6 +136,12 @@ test.describe('onboarding wizard @fresh', () => {
     // What Continue saved (no explicit Add/Save press) is really stored.
     const accounts = await (await page.request.get('/api/accounts')).json()
     expect(accounts.accounts.map((a: { nickname: string }) => a.nickname).sort()).toEqual(['Barclaycard', 'Joint Monzo'])
+    type StoredAccount = { id: string; nickname: string; credit_limit: string | null; purchase_apr: number | null; promo_apr: number | null; promo_end: string | null }
+    const card = accounts.accounts.find((a: StoredAccount) => a.nickname === 'Barclaycard') as StoredAccount
+    expect(card).toMatchObject({ credit_limit: '2500.00', purchase_apr: 24.9, promo_apr: 0, promo_end: isoFromToday(180) })
+    const monzo = accounts.accounts.find((a: StoredAccount) => a.nickname === 'Joint Monzo') as StoredAccount
+    const income = await (await page.request.get('/api/income')).json()
+    expect(income.income).toEqual([expect.objectContaining({ name: 'Acme Payroll', account_id: monzo.id, needs_account: false })])
     const goals = await (await page.request.get('/api/goals')).json()
     expect(goals.goals.map((g: { name: string }) => g.name).sort()).toEqual(['Emergency fund', 'House deposit'])
     const hh = await (await page.request.get('/api/household/timeline?subject_type=household&subject_id=1')).json()
