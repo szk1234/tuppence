@@ -335,6 +335,8 @@ class Worker:
             if worked:
                 delay = self.poll_interval
                 continue
+            if self._stop.is_set():  # stop() may have notified before `seen` was read
+                break
             self.queue.wait_for_work(seen, delay)
             delay = min(delay * 2, self.max_idle_interval)
 
