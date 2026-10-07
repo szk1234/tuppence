@@ -6,9 +6,11 @@ from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 
 from tuppence import __version__
+from tuppence.app.errors import install_error_handlers
+from tuppence.app.routes import include_routers
 from tuppence.app.security import SecurityHeadersMiddleware
+from tuppence.app.services import build_services
 from tuppence.app.static import mount_web
-from tuppence.paths import DataPaths
 from tuppence.settings import RuntimeSettings
 
 
@@ -21,7 +23,10 @@ def create_app(settings: RuntimeSettings) -> FastAPI:
         openapi_url="/api/openapi.json",
     )
     app.state.settings = settings
-    app.state.paths = DataPaths(settings.data_dir).ensure()
+    services = build_services(settings)
+    app.state.services = services
+    app.state.paths = services.paths
+    install_error_handlers(app)
     app.add_middleware(SecurityHeadersMiddleware)
 
     @app.get("/health", include_in_schema=False)
@@ -36,6 +41,7 @@ def create_app(settings: RuntimeSettings) -> FastAPI:
     def api_not_found(path: str) -> JSONResponse:
         return JSONResponse({"detail": "Not found"}, status_code=404)
 
+    include_routers(app)
     app.include_router(api)
     mount_web(app, settings.web_dir)
     return app
