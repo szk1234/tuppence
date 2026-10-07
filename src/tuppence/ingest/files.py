@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import tempfile
 from pathlib import Path
 
 from tuppence.ingest.sniff import EXTENSIONS
@@ -28,11 +29,16 @@ class StatementFiles:
         path = self.path_for(sha, ext)
         if not path.exists():
             make_private_dir(self.root)
-            tmp = path.with_suffix(f".{ext}.part")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-            os.replace(tmp, path)
+            fd, name = tempfile.mkstemp(dir=self.root, suffix=".part")  # unique, 0600 on POSIX
+            tmp = Path(name)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, path)
+            finally:
+                tmp.unlink(missing_ok=True)
         return sha, path
 
     def delete(self, sha256: str, ext: str) -> None:
