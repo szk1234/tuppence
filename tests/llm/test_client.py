@@ -249,7 +249,7 @@ def test_value_error_is_not_retried_or_fallen_back(env, monkeypatch):
     ]
     services.router.set_task("coach", chain, local_only=False, expected_version=0)
     calls = []
-    real = services.connections.provider
+    real = services.connections._provider
 
     def provider(*args, **kwargs):
         p = real(*args, **kwargs)
@@ -261,7 +261,7 @@ def test_value_error_is_not_retried_or_fallen_back(env, monkeypatch):
         monkeypatch.setattr(p, "chat", chat)
         return p
 
-    monkeypatch.setattr(services.connections, "provider", provider)
+    monkeypatch.setattr(services.connections, "_provider", provider)
     with pytest.raises(ValueError, match="no message content"):
         services.llm.chat("coach", U)
     assert calls == ["m-big"]
@@ -489,13 +489,13 @@ def test_each_call_timeout_is_clamped_to_remaining_run_time(env, monkeypatch):
     )
     t[0] = 20.0
     seen = []
-    real = services.connections.provider
+    real = services.connections._provider
 
     def provider(*args, **kwargs):
         seen.append(kwargs["timeout"])
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(services.connections, "provider", provider)
+    monkeypatch.setattr(services.connections, "_provider", provider)
     services.llm.chat("coach", U, run=run)  # a local coach call would otherwise get 180 s
     assert seen == [30.0]
 
@@ -764,13 +764,13 @@ def test_local_only_decision_reaches_the_guard_for_a_local_connection(env, monke
     services, _ = env
     setup_local(services)
     seen = []
-    real = services.connections.provider
+    real = services.connections._provider
 
     def provider(*args, **kwargs):
         seen.append(kwargs["require_local"])
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(services.connections, "provider", provider)
+    monkeypatch.setattr(services.connections, "_provider", provider)
     services.settings.set("privacy.local_only", True, expected_version=0)
     services.llm.chat("coach", U)
     assert seen == [True]
@@ -834,14 +834,14 @@ def test_a_clamped_timeout_is_the_runs_limit_not_a_sick_server(env):
     def timeout(req):
         raise LLMTimeout("timed out")
 
-    real = services.connections.provider
+    real = services.connections._provider
 
     def provider(*args, **kwargs):
         p = real(*args, **kwargs)
         p.chat = timeout
         return p
 
-    services.connections.provider = provider
+    services.connections._provider = provider
     with pytest.raises(BudgetExceeded, match="time"):
         services.llm.chat("coach", U, run=run)
     assert services.breakers.failures == {}
@@ -894,3 +894,61 @@ def test_http_error_bodies_are_not_stored_or_returned(env):
         assert [r[0] for r in conn.execute("SELECT error FROM llm_usage")] == [
             "LLMHTTPError (HTTP 400)"
         ]
+
+
+def test_temperature_is_left_to_the_model(env):
+    """Reasoning models reject any temperature but their default, so none is sent."""
+    services, scripted = env
+    setup_local(services)
+    services.llm.chat("coach", U)
+    assert "temperature" not in sent_chats(scripted)[-1]
+
+
+def test_every_http_attempt_counts_towards_the_run_call_limit(env):
+    services, scripted = env
+    setup_local(services)
+    run = RunBudget(max_calls=2, max_tokens=10**6, max_gbp=1, max_seconds=60)
+    scripted.replies = [httpx.Response(503, json={})] * 5
+    with pytest.raises(BudgetExceeded, match="2 AI calls"):
+        services.llm.chat("coach", U, run=run)
+    assert len(sent_chats(scripted)) == 2 and run.calls == 2
+
+
+def test_a_successful_call_counts_once(env):
+    services, scripted = env
+    setup_local(services)
+    run = RunBudget(max_calls=5, max_tokens=10**6, max_gbp=1, max_seconds=60)
+    services.llm.chat("coach", U, run=run)
+    assert run.calls == 1 and run.tokens == 120
+
+
+def test_a_connection_changed_while_waiting_to_retry_is_skipped(env):
+    services, scripted = env
+    c = setup_local(services)
+
+    def edit_then_fail(req):
+        # The user edits the connection while Tuppence waits to retry.
+        current = services.connections.get(c.id)
+        services.connections.update(c.id, {"name": "Edited"}, expected_version=current.version)
+        return httpx.Response(503, json={})
+
+    scripted.replies = [edit_then_fail]
+    with pytest.raises(AllModelsFailed, match="changed"):
+        services.llm.chat("coach", U)
+    assert len(sent_chats(scripted)) == 1  # the retry was never sent
+
+
+def test_only_the_client_and_test_build_providers():
+    """Every other caller would skip pins, the notice, pseudonymising and budgets."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "src" / "tuppence"
+    callers = sorted(
+        p.relative_to(src).as_posix()
+        for p in src.rglob("*.py")
+        if "._provider(" in p.read_text(encoding="utf-8")
+    )
+    assert callers == ["llm/client.py", "llm/connections.py"]
+    from tuppence.llm.connections import ConnectionRegistry
+
+    assert not hasattr(ConnectionRegistry, "provider")

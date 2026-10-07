@@ -41,7 +41,9 @@ class ChatRequest(BaseModel):
     json_schema: dict[str, Any] | None = None
     schema_name: str = "result"
     max_tokens: int = 4096
-    temperature: float | None = 0.0
+    # None: the model's default. Reasoning models reject anything else, so it is sent only
+    # when a caller sets it (and never to Anthropic).
+    temperature: float | None = None
 
 
 class Usage(BaseModel):
@@ -127,6 +129,10 @@ class ContextTooLarge(UserFacing, LLMError):
 
 class NoModelConfigured(UserFacing, LLMError):
     pass
+
+
+class ConnectionChanged(UserFacing, LLMError):
+    """The connection was edited while a call was waiting to retry: that model is skipped."""
 
 
 class AllModelsFailed(UserFacing, LLMError):

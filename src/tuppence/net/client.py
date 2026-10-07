@@ -11,7 +11,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
 import httpcore
@@ -47,6 +47,9 @@ class CallContext:
     # Block any non-local host for this call whatever the global Local only setting is
     # (a task pinned to local models).
     require_local: bool = False
+    # Called for every request the guard lets through, just before it is sent (a run's
+    # call counter). It may raise to stop the request; nothing has been sent then.
+    before_send: Callable[[], None] | None = field(default=None, repr=False)
 
 
 def _wire_host(request: httpx.Request) -> str:
@@ -250,6 +253,8 @@ class GuardedTransport(httpx.BaseTransport):
             self._block(request, host, note, NotLocalAnyMore(host))
         if strict and not local:
             self._refuse_non_local(request, host)
+        if self.ctx.before_send is not None:
+            self.ctx.before_send()
         body = request.read()
         previous = getattr(_deadline, "at", None)
         if self.deadline_s is not None:

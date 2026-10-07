@@ -40,12 +40,17 @@ def test_run_budget_caps():
         max_calls=2, max_tokens=1000, max_gbp=0.10, max_seconds=30, monotonic=lambda: t[0]
     )
     b.check(400, 0.0)
+    b.start_call()
     b.record(400, 0.05)
     with pytest.raises(BudgetExceeded, match="tokens"):
         b.check(700, 0.0)
+    b.start_call()
     b.record(100, 0.06)
     with pytest.raises(BudgetExceeded, match="calls"):
         b.check(1, 0.0)
+    with pytest.raises(BudgetExceeded, match="2 AI calls"):
+        b.start_call()
+    assert b.calls == 2
     b2 = RunBudget(
         max_calls=10, max_tokens=10_000, max_gbp=1, max_seconds=30, monotonic=lambda: t[0]
     )

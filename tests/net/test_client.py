@@ -386,3 +386,46 @@ def test_metadata_names_are_refused_without_being_looked_up(log, monkeypatch):
     ):
         c.get("http://metadata.google.internal/computeMetadata/v1/")
     assert seen == []
+
+
+def test_before_send_runs_once_per_request_that_leaves(log):
+    calls = []
+    ctx = CallContext(purpose="llm", local=False, before_send=lambda: calls.append(1))
+    with make_client(
+        ctx, privacy_log=log, local_only=lambda: False, timeout=5, transport=ok_transport()
+    ) as c:
+        c.get("https://api.example.com/v1/models")
+        c.get("https://api.example.com/v1/models")
+    assert len(calls) == 2
+    blocked = CallContext(purpose="llm", local=False, before_send=lambda: calls.append(1))
+    with (
+        make_client(
+            blocked, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
+        ) as c,
+        pytest.raises(LocalOnlyBlocked),
+    ):
+        c.get("https://api.example.com/v1/models")
+    assert len(calls) == 2  # a refused request is not an attempt
+
+
+def test_before_send_can_stop_a_request_before_it_leaves(log):
+    class Stop(Exception):
+        pass
+
+    def stop():
+        raise Stop
+
+    sent = []
+    ctx = CallContext(purpose="llm", local=False, before_send=stop)
+    with (
+        make_client(
+            ctx,
+            privacy_log=log,
+            local_only=lambda: False,
+            timeout=5,
+            transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200)),
+        ) as c,
+        pytest.raises(Stop),
+    ):
+        c.get("https://api.example.com/v1/models")
+    assert sent == [] and log.list() == []

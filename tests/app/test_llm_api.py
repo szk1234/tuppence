@@ -543,3 +543,57 @@ def test_validation_errors_never_echo_what_was_sent(client):
     )
     assert r.status_code == 422 and "ZZZZ" not in r.text
     assert r.json()["detail"][0]["loc"][-1] == "api_key" and r.json()["detail"][0]["msg"]
+
+
+def test_try_runs_under_one_coach_turns_budget(client, scripted, monkeypatch):
+    ready(client, scripted)  # a cloud connection
+    services = client.app.state.services
+    runs = []
+    real = services.llm.chat
+
+    def spy(*a, **kw):
+        runs.append(kw.get("run"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(services.llm, "chat", spy)
+    assert client.post("/api/llm/try", json={"task": "read", "prompt": "hi"}).status_code == 200
+    [run] = runs
+    assert (run.max_calls, run.max_seconds, run.max_gbp, run.calls) == (9, 60, 0.25, 1)
+
+
+def test_try_with_only_local_models_gets_the_local_time_limit(client, scripted, monkeypatch):
+    conn = client.post(
+        "/api/llm/connections", json={"preset": "custom", "base_url": "http://127.0.0.1:9200/v1"}
+    ).json()
+    client.post(f"/api/llm/connections/{conn['id']}/test")
+    choose_simple(client, conn["id"])
+    services = client.app.state.services
+    runs = []
+    real = services.llm.chat
+    monkeypatch.setattr(
+        services.llm, "chat", lambda *a, **kw: runs.append(kw["run"]) or real(*a, **kw)
+    )
+    assert client.post("/api/llm/try", json={"prompt": "hi"}).status_code == 200
+    assert runs[0].max_seconds == 180
+
+
+def test_try_stops_at_the_run_call_limit_counting_retries(client, scripted):
+    services = client.app.state.services
+    services.llm.sleep = lambda s: None
+    a = ready(client, scripted)
+    b = make_conn(client, base_url="http://127.0.0.1:9101")
+    client.post(f"/api/llm/connections/{b['id']}/test")
+    client.post(f"/api/llm/connections/{b['id']}/acknowledge-notice")
+    chain = [
+        {"connection_id": c["id"], "model_id": m} for c in (a, b) for m in ("m-small", "m-big")
+    ]
+    client.patch("/api/settings/llm.mode", json={"value": "advanced", "expected_version": 0})
+    r = client.put(
+        "/api/llm/routing/tasks/coach",
+        json={"chain": chain, "local_only": False, "expected_version": 0},
+    )
+    assert r.status_code == 200
+    scripted.replies = [httpx.Response(503, json={})] * 20
+    r = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
+    assert r.status_code == 429 and "9 AI calls" in r.json()["detail"]
+    assert len([x for x in scripted.requests if "messages" in x]) == 9

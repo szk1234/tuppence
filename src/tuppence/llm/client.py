@@ -28,6 +28,7 @@ from tuppence.llm.types import (
     BudgetExceeded,
     ChatRequest,
     ChatResponse,
+    ConnectionChanged,
     ContextTooLarge,
     LLMError,
     LLMHTTPError,
@@ -133,7 +134,12 @@ class LLMClient:
         require_local: bool,
         run: RunBudget | None,
     ) -> ChatResponse:
-        """One model, with up to two retries; the run's time limit bounds every attempt."""
+        """One model, with up to two retries; the run's time limit bounds every attempt.
+
+        Each attempt rebuilds the provider from the snapshot's version: a connection edited
+        meanwhile raises ConnectionChanged rather than being used under old decisions. Every
+        HTTP request that leaves counts towards the run's call limit.
+        """
         attempt = 0
         while True:
             timeout = timeout_for(task, conn.is_local)
@@ -143,12 +149,14 @@ class LLMClient:
                 left = max(run.remaining_seconds(), 1.0)
                 clamped = left < timeout
                 timeout = min(timeout, left)
-            provider = self.connections.provider(
+            provider = self.connections._provider(  # noqa: SLF001 - the sanctioned caller
                 conn.id,
                 task=task,
                 redactions=redactions,
                 timeout=timeout,
                 require_local=require_local,
+                expected_version=conn.version,
+                before_send=run.start_call if run is not None else None,
             )
             try:
                 return provider.chat(req)
@@ -337,6 +345,8 @@ class LLMClient:
                 return safe_error_text(exc)
             except BudgetExceeded:
                 raise
+            except ConnectionChanged as exc:
+                return safe_error_text(exc)  # not the server's fault: no breaker, no ledger
             except LLMError as exc:
                 # Only a connection that looks unhealthy counts towards the breaker; a
                 # refusal or a malformed reply means the server answered.

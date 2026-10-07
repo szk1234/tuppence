@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from tuppence.app.deps import get_services, require_admin
 from tuppence.app.services import Services
 from tuppence.core.errors import safe_error_text
+from tuppence.llm.budget import RunBudget
 from tuppence.llm.connections import Connection, DetectedServer, ModelInfo, detect_local
 from tuppence.llm.presets import PRESETS
 from tuppence.llm.routing import RoutingView
@@ -178,10 +179,24 @@ def set_route(task: str, body: TaskRouteIn, services: Svc) -> RoutingView:
     return services.router.set_task(task, chain, body.local_only, body.expected_version)
 
 
+def _try_budget(services: Services, task: str) -> RunBudget:
+    """A test message gets one coach turn's limits: calls, tokens, £ and time (the coach's
+    longer local time limit when every model for the task is local)."""
+    coach = services.config.get("coach")
+    budgets = coach.budgets
+    if all(conn.is_local for conn, _ in services.router.chain_for(task)):
+        local_seconds = coach.limits.get("local_max_seconds", budgets.max_seconds)
+        budgets = budgets.model_copy(update={"max_seconds": float(local_seconds)})
+    return services.llm.new_run(budgets)
+
+
 @router.post("/try", dependencies=Admin)
 def try_model(body: TryIn, services: Svc) -> dict[str, Any]:
     result = services.llm.chat(
-        body.task, [Message(role="user", content=body.prompt)], max_tokens=512
+        body.task,
+        [Message(role="user", content=body.prompt)],
+        max_tokens=512,
+        run=_try_budget(services, body.task),
     )
     return {
         "text": result.text,

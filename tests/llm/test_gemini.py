@@ -451,3 +451,18 @@ def test_thought_signature_round_trips():
     )
     part = seen["body"]["contents"][1]["parts"][0]
     assert part["thoughtSignature"] == "SIG==" and part["functionCall"]["name"] == "f"
+
+
+def test_temperature_is_sent_only_when_asked_for():
+    bodies = []
+
+    def handler(req):
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "ok"}]}}]})
+
+    p = make(handler)
+    msgs = [Message(role="user", content="hi")]
+    p.chat(ChatRequest(model="gemini-3-pro", messages=msgs))
+    p.chat(ChatRequest(model="gemini-3-pro", messages=msgs, temperature=0.3))
+    assert "temperature" not in bodies[0]["generationConfig"]
+    assert bodies[1]["generationConfig"]["temperature"] == 0.3

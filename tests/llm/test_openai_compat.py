@@ -320,3 +320,17 @@ def test_retry_after_edges():
     assert parse_retry_after("inf") is None and parse_retry_after("nan") is None
     assert parse_retry_after("-5") is None and parse_retry_after("2") == 2.0
     assert parse_retry_after("Wed, 21 Oct 2099 07:28:00 -0000") is not None
+
+
+def test_temperature_is_sent_only_when_asked_for():
+    bodies = []
+
+    def handler(req):
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    p = make(handler)
+    msgs = [Message(role="user", content="hi")]
+    p.chat(ChatRequest(model="o4", messages=msgs))
+    p.chat(ChatRequest(model="o4", messages=msgs, temperature=0.2))
+    assert "temperature" not in bodies[0] and bodies[1]["temperature"] == 0.2

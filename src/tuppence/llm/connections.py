@@ -24,7 +24,7 @@ from tuppence.core.secrets import SecretError, SecretStore, SecretUnreadable
 from tuppence.llm.catalogue import CatalogueEntry, ModelCatalogue
 from tuppence.llm.presets import PRESETS, normalise_base_url
 from tuppence.llm.providers import build_provider
-from tuppence.llm.types import Provider, ProviderModel
+from tuppence.llm.types import ConnectionChanged, Provider, ProviderModel
 from tuppence.net.client import CallContext
 from tuppence.net.hosts import is_local_host
 
@@ -448,7 +448,7 @@ class ConnectionRegistry:
             )
         return self.get(connection_id)
 
-    def provider(
+    def _provider(
         self,
         connection_id: str,
         *,
@@ -456,8 +456,20 @@ class ConnectionRegistry:
         redactions: int = 0,
         timeout: float = 30.0,
         require_local: bool = False,
+        expected_version: int | None = None,
+        before_send: Callable[[], None] | None = None,
     ) -> Provider:
+        """A provider on a guarded client. Private on purpose: only `LLMClient` (which applies
+        pins, the cloud notice, pseudonymising and budgets) and `test()` may build one.
+
+        With `expected_version`, a connection edited since the caller's snapshot raises
+        ConnectionChanged instead of being used under the snapshot's decisions.
+        """
         row = self._row(connection_id)
+        if expected_version is not None and row["version"] != expected_version:
+            raise ConnectionChanged(
+                f"{row['name']} was changed while Tuppence was using it, so it was skipped."
+            )
         if PRESETS[row["preset"]].key_required and row["secret_ref"] is None:
             raise ApiKeyMissing(
                 f"An API key is needed for {row['name']}. Re-enter it in Settings \u2192 AI."
@@ -471,6 +483,7 @@ class ConnectionRegistry:
             local=bool(row["is_local"]),
             redactions=redactions,
             require_local=require_local,
+            before_send=before_send,
         )
         client = self.client_factory(ctx, timeout)
         preset = PRESETS[row["preset"]]
@@ -497,7 +510,7 @@ class ConnectionRegistry:
     def test(self, connection_id: str) -> list[ModelInfo]:
         row = self._refresh_locality(self._row(connection_id))
         local = bool(row["is_local"])
-        provider = self.provider(connection_id, timeout=20.0)
+        provider = self._provider(connection_id, timeout=20.0)
         try:
             listed = provider.list_models()
         finally:

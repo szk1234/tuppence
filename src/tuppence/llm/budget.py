@@ -100,8 +100,13 @@ class RunBudget:
         if reason:
             raise BudgetExceeded(reason)
 
-    def record(self, tokens: int, gbp: float | None) -> None:
+    def start_call(self) -> None:
+        """Count one HTTP attempt (failed and retried ones too), refusing one over the limit."""
+        self.check_limits()
         self.calls += 1
+
+    def record(self, tokens: int, gbp: float | None) -> None:
+        """Add an answered call's tokens and cost (its attempt was counted by start_call)."""
         self.tokens += tokens
         self.gbp += gbp or 0.0
 
