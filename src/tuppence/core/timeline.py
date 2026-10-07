@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.errors import InputError
+from tuppence.core.money import MAX_PENCE, parse_pounds
 from tuppence.core.postcode import normalise_district
 from tuppence.core.records import NotFound, VersionConflict
 
@@ -41,12 +42,15 @@ ALLOWED_ATTRIBUTES: dict[str, dict[str, TypeAdapter[Any]]] = {
         "housing_tenure": TypeAdapter(
             Literal["renting", "mortgage", "owned", "living_with_family"]
         ),
-        "housing_monthly_pence": TypeAdapter(Annotated[int, Field(ge=0)]),
+        "housing_monthly_pence": TypeAdapter(Annotated[int, Field(ge=0, le=MAX_PENCE)]),
         "bedrooms": TypeAdapter(Annotated[int, Field(ge=0, le=20)]),
         "council_tax_band": TypeAdapter(Literal["A", "B", "C", "D", "E", "F", "G", "H", "I"]),
     },
 }
 
+
+# Money attributes: sent as pounds strings, stored as integer pence (never a bare number).
+POUNDS_ATTRIBUTES = frozenset({"housing_monthly_pence"})
 
 HOUSEHOLD_ID = "1"
 # Household attributes whose current value the household row caches (column names).
@@ -69,6 +73,11 @@ def _validate(subject_type: str, attribute: str, value: Any) -> Any:
     adapters = ALLOWED_ATTRIBUTES.get(subject_type, {})
     if attribute not in adapters:
         raise InputError(f"'{attribute}' can't be recorded for a {subject_type}.")
+    if attribute in POUNDS_ATTRIBUTES:
+        # Callers send pounds ("1450.00"); the timeline stores integer pence.
+        if not isinstance(value, str):
+            raise InputError("Enter an amount like 1450 or 1,450.50.")
+        value = parse_pounds(value)
     try:
         clean = adapters[attribute].validate_python(value)
     except ValidationError as exc:
@@ -163,8 +172,8 @@ def record_household_change(
 def sync_household_row(conn: sqlite3.Connection, today: date, *, now: str) -> None:
     """Make the household row's nation/district match the timeline as of `today`.
 
-    An attribute with no timeline history up to today is left as it is (a future-dated entry
-    alone doesn't change the current value). A change bumps the row's version, so a tab holding
+    An attribute with no value today (no history, only future entries, or every entry deleted)
+    becomes NULL. A change bumps the row's version, so a tab holding
     the old version gets a 409 instead of overwriting.
     """
     conn.execute(
@@ -174,14 +183,7 @@ def sync_household_row(conn: sqlite3.Connection, today: date, *, now: str) -> No
     day = today.isoformat()
     changes: dict[str, Any] = {}
     for attribute in HOUSEHOLD_ROW_FIELDS:
-        key = ["household", HOUSEHOLD_ID, attribute]
-        started = conn.execute(
-            f"SELECT 1 FROM profile_entry WHERE {_KEY} AND valid_from <= ? LIMIT 1",  # noqa: S608
-            [*key, day],
-        ).fetchone()
-        if started is None:
-            continue
-        value = _value_on(conn, key, day)
+        value = _value_on(conn, ["household", HOUSEHOLD_ID, attribute], day)
         if row[attribute] != value:
             changes[attribute] = value
     if changes:
@@ -267,7 +269,7 @@ class Timeline:
                 raise VersionConflict("profile_entry", entry_id, expected_version, row["version"])
             conn.execute("DELETE FROM profile_entry WHERE id = ?", [entry_id])
             conn.execute(
-                "UPDATE profile_entry SET valid_to = ?, version = version + 1"
+                "UPDATE profile_entry SET valid_to = ?"
                 " WHERE subject_type=? AND subject_id=? AND attribute=? AND valid_to = ?",
                 [
                     row["valid_to"],

@@ -168,3 +168,31 @@ def test_timeline_expected_current_conflict_and_versioned_delete(client):
     assert gone.status_code == 204
     entries = client.get("/api/household/timeline", params=base | {}).json()["entries"]
     assert [e["value"] for e in entries] == [2] and entries[0]["valid_to"] is None
+
+
+def test_deleting_only_district_entry_nulls_household(client):
+    base = {"subject_type": "household", "subject_id": "1", "attribute": "postcode_district"}
+    e = client.post(
+        "/api/household/timeline", json={**base, "value": "LS6", "valid_from": "2020-01-01"}
+    ).json()
+    assert client.get("/api/household").json()["postcode_district"] == "LS6"
+    r = client.delete(
+        f"/api/household/timeline/{e['id']}", params={"expected_version": e["version"]}
+    )
+    assert r.status_code == 204
+    assert client.get("/api/household").json()["postcode_district"] is None
+
+
+def test_money_timeline_attribute_takes_pounds_and_overflow_is_422(client):
+    base = {
+        "subject_type": "household",
+        "subject_id": "1",
+        "attribute": "housing_monthly_pence",
+        "valid_from": "2025-01-01",
+    }
+    ok = client.post("/api/household/timeline", json={**base, "value": "1450.00"})
+    assert ok.status_code == 201 and ok.json()["value"] == 145000
+    for bad in ["99999999999999999999999.99", 1450, 1e300]:
+        assert (
+            client.post("/api/household/timeline", json={**base, "value": bad}).status_code == 422
+        )

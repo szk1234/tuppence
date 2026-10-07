@@ -95,12 +95,15 @@ def test_subject_must_exist(tl):
 def test_home_attributes_validated(tl):
     tl.set("household", "1", "housing_tenure", "renting", date(2025, 1, 1))
     tl.set("household", "1", "council_tax_band", "D", date(2025, 1, 1))
-    tl.set("household", "1", "housing_monthly_pence", 95000, date(2025, 1, 1))
+    tl.set("household", "1", "housing_monthly_pence", "950.00", date(2025, 1, 1))
+    assert tl.value_as_of("household", "1", "housing_monthly_pence", date(2025, 1, 1)) == 95000
     for attribute, bad in [
         ("housing_tenure", "squatting"),
         ("council_tax_band", "Z"),
         ("bedrooms", 21),
         ("housing_monthly_pence", -1),
+        ("housing_monthly_pence", 95000),
+        ("housing_monthly_pence", "99999999999999"),
     ]:
         with pytest.raises(InputError):
             tl.set("household", "1", attribute, bad, date(2025, 1, 1))
@@ -139,3 +142,30 @@ def test_history_is_chronological(tl):
     tl.set("household", "1", "bedrooms", 1, date(2025, 1, 1))
     hist = tl.history("household", "1")
     assert [h.valid_from for h in hist] == sorted(h.valid_from for h in hist)
+
+
+def _row(tl):
+    with tl.db.connection() as c:
+        return c.execute("SELECT nation, postcode_district FROM household WHERE id = 1").fetchone()
+
+
+def test_deleting_only_entry_clears_household_row(tl):
+    e = tl.set("household", "1", "postcode_district", "LS6", date(2020, 1, 1))
+    assert _row(tl)["postcode_district"] == "LS6"
+    tl.delete(e.id, e.version)
+    assert _row(tl)["postcode_district"] is None
+
+
+def test_deleting_earlier_entry_keeps_later_value(tl):
+    first = tl.set("household", "1", "nation", "england", date(2020, 1, 1))
+    tl.set("household", "1", "nation", "wales", date(2021, 1, 1))
+    tl.delete(first.id, first.version)
+    assert _row(tl)["nation"] == "wales"
+
+
+def test_neighbour_version_unchanged_by_write_or_delete(tl):
+    a = tl.set("household", "1", "bedrooms", 2, date(2024, 1, 1))
+    b = tl.set("household", "1", "bedrooms", 3, date(2025, 1, 1))
+    assert tl.history("household", "1", "bedrooms")[0].version == a.version
+    tl.delete(b.id, b.version)
+    assert tl.history("household", "1", "bedrooms")[0].version == a.version

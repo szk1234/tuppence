@@ -108,3 +108,21 @@ def test_refuses_data_from_a_newer_version(tmp_path):
     with pytest.raises(mig.MigrationError, match="newer version of Tuppence"):
         mig.migrate(db, tmp_path / "backups")
     assert not any((tmp_path / "backups").glob("*.db"))
+
+
+def test_0007_database_with_data_upgrades_to_0008(tmp_path, monkeypatch):
+    db = Database(tmp_path / "t.db")
+    upto = [m for m in mig.available_migrations() if m[0] < "0008"]
+    monkeypatch.setattr(mig, "available_migrations", lambda: upto)
+    mig.migrate(db, tmp_path / "b")
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO profile_entry (subject_type, subject_id, attribute, value, valid_from,"
+            " created_at) VALUES ('household', '1', 'nation', '\"england\"', '2020-01-01', 'x')"
+        )
+    monkeypatch.undo()
+    assert mig.migrate(db, tmp_path / "b") == ["0008_finance_profile"]
+    with db.connection() as conn:
+        row = conn.execute("SELECT value, version FROM profile_entry").fetchone()
+        assert (row["value"], row["version"]) == ('"england"', 1)
+        assert conn.execute("SELECT count(*) FROM account").fetchone()[0] == 0

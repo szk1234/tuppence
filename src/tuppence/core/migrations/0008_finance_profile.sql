@@ -86,3 +86,9 @@ CREATE TABLE onboarding_step (
 
 -- Timeline entries are user-owned rows: they carry a version for conflict checks.
 ALTER TABLE profile_entry ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+
+CREATE INDEX ix_account_owner_person ON account_owner (person_id);
+CREATE INDEX ix_income_source_person ON income_source (person_id);
+CREATE INDEX ix_income_source_account ON income_source (account_id);
+CREATE INDEX ix_debt_person ON debt (person_id);
+CREATE INDEX ix_debt_entry_debt ON debt_entry (debt_id, date);
