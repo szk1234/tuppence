@@ -232,7 +232,8 @@ def parse_document(
         parsed.opening_balance_pence = local.opening
     if local.closing is not None:
         parsed.closing_balance_pence = local.closing
-    repair = repair_signs(doc, parsed, opening=parsed.opening_balance_pence, level=level)
+    # Directions are proved from balances read on this device only, never the model's.
+    repair = repair_signs(doc, parsed, opening=local.opening, closing=local.closing, level=level)
     whole_file = check_rows(
         doc.lines,
         all_lines=doc.lines,

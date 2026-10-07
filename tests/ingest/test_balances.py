@@ -2,6 +2,7 @@ import pytest
 
 from ingest.statements import HEAD, TABLE
 from tuppence.ingest.balances import local_balances, repair_signs
+from tuppence.ingest.check import check_statement
 from tuppence.ingest.models import ParsedRow, ParsedStatement, SkippedLine
 from tuppence.ingest.textprep import pages_document
 
@@ -118,3 +119,75 @@ def test_an_unprovable_first_row_is_reported():
     result = repair_signs(doc, parsed, opening=None, level="full")
     assert result.repaired == [] and "can't tell whether" in result.errors[0]
     assert repair_signs(doc, parsed, opening=None, level="screenshot").errors == []
+
+
+def day_end_doc(*rows):
+    return pages_document([[TABLE, *rows]], sha256="x", kind="pdf")
+
+
+def test_the_models_sign_is_never_carried_across_a_row_without_a_balance():
+    # N1: the balance is printed once a day. The model has TO SAVINGS the wrong way round and
+    # FROM SAVINGS right; carrying its sign forward would "repair" the right row.
+    doc = day_end_doc(
+        "01/10/2026 TO SAVINGS 50.00",
+        "01/10/2026 FROM SAVINGS 50.00 1,000.00",
+        "02/10/2026 SHOP 10.00 990.00",
+    )
+    parsed = statement(
+        row("P1L2", 5000, "50.00", None),
+        row("P1L3", 5000, "50.00", 100000),
+        row("P1L4", -1000, "10.00", 99000),
+    )
+    result = repair_signs(doc, parsed, opening=100000, level="full")
+    assert result.repaired == []
+    assert [r.amount_pence for r in parsed.rows] == [5000, 5000, -1000]
+    assert any("can't tell whether" in e and "P1L2" in e and "P1L3" in e for e in result.errors)
+
+
+def test_rows_that_add_up_only_one_way_are_proved_by_a_later_balance():
+    doc = day_end_doc("01/10/2026 SHOP 42.18", "01/10/2026 CAFE 3.40 954.42")
+    parsed = statement(row("P1L2", -4218, "42.18", None), row("P1L3", -340, "3.40", 95442))
+    result = repair_signs(doc, parsed, opening=100000, level="full")
+    assert (result.repaired, result.errors) == ([], [])
+
+
+def test_a_wrong_sign_between_balances_that_are_not_adjacent_is_left_to_check():
+    doc = day_end_doc("01/10/2026 SHOP 42.18", "01/10/2026 CAFE 3.40 954.42")
+    parsed = statement(row("P1L2", 4218, "42.18", None), row("P1L3", -340, "3.40", 95442))
+    result = repair_signs(doc, parsed, opening=100000, level="full")
+    assert result.repaired == [] and parsed.rows[0].amount_pence == 4218
+    parsed.opening_balance_pence = 100000
+    assert any("running balance mismatch" in e for e in check_statement(parsed))
+
+
+def test_rows_after_the_last_balance_are_settled_by_the_closing_balance():
+    doc = day_end_doc("01/10/2026 SHOP 10.00 990.00", "02/10/2026 CAFE 5.00")
+    parsed = statement(row("P1L2", -1000, "10.00", 99000), row("P1L3", -500, "5.00", None))
+    assert repair_signs(doc, parsed, opening=100000, closing=98500, level="full").errors == []
+    unsure = repair_signs(doc, parsed, opening=100000, closing=None, level="full")
+    assert any("can't tell whether" in e and "P1L3" in e for e in unsure.errors)
+
+
+def test_a_statement_without_running_balances_is_settled_from_opening_to_closing():
+    lines = [f"0{i}/10/2026 SHOP {i} {i}.00" for i in range(1, 4)]
+    doc = day_end_doc(*lines)
+    parsed = statement(*(row(f"P1L{i + 1}", -100 * i, f"{i}.00", None) for i in range(1, 4)))
+    # -1 -2 -3 = -6 is the only way to get there (1+2-3 = 0, ...)
+    assert repair_signs(doc, parsed, opening=1000, closing=400, level="full").errors == []
+    # 0 can be reached as +1 +2 -3 or -1 -2 +3: which rows went out can't be told
+    assert repair_signs(doc, parsed, opening=1000, closing=1000, level="full").errors
+
+
+def test_too_many_rows_between_balances_are_reported_not_guessed():
+    lines = [f"01/10/2026 SHOP {i} 1.00" for i in range(20)]
+    doc = day_end_doc(*lines)
+    parsed = statement(*(row(f"P1L{i + 2}", -100, "1.00", None) for i in range(20)))
+    result = repair_signs(doc, parsed, opening=10000, closing=8000, level="full")
+    assert result.errors and "can't tell whether" in result.errors[0]
+    assert len(result.errors[0]) < 200  # the refs are summarised
+
+
+def test_a_signed_row_needs_no_proof():
+    doc = day_end_doc("01/10/2026 SHOP -10.00", "02/10/2026 CAFE -5.00")
+    parsed = statement(row("P1L2", -1000, "-10.00", None), row("P1L3", -500, "-5.00", None))
+    assert repair_signs(doc, parsed, opening=None, level="full").errors == []

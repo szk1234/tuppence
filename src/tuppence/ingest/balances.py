@@ -3,9 +3,9 @@
 The summary box of a statement ("Opening balance on 01/10/2026 £1,000.00", "Closing balance
 £1,857.82") is withheld from the AI reader, so its figures are read here with the same money
 rules as the rest of the ingest package. A figure is used only when it is unambiguous: one
-label, one amount, nothing else between them. The same balances let `repair_signs` settle a
-row's direction deterministically: when a row prints a running balance and the balance before it
-is known, the difference says whether money came in or went out.
+label, one amount, nothing else between them. The same balances let `repair_signs` prove a
+row's direction: when the balances printed either side of some rows are known, only certain
+directions add up. A direction that can't be proved is reported, never guessed.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ _MONEY = re.compile(
 )
 _FILLER = re.compile(r"^(?:\s|:|\.|-|\(|\)|on|at|as|is|of|date)*$", re.IGNORECASE)
 _MARKER = re.compile(r"\b(CR|DR)\b", re.IGNORECASE)
-_BROUGHT_FORWARD = re.compile(r"brought\s+forward", re.IGNORECASE)
+_CARRIED = re.compile(r"(?:brought|carried)\s+forward", re.IGNORECASE)
 _OUT_LABELS = ("Paid out", "Money out", "Withdrawals", "Withdrawal", "Debits", "Debit")
 _IN_LABELS = ("Paid in", "Money in", "Deposits", "Deposit", "Credits", "Credit")
 _PAGE = re.compile(r"P(\d+)L\d+")
@@ -139,9 +139,10 @@ def _label_for(positive: bool, row: ParsedRow, lines: Sequence[Line]) -> str | N
 
 
 def _carried(doc: Document, ref: str) -> int | None:
-    """A skipped 'balance brought forward' line's figure: the balance before the next row."""
+    """A skipped 'balance brought (or carried) forward' line's figure: the balance at that
+    point, read on this device."""
     line = doc.by_ref().get(ref)
-    if line is None or not _BROUGHT_FORWARD.search(line.text):
+    if line is None or not _CARRIED.search(line.text):
         return None
     plain = _DATE.sub(" ", line.text)
     figures = _MONEY.findall(plain)
@@ -154,16 +155,31 @@ class SignRepair:
     errors: list[str]
 
 
-def repair_signs(
-    doc: Document, parsed: ParsedStatement, *, opening: int | None, level: CheckLevel
-) -> SignRepair:
-    """Settle the direction of unsigned amounts from the running balance.
+MAX_UNSIGNED = 16  # rows between two printed balances that can still be settled exactly
 
-    A row whose printed amount carries no sign, and whose balance is printed, moved the balance
-    from the one before it: the difference gives the direction. Rows are in file order, so the
-    balance before the first row is the opening balance (or a skipped 'balance brought
-    forward' line), and before any other row the balance printed on the row above. Rows are
-    changed in place. A first row whose direction can't be proved is reported.
+
+def repair_signs(
+    doc: Document,
+    parsed: ParsedStatement,
+    *,
+    opening: int | None,
+    closing: int | None = None,
+    level: CheckLevel,
+) -> SignRepair:
+    """Prove the direction of amounts printed without a sign, from printed balances.
+
+    `opening` and `closing` must be read on this device (never the model's values). Rows are
+    taken in file order and grouped up to each printed balance (a row's running balance, or a
+    skipped 'brought/carried forward' line); the opening balance starts the first group and
+    the closing balance ends the last. For each group whose unsigned amounts have a direction
+    to prove:
+    - with no balance known before or after it, the direction can't be proved: reported;
+    - a single row between two known balances takes its direction from the difference, and
+      is repaired if the model read it the other way;
+    - several rows are proved only when exactly one choice of directions adds up; when more
+      than one does, they are reported. A unique answer the model got wrong is left for
+      Check, which reports the balance that doesn't add up.
+    Rows are changed in place.
     """
     result = SignRepair([], [])
     if level == "screenshot" or parsed.perspective == "card":
@@ -172,33 +188,84 @@ def repair_signs(
     by_base: dict[str, list[ParsedRow]] = {}
     for row in parsed.rows:
         by_base.setdefault(row.ref.split("#", 1)[0], []).append(row)
-    previous = opening
+    start = opening
+    group: list[ParsedRow] = []
     for ref in doc.data_refs:
         if ref in skipped and (figure := _carried(doc, ref)) is not None:
-            previous = figure
+            if group:
+                _settle(doc, group, start, figure, result)
+            start, group = figure, []
             continue
         for row in by_base.get(ref, []):
-            previous = _settle(doc, row, previous, result)
+            group.append(row)
+            if row.balance_after_pence is not None:
+                _settle(doc, group, start, row.balance_after_pence, result)
+                start, group = row.balance_after_pence, []
+    if group:
+        _settle(doc, group, start, closing, result)
     return result
 
 
-def _settle(doc: Document, row: ParsedRow, previous: int | None, result: SignRepair) -> int | None:
-    if row.edited:
-        return row.balance_after_pence
-    after = row.balance_after_pence
+def _unsigned(row: ParsedRow) -> bool:
+    return not row.edited and row.amount_pence != 0 and not _has_printed_sign(row.amount_text)
+
+
+def _named(rows: Sequence[ParsedRow]) -> str:
+    refs = [row.ref for row in rows]
+    return ", ".join(refs) if len(refs) <= 3 else f"{refs[0]}, {refs[1]} and {len(refs) - 2} more"
+
+
+def _cant_tell(rows: Sequence[ParsedRow], why: str) -> str:
+    these = "this is" if len(rows) == 1 else "these are"
+    return f"{_named(rows)}: can't tell whether {these} money in or out, because {why}"
+
+
+def _ways(sizes: Sequence[int], target: int) -> int:
+    """How many choices of sign for `sizes` add up to `target` (within a penny): 0, 1, or 2
+    meaning more than one."""
+    ways: dict[int, int] = {0: 1}
+    for size in sizes:
+        following: dict[int, int] = {}
+        for total, count in ways.items():
+            for value in (total + size, total - size):
+                following[value] = min(2, following.get(value, 0) + count)
+        ways = following
+    return min(2, sum(ways.get(target + d, 0) for d in (-1, 0, 1)))
+
+
+def _settle(
+    doc: Document,
+    rows: list[ParsedRow],
+    before: int | None,
+    after: int | None,
+    result: SignRepair,
+) -> None:
+    unsigned = [row for row in rows if _unsigned(row)]
+    if not unsigned:
+        return
+    it = "it" if len(unsigned) == 1 else "them"
+    if before is None:
+        result.errors.append(
+            _cant_tell(unsigned, f"the balance before {it} isn't printed or couldn't be read")
+        )
+        return
     if after is None:
-        return None if previous is None else previous + row.amount_pence
-    unsigned = not _has_printed_sign(row.amount_text)
-    if previous is None:
-        if unsigned:
-            result.errors.append(
-                f"{row.ref}: can't tell whether this is money in or out, because the balance "
-                "before it isn't printed or couldn't be read"
-            )
-        return after
-    delta = after - previous
-    if unsigned and delta != row.amount_pence and abs(delta) == abs(row.amount_pence):
-        row.amount_pence = delta
-        row.sign_from = _label_for(delta > 0, row, doc.lines)
-        result.repaired.append(row.ref)
-    return after
+        result.errors.append(_cant_tell(unsigned, f"no balance is printed after {it}"))
+        return
+    fixed = sum(row.amount_pence for row in rows if not _unsigned(row))
+    target = after - before - fixed
+    if len(rows) == 1:  # between two printed balances: the difference is the amount
+        row = rows[0]
+        if target != row.amount_pence and abs(target) == abs(row.amount_pence):
+            row.amount_pence = target
+            row.sign_from = _label_for(target > 0, row, doc.lines)
+            result.repaired.append(row.ref)
+        return
+    if len(unsigned) > MAX_UNSIGNED:
+        result.errors.append(
+            _cant_tell(unsigned, "too many rows share one printed balance to work it out")
+        )
+    elif _ways([abs(row.amount_pence) for row in unsigned], target) > 1:
+        result.errors.append(
+            _cant_tell(unsigned, f"the balance after {it} adds up more than one way")
+        )

@@ -132,3 +132,62 @@ def test_a_card_balance_with_cr_is_a_credit(ingest_env):
     assert (out.parsed.opening_balance_pence, out.parsed.closing_balance_pence) == (-10000, -8000)
     assert [r.amount_pence for r in out.parsed.rows] == [-3000, 9000, -8000]
     assert out.errors == []
+
+
+def scripted_rows(*rows):
+    from ingest.replies import reply
+
+    return reply(list(rows), [{"ref": "D1", "reason": "column headings"}])
+
+
+def model_row(ref, amount, text, running, sign_from, date="2026-10-01"):
+    from ingest.replies import row
+
+    out = row(ref, text, sign_from, amount, running)
+    return {**out, "date": date}
+
+
+def test_a_day_end_balance_never_turns_a_caught_error_into_a_silent_one(ingest_env):
+    # N1 end to end: before, the repair flipped FROM SAVINGS and the statement passed.
+    services, scripted = ingest_env
+    page = [
+        *HEAD,
+        "Opening balance 1,000.00",
+        "Closing balance 990.00",
+        TABLE,
+        "01/10/2026 TO SAVINGS 50.00",
+        "01/10/2026 FROM SAVINGS 50.00 1,000.00",
+        "02/10/2026 SHOP 10.00 990.00",
+    ]
+    rows = [
+        model_row("D2", 50.0, "50.00", None, "Paid in"),
+        model_row("D3", 50.0, "50.00", 1000.0, "Paid in"),
+        model_row("D4", -10.0, "10.00", 990.0, "Paid out", "2026-10-02"),
+    ]
+    scripted.replies = [{"content": scripted_rows(*rows)}] * 3
+    out, _ = parse_pages(services, [page])
+    assert out.info["signs_repaired"] == []
+    assert rows_of(out)[1] == ("x", 5000)  # the right row is left as the model read it
+    assert any("can't tell whether" in e for e in out.errors)
+
+
+def test_the_models_opening_balance_never_proves_a_first_row(ingest_env):
+    # N2: no summary box; the model's opening agrees with its own wrong first-row sign.
+    services, scripted = ingest_env
+    page = [
+        *HEAD,
+        TABLE,
+        "01/10/2026 ACME PAYROLL LTD 900.00 1,900.00",
+        "03/10/2026 GREENBASKET STORES 42.18 1,857.82",
+    ]
+    body = json.loads(
+        scripted_rows(
+            model_row("D2", -900.0, "900.00", 1900.0, "Paid out"),
+            model_row("D3", -42.18, "42.18", 1857.82, "Paid out", "2026-10-03"),
+        )
+    )
+    body["statement"]["opening_balance"] = 2800.0
+    scripted.replies = [{"content": json.dumps(body)}] * 3
+    out, _ = parse_pages(services, [page])
+    assert out.parsed.opening_balance_pence == 280000  # kept only as Check's fallback
+    assert any("can't tell whether" in e for e in out.errors)
