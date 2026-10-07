@@ -226,6 +226,8 @@ class GuardedTransport(httpx.BaseTransport):
         raise exc
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        # The clock starts now, so time spent resolving the name counts against the limit.
+        deadline = None if self.deadline_s is None else time.monotonic() + self.deadline_s
         host = _wire_host(request)
         origin = (request.url.scheme, host, request.url.port)
         if self._bound is None:
@@ -257,8 +259,8 @@ class GuardedTransport(httpx.BaseTransport):
             self.ctx.before_send()
         body = request.read()
         previous = getattr(_deadline, "at", None)
-        if self.deadline_s is not None:
-            _deadline.at = time.monotonic() + self.deadline_s
+        if deadline is not None:
+            _deadline.at = deadline
         try:
             response = self._send(request, host, addresses, literal)
             response.read()

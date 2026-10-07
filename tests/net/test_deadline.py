@@ -130,3 +130,22 @@ def test_each_request_gets_its_own_deadline(log):
             client.get("http://127.0.0.1:9/v1/models")
             time.sleep(0.2)
     assert len(hits) == 3
+
+
+def test_time_spent_resolving_the_name_counts_against_the_limit(log, monkeypatch):
+    from tuppence.net import hosts
+
+    sock, port = drip_server(padded_reply(30), delay=0.05)
+
+    def slow_resolve(host):
+        time.sleep(0.8)
+        return ["127.0.0.1"]
+
+    monkeypatch.setattr(hosts, "_system_resolve", slow_resolve)
+    try:
+        start = time.monotonic()
+        with client_for(log, 1.0) as client, pytest.raises(httpx.ReadTimeout):
+            client.get(f"http://box.lan:{port}/v1/models")
+        assert time.monotonic() - start < 1.6
+    finally:
+        sock.close()
