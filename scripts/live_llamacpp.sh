@@ -23,10 +23,15 @@ cleanup() {
 trap cleanup EXIT
 docker run -d --name "$NAME" -p "127.0.0.1:$PORT:8080" -v "$MODELS_DIR:/models:ro" "$IMAGE" \
   -m "/models/$MODEL_FILE" -c 4096 --host 0.0.0.0 --port 8080 >/dev/null
+healthy=0
 for _ in $(seq 1 120); do
-  if curl -fsS "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then break; fi
+  if curl -fsS "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then healthy=1; break; fi
   sleep 1
 done
+if [ "$healthy" -ne 1 ]; then
+  echo "llama.cpp server didn't answer on port $PORT within 120 s; not running the live tests." >&2
+  exit 1
+fi
 MODEL_ID="$(curl -fsS "http://127.0.0.1:$PORT/v1/models" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')"
 TUPPENCE_LIVE_LOCAL_BASE="http://127.0.0.1:$PORT/v1" TUPPENCE_LIVE_LOCAL_MODEL="$MODEL_ID" \
   uv run pytest -m live tests/live -k local -q

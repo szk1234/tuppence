@@ -85,6 +85,16 @@ test('connect a cloud-style AI, confirm the notice, pseudonymise and block with 
   const sent = page.getByRole('row').filter({ hasText: '127.0.0.1' }).filter({ hasText: 'sent' })
   await expect(sent.first()).toBeVisible()
 
+  // 8b. The Usage page counts the call against this month, under the coach task and the model.
+  await goTo(page, 'Usage')
+  await expect(page.getByRole('heading', { name: 'Usage', level: 1 })).toBeVisible()
+  await expect(page.getByText(/this month · [1-9]\d* calls/)).toBeVisible()
+  const byTask = page.locator('.card').filter({ has: page.getByRole('heading', { name: 'By task' }) })
+  await expect(byTask.getByRole('row').filter({ hasText: 'coach' })).toHaveCount(1)
+  const byModel = page.locator('.card').filter({ has: page.getByRole('heading', { name: 'By model' }) })
+  await expect(byModel.getByRole('row').filter({ hasText: 'fake-small' })).toHaveCount(1)
+  await goTo(page, 'Privacy')
+
   // 9. Pseudonymise: the model sees "Adult A", the reply reads naturally again.
   await setToggle(page, 'Pseudonymise before cloud AI', true)
   await goTo(page, 'AI')
