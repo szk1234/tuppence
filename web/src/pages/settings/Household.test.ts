@@ -7,6 +7,12 @@ afterEach(() => vi.unstubAllGlobals())
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
+// The forms stay disabled until the household has loaded; wait for that like a user would.
+async function renderLoaded() {
+  render(Household)
+  await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Save household' })).toBeEnabled())
+}
+
 it('lists people and adds a new person', async () => {
   const people: unknown[] = [{ id: 'p_1', display_name: 'Alex Example', role: 'adult', birth_year: null, status: 'active', version: 1 }]
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -21,7 +27,7 @@ it('lists people and adds a new person', async () => {
     return json({ detail: 'unexpected' }, 500)
   })
   vi.stubGlobal('fetch', fetchMock)
-  render(Household)
+  await renderLoaded()
   expect(await screen.findByText('Alex Example')).toBeInTheDocument()
   await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Kid A' } })
   await fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'child' } })
@@ -36,7 +42,7 @@ it('shows the friendly error for a full postcode', async () => {
     if (url === '/api/household') return json({ nation: null, postcode_district: null, currency: 'GBP', period_mode: 'calendar_month', period_anchor_person_id: null, version: 1 })
     return json({ people: [] })
   }))
-  render(Household)
+  await renderLoaded()
   await fireEvent.input(await screen.findByLabelText('Postcode district'), { target: { value: 'LS6 2AB' } })
   await fireEvent.click(screen.getByRole('button', { name: 'Save household' }))
   expect(await screen.findByText(/first part of your postcode/)).toBeInTheDocument()
@@ -48,7 +54,7 @@ it('rejects an invalid birth year without sending it', async () => {
     return json({ people: [] })
   })
   vi.stubGlobal('fetch', fetchMock)
-  render(Household)
+  await renderLoaded()
   await fireEvent.input(await screen.findByLabelText('Name'), { target: { value: 'Kid B' } })
   await fireEvent.input(screen.getByLabelText('Birth year (children)'), { target: { value: '20x' } })
   await fireEvent.click(screen.getByRole('button', { name: 'Add person' }))
@@ -67,7 +73,7 @@ it('locks the add-person form until the new person is saved', async () => {
     return json({ detail: 'unexpected' }, 500)
   })
   vi.stubGlobal('fetch', fetchMock)
-  render(Household)
+  await renderLoaded()
   const nameInput = await screen.findByLabelText('Name')
   await vi.waitFor(() => expect(nameInput).toBeEnabled())
   await fireEvent.input(nameInput, { target: { value: 'Alex Example' } })

@@ -44,6 +44,7 @@ it('saves names to hide one per line with the version', async () => {
   const calls = setup()
   render(Privacy)
   const box = (await screen.findByLabelText('Names to hide')) as HTMLTextAreaElement
+  await vi.waitFor(() => expect(box).toBeEnabled())
   expect(box.value).toBe('Acme Lettings')
   await fireEvent.input(box, { target: { value: 'Acme Lettings\n  Bob \n\nBob' } })
   await fireEvent.click(screen.getByRole('button', { name: 'Save names' }))
