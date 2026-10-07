@@ -97,3 +97,18 @@ it('sends only the changes on edit, and clears card fields when the kind changes
   await fireEvent.click(screen.getByRole('button', { name: 'Save account' }))
   await vi.waitFor(() => expect(onsubmit).toHaveBeenCalledWith({ nickname: 'Everyday card' }))
 })
+
+it('keeps card APRs within 0-100', async () => {
+  const onsubmit = vi.fn(async () => true)
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ providers: [{ id: 'barclaycard', name: 'Barclaycard', kinds: ['credit_card'] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  render(AccountForm, { people: [{ id: 'p_1', display_name: 'Alex Example', role: 'adult', birth_year: null, status: 'active', version: 1 }], onsubmit })
+  await fireEvent.change(screen.getByLabelText('Account type'), { target: { value: 'credit_card' } })
+  await vi.waitFor(() => expect(screen.getByLabelText('Provider')).toBeEnabled())
+  await fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'barclaycard' } })
+  await fireEvent.input(screen.getByLabelText('Nickname'), { target: { value: 'Card' } })
+  await fireEvent.input(screen.getByLabelText('Purchase APR (%)'), { target: { value: '129.9' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add account' }))
+  expect(await screen.findByText('Enter the purchase APR as a percentage like 22.9.')).toBeInTheDocument()
+  expect(onsubmit).not.toHaveBeenCalled()
+  vi.unstubAllGlobals()
+})

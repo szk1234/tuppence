@@ -12,7 +12,8 @@ is how many of those are met. Every check and every step is worth one point:
   chosen (`llm.simple_model` in simple mode, or any task chain in advanced mode).
 * Per active adult: work status and income band ("Prefer not to say" is an answer, so it meets
   the income-band check). Per active child: birth year. Every active credit card also adds one
-  check: its purchase APR.
+  check: its purchase APR, and every active student loan one: its plan (it may be saved as "Not
+  sure").
 * Dependent adults get no checks. The wizard and Settings › Household may record their work
   status and income band (optional, as for anyone who isn't a child), but nothing here depends on
   them and they have no birth-year-driven entitlement checks, so a prompt would only nag.
@@ -209,6 +210,15 @@ class OnboardingService:
                     f"Add the interest rate for {a.nickname}",
                     "interest-cost estimates",
                     "/settings/accounts",
+                )
+        for d in self.debts.list():
+            if d.kind == "student_loan":
+                add(
+                    d.student_loan_plan is not None,
+                    f"student_loan_plan:{d.id}",
+                    f"Add which plan your {d.lender} loan is on",
+                    "student loan repayment checks",
+                    "/settings/debts",
                 )
         add(
             "housing_tenure" in home,

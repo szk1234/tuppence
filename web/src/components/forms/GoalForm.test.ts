@@ -35,3 +35,14 @@ it('rejects a target that is not an amount', async () => {
   expect(await screen.findByText('Enter the target like 5000 or 5,000.')).toBeInTheDocument()
   expect(onsubmit).not.toHaveBeenCalled()
 })
+
+it('adding the suggested emergency fund keeps a goal being typed', async () => {
+  const onsubmit = vi.fn(async () => true)
+  const onaddsuggested = vi.fn(async () => true)
+  render(GoalForm, { suggestEmergencyFund: true, onsubmit, onaddsuggested })
+  await fireEvent.input(screen.getByLabelText('Goal name'), { target: { value: 'House deposit' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add emergency fund goal' }))
+  await vi.waitFor(() => expect(onaddsuggested).toHaveBeenCalledWith({ name: 'Emergency fund', kind: 'emergency_fund', priority: 1 }))
+  expect(onsubmit).not.toHaveBeenCalled()
+  expect(screen.getByLabelText('Goal name')).toHaveValue('House deposit')
+})

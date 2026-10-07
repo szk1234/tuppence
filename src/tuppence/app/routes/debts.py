@@ -29,7 +29,7 @@ _PLAIN = {
     "lender": "Give the lender or person a name of up to 60 characters.",
     "balance": "Enter the balance as pounds, like 1234.50.",
     "balance_date": "Enter the balance date like 2026-10-07.",
-    "apr": "Enter an APR between 0 and 100, with at most 2 decimal places.",
+    "apr": "Enter an APR between 0 and 1000, with at most 2 decimal places.",
     "monthly_payment": "Enter the monthly payment as pounds, like 250.00.",
     "end_date": "Enter the end date like 2030-01-31.",
     "student_loan_plan": "Choose a student loan plan.",

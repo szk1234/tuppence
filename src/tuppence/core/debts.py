@@ -6,6 +6,11 @@ an unknown key is an InputError naming the key. On edit, `details` is shallow-me
 stored details (a null value deletes a key). If the kind changes, keys that don't apply to the new
 kind are dropped and listed in the response's `details_removed`.
 
+APR is 0-1000% (some UK credit recorded as `other` or `bnpl` is far above 100%; credit cards on
+accounts stay 0-100). The student loan plan may be left unset ("Not sure"); onboarding then asks
+for it. Changing the balance without a `balance_date` dates the new balance today. Settling and
+reopening follow the shared status rule in `core/records.py`.
+
 `car_finance_redress_window` is True for broker-arranged car finance whose agreement started
 between 2007-04-06 and 2024-11-01 inclusive (spec §11.6); the FCA redress scheme uses it later."""
 
@@ -18,9 +23,9 @@ from collections.abc import Callable
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from tuppence.core.accounts import Apr
+from tuppence.core.accounts import _two_places
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.errors import InputError
@@ -70,6 +75,8 @@ _ALLOWED: dict[str, tuple[str, ...]] = {
     "informal": ("direction",),
 }
 _RATE_TYPES = ("fixed", "tracker", "variable", "svr")
+# Wider than a card's 0-100: the schema's debt.apr check is 0-1000 too.
+DebtApr = Annotated[float, Field(ge=0, le=1000), AfterValidator(_two_places)]
 _DIRECTIONS = ("i_owe", "owed_to_me")
 
 
@@ -80,7 +87,7 @@ class DebtIn(BaseModel):
     person_id: str | None = None
     balance: str
     balance_date: date | None = None  # the service fills it from its clock
-    apr: Apr | None = None
+    apr: DebtApr | None = None
     monthly_payment: str | None = None
     end_date: date | None = None
     student_loan_plan: Plan | None = None
@@ -94,7 +101,7 @@ class DebtPatch(BaseModel):
     person_id: str | None = None
     balance: str | None = None
     balance_date: date | None = None
-    apr: Apr | None = None
+    apr: DebtApr | None = None
     monthly_payment: str | None = None
     end_date: date | None = None
     student_loan_plan: Plan | None = None
@@ -259,8 +266,6 @@ class DebtService:
         ):
             raise InputError("Choose a person from your household, or leave it as joint.")
         kind, plan = state["kind"], state["student_loan_plan"]
-        if kind == "student_loan" and plan is None:
-            raise InputError("Choose which student loan plan this is.")
         if kind != "student_loan" and plan is not None:
             raise InputError("A student loan plan only applies to student loans.")
         pay = state["monthly_payment"]
@@ -311,6 +316,12 @@ class DebtService:
         state = self._state(current)
         supplied = data.pop("details", None) or {}
         state.update(data)
+        if (
+            "balance" in data
+            and "balance_date" not in data
+            and parse_pounds(data["balance"]) != parse_pounds(current.balance)
+        ):
+            state["balance_date"] = self.today()  # a new balance is as of today
         removed: list[str] = []
         merged = {**state["details"], **supplied}
         merged = {k: v for k, v in merged.items() if v is not None}

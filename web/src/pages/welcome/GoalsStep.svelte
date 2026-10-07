@@ -25,10 +25,20 @@
 
   async function load() {
     goals = (await api<{ goals: Goal[] }>('/api/goals')).goals
-    suggest = (await api<{ emergency_fund: boolean }>('/api/goals/suggestions')).emergency_fund === true
+    suggest = await api<{ emergency_fund: boolean }>('/api/goals/suggestions').then((r) => r.emergency_fund === true).catch(() => false)
     loaded = true
   }
   onMount(() => { load().catch((err) => { error = errorText(err) }) })
+
+  /** The suggested emergency fund: added without resetting the form, so a goal being typed stays (and Continue saves it). */
+  async function addSuggested(body: Record<string, unknown>): Promise<boolean> {
+    error = ''; saved = ''
+    try {
+      const g = await api<Goal>('/api/goals', { method: 'POST', body })
+      goals = [...goals, g]; saved = `${g.name} added.`; suggest = false
+      return true
+    } catch (err) { error = errorText(err); return false }
+  }
 
   async function add(body: Record<string, unknown>): Promise<boolean> {
     error = ''; saved = ''
@@ -57,5 +67,5 @@
 
 <div class="card">
   <h2>Add a goal</h2>
-  {#if loaded}<div oninput={() => (dirty = true)} onchange={() => (dirty = true)}>{#key addKey}<GoalForm bind:this={form} suggestEmergencyFund={suggest} onsubmit={add} />{/key}</div>{:else}<p class="hint">Loading…</p>{/if}
+  {#if loaded}<div oninput={() => (dirty = true)} onchange={() => (dirty = true)}>{#key addKey}<GoalForm bind:this={form} suggestEmergencyFund={suggest} onsubmit={add} onaddsuggested={addSuggested} />{/key}</div>{:else}<p class="hint">Loading…</p>{/if}
 </div>

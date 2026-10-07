@@ -22,8 +22,8 @@
 
   async function load() {
     goals = (await api<{ goals: Goal[] }>('/api/goals?include_closed=true')).goals
-    const s = await api<{ emergency_fund?: boolean }>('/api/goals/suggestions')
-    suggest = s?.emergency_fund === true
+    // The suggestion is a nicety: the page works without it.
+    suggest = await api<{ emergency_fund?: boolean }>('/api/goals/suggestions').then((s) => s?.emergency_fund === true).catch(() => false)
     loaded = true
   }
   onMount(() => { load().catch(fail) })
@@ -39,6 +39,16 @@
       const g = await api<Goal>('/api/goals', { method: 'POST', body })
       goals = [...goals, g]; saved = `${g.name} added.`; addKey += 1
       if (g.kind === 'emergency_fund') suggest = false
+      return true
+    } catch (err) { fail(err); return false }
+  }
+
+  /** The suggested emergency fund: added without resetting the form, so a goal being typed stays. */
+  async function addSuggested(body: Record<string, unknown>): Promise<boolean> {
+    error = ''; saved = ''
+    try {
+      const g = await api<Goal>('/api/goals', { method: 'POST', body })
+      goals = [...goals, g]; saved = `${g.name} added.`; suggest = false
       return true
     } catch (err) { fail(err); return false }
   }
@@ -108,7 +118,7 @@
   {#if editing === null}
     <div class="card">
       <h2>Add a goal</h2>
-      {#if loaded}{#key addKey}<GoalForm suggestEmergencyFund={suggest} onsubmit={add} />{/key}{:else}<p class="hint">Loading…</p>{/if}
+      {#if loaded}{#key addKey}<GoalForm suggestEmergencyFund={suggest} onsubmit={add} onaddsuggested={addSuggested} />{/key}{:else}<p class="hint">Loading…</p>{/if}
     </div>
   {/if}
 </section>

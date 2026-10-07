@@ -6,9 +6,11 @@
   import Notice from '../Notice.svelte'
   import MoneyInput from './MoneyInput.svelte'
 
-  let { initial = null, suggestEmergencyFund = false, disabled = false, submitLabel, onsubmit, oncancel }: {
+  /** `onaddsuggested` adds the suggested emergency fund without touching the form (a goal being typed stays). */
+  let { initial = null, suggestEmergencyFund = false, disabled = false, submitLabel, onsubmit, onaddsuggested, oncancel }: {
     initial?: Goal | null; suggestEmergencyFund?: boolean; disabled?: boolean; submitLabel?: string
-    onsubmit: (payload: Record<string, unknown>) => Promise<boolean>; oncancel?: () => void
+    onsubmit: (payload: Record<string, unknown>) => Promise<boolean>
+    onaddsuggested?: (payload: Record<string, unknown>) => Promise<boolean>; oncancel?: () => void
   } = $props()
   const uid = $props.id()
 
@@ -61,7 +63,11 @@
     return send(() => onsubmit(changes(before, body)))
   }
 
-  const addEmergencyFund = () => send(() => onsubmit({ name: 'Emergency fund', kind: 'emergency_fund', priority: 1 }))
+  async function addEmergencyFund() {
+    const goal = { name: 'Emergency fund', kind: 'emergency_fund', priority: 1 }
+    saving = true
+    try { await (onaddsuggested ?? onsubmit)(goal) } finally { saving = false }
+  }
 </script>
 
 {#if suggestEmergencyFund && !g}

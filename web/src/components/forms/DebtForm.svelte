@@ -91,8 +91,8 @@
     if (!lender.trim()) { problem = 'Enter who the debt is with.'; return }
     const bal = parsePoundsInput(balance)
     if (bal === null) { problem = 'Enter the current balance like 1450 or 1,450.50.'; return }
-    const rate = parseOptionalPercent(apr)
-    if (!rate.ok) { problem = 'Enter the interest rate as a percentage like 6.9.'; return }
+    const rate = parseOptionalPercent(apr, 1000)
+    if (!rate.ok) { problem = 'Enter the interest rate as a percentage from 0 to 1000, like 6.9.'; return }
     const pay = money(payment, 'the monthly payment')
     if (pay === undefined) return
     if (kind === 'informal' && !direction) { problem = 'Say whether you owe this or are owed it.'; return }
@@ -161,6 +161,7 @@
         <option value="">Not sure</option>
         {#each Object.entries(PLANS) as [value, text]}<option {value}>{text}</option>{/each}
       </select>
+      <p class="hint">Not sure? Leave it: Tuppence will remind you. Your plan is shown in your Student Loans Company account.</p>
     {/if}
 
     {#if isCar}

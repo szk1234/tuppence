@@ -38,8 +38,8 @@ def test_basic_and_default_balance_date(env):
 
 def test_student_loan_plan_rules(env):
     svc, *_ = env
-    with pytest.raises(InputError, match="plan"):
-        svc.create(_debt("student_loan"))
+    # Many borrowers don't know their plan: "Not sure" is allowed (onboarding asks for it later).
+    assert svc.create(_debt("student_loan")).student_loan_plan is None
     with pytest.raises(InputError, match="only applies"):
         svc.create(_debt(student_loan_plan="plan2"))
     assert svc.create(_debt("student_loan", student_loan_plan="plan2")).student_loan_plan == "plan2"
@@ -108,11 +108,29 @@ def test_informal_direction_and_total(env):
 
 
 def test_apr_limits(env):
+    """Debts allow 0-1000% APR (some UK credit is far above 100%); cards stay 0-100."""
     svc, *_ = env
+    assert svc.create(_debt("other", apr=1000)).apr == 1000
+    assert svc.create(_debt("bnpl", apr=129.9)).apr == 129.9
     with pytest.raises(ValueError):
-        _debt(apr=101)
+        _debt(apr=1000.01)
+    with pytest.raises(ValueError):
+        _debt(apr=-1)
     with pytest.raises(ValueError):
         _debt(apr=5.123)
+
+
+def test_a_new_balance_is_dated_today_unless_a_date_is_given(env):
+    svc, *_ = env  # the service's today is 2030-01-15
+    d = svc.create(_debt(balance_date=date(2029, 6, 1)))
+    renamed = svc.update(d.id, {"lender": "Other bank"}, d.version)
+    assert renamed.balance_date == date(2029, 6, 1)  # the balance didn't change
+    same = svc.update(d.id, {"balance": "1,200.50"}, renamed.version)
+    assert same.balance_date == date(2029, 6, 1) and same.version == renamed.version
+    moved = svc.update(d.id, {"balance": "900"}, renamed.version)
+    assert moved.balance == "900.00" and moved.balance_date == date(2030, 1, 15)
+    dated = svc.update(d.id, {"balance": "800", "balance_date": "2029-12-31"}, moved.version)
+    assert dated.balance_date == date(2029, 12, 31)
 
 
 def test_settle_hides_and_blocks_edits(env):
@@ -167,10 +185,12 @@ def test_update_only_validates_changes(env):
         svc.update(d.id, {"lender": None}, 2)
     j = svc.update(d.id, {"person_id": None, "details": {}}, 2)
     assert j.person_id is None
-    # kind change must keep plan/details consistent
-    with pytest.raises(InputError):
-        svc.update(d.id, {"kind": "student_loan"}, j.version)
-    m = svc.update(d.id, {"kind": "mortgage", "details": {"rate_type": "svr"}}, j.version)
+    # kind change keeps plan/details consistent; a student loan's plan may be "Not sure"
+    sl = svc.update(d.id, {"kind": "student_loan"}, j.version)
+    assert sl.student_loan_plan is None
+    with pytest.raises(InputError, match="only applies"):
+        svc.update(d.id, {"kind": "mortgage", "student_loan_plan": "plan1"}, sl.version)
+    m = svc.update(d.id, {"kind": "mortgage", "details": {"rate_type": "svr"}}, sl.version)
     assert m.details == {"rate_type": "svr"}
 
 

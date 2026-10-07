@@ -12,13 +12,13 @@ export function parseOptionalInt(text: string, min: number, max: number): { ok: 
   return n >= min && n <= max ? { ok: true, value: n } : { ok: false, value: null }
 }
 
-/** An optional percentage with up to 2 decimals. Blank is null, never 0. */
-export function parseOptionalPercent(text: string): { ok: boolean; value: number | null } {
+/** An optional percentage from 0 to `max` with up to 2 decimals. Blank is null, never 0. Cards: 0-100; debts: 0-1000. */
+export function parseOptionalPercent(text: string, max = 100): { ok: boolean; value: number | null } {
   const t = text.trim().replace(/%$/, '').trim()
   if (t === '') return { ok: true, value: null }
-  if (!/^\d{1,3}(\.\d{1,2})?$/.test(t)) return { ok: false, value: null }
+  if (!/^\d{1,4}(\.\d{1,2})?$/.test(t)) return { ok: false, value: null }
   const n = Number(t)
-  return n <= 100 ? { ok: true, value: n } : { ok: false, value: null }
+  return n <= max ? { ok: true, value: n } : { ok: false, value: null }
 }
 
 export function deepEqual(a: unknown, b: unknown): boolean {

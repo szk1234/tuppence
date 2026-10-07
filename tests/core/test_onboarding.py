@@ -5,7 +5,7 @@ import pytest
 
 from tuppence.core.accounts import AccountIn, AccountService
 from tuppence.core.db import Database
-from tuppence.core.debts import DebtService
+from tuppence.core.debts import DebtIn, DebtService
 from tuppence.core.errors import InputError
 from tuppence.core.goals import GoalService
 from tuppence.core.household import HouseholdPatch, HouseholdService, PersonIn
@@ -263,3 +263,15 @@ def test_dependent_adults_may_record_work_and_income_but_are_never_prompted(env)
     timeline.set("person", d.id, "employment_status", "retired", TODAY)
     timeline.set("person", d.id, "income_band", "under_12570", TODAY)
     assert not any(d.id in i for i in ids(svc.state()))
+
+
+def test_student_loan_without_a_plan_prompts(env):
+    svc = env[0]
+    loan = svc.debts.create(
+        DebtIn(kind="student_loan", lender="Student Loans Company", balance="1")
+    )
+    p = next(p for p in svc.state().prompts if p.id == f"student_loan_plan:{loan.id}")
+    assert p.text == "Add which plan your Student Loans Company loan is on"
+    assert p.link == "/settings/debts" and "repayment" in p.unlocks
+    svc.debts.update(loan.id, {"student_loan_plan": "plan2"}, loan.version)
+    assert f"student_loan_plan:{loan.id}" not in ids(svc.state())

@@ -45,3 +45,33 @@ it('offers the emergency fund suggestion and adds it', async () => {
   expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ name: 'Emergency fund', kind: 'emergency_fund', priority: 1 })
   expect(screen.queryByRole('button', { name: 'Add emergency fund goal' })).toBeNull()
 })
+
+it('the Goals page still loads when the suggestions call fails, and the suggestion keeps a typed goal', async () => {
+  const goal = { id: 'g_1', name: 'Holiday', kind: 'holiday', saved_amount: '0.00', target_amount: null, target_date: null, priority: 2, status: 'active', version: 1 }
+  stubApi((url) => {
+    if (url.startsWith('/api/goals?')) return json({ goals: [goal] })
+    if (url === '/api/goals/suggestions') return json({ detail: 'boom' }, 500)
+  })
+  render(Goals)
+  expect(await screen.findByText('Holiday')).toBeInTheDocument()
+  expect(await screen.findByLabelText('Goal name')).toBeInTheDocument() // the add form loads too
+  expect(screen.queryByText('boom')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Add emergency fund goal' })).toBeNull()
+})
+
+it('accepting the emergency fund suggestion on Goals does not clear the form', async () => {
+  const goals: unknown[] = []
+  stubApi((url, method, body) => {
+    if (url.startsWith('/api/goals?')) return json({ goals })
+    if (url === '/api/goals/suggestions') return json({ emergency_fund: true })
+    if (url === '/api/goals' && method === 'POST') {
+      const g = { id: 'g_1', saved_amount: '0.00', target_amount: null, target_date: null, status: 'active', version: 1, ...body }
+      goals.push(g); return json(g, 201)
+    }
+  })
+  render(Goals)
+  await fireEvent.input(await screen.findByLabelText('Goal name'), { target: { value: 'House deposit' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add emergency fund goal' }))
+  expect(await screen.findByText('Emergency fund added.')).toBeInTheDocument()
+  expect(screen.getByLabelText('Goal name')).toHaveValue('House deposit')
+})

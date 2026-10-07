@@ -22,8 +22,23 @@ def test_debts_api_roundtrip(client):
     assert d["balance"] == "8000.00" and d["balance_date"]
     assert d["car_finance_redress_window"] is True and d["details"]["balloon"] == "5000.00"
 
-    bad = client.post("/api/debts", json={"kind": "student_loan", "lender": "SLC", "balance": "1"})
-    assert bad.status_code == 422
+    unsure = client.post(
+        "/api/debts", json={"kind": "student_loan", "lender": "SLC", "balance": "1"}
+    )
+    assert unsure.status_code == 201 and unsure.json()["student_loan_plan"] is None
+    high = client.post(
+        "/api/debts", json={"kind": "other", "lender": "Lender", "balance": "1", "apr": 1200}
+    )
+    assert high.status_code == 422
+    assert (
+        high.json()["detail"] == "Enter an APR between 0 and 1000, with at most 2 decimal places."
+    )
+    assert (
+        client.post(
+            "/api/debts", json={"kind": "other", "lender": "Lender", "balance": "1", "apr": 400}
+        ).status_code
+        == 201
+    )
     unk = client.post(
         "/api/debts",
         json={"kind": "other", "lender": "X", "balance": "1", "details": {"zzz": 1}},
@@ -44,11 +59,12 @@ def test_debts_api_roundtrip(client):
         f"/api/debts/{d['id']}", json={"changes": {"lender": "X"}, "expected_version": 1}
     )
     assert stale.status_code == 409 and stale.json()["current_version"] == 2
-    assert len(client.get("/api/debts").json()["debts"]) == 1
+    assert len(client.get("/api/debts").json()["debts"]) == 3
     s = client.post(f"/api/debts/{d['id']}/settle", json={"expected_version": 2})
     assert s.status_code == 200 and s.json()["status"] == "settled"
-    assert client.get("/api/debts").json()["debts"] == []
-    assert len(client.get("/api/debts", params={"include_settled": True}).json()["debts"]) == 1
+    assert d["id"] not in [x["id"] for x in client.get("/api/debts").json()["debts"]]
+    settled = client.get("/api/debts", params={"include_settled": True}).json()["debts"]
+    assert [x["status"] for x in settled if x["id"] == d["id"]] == ["settled"]
 
 
 def test_goals_api_roundtrip(client):
