@@ -80,7 +80,8 @@
       {#each open as d (d.id)}
         <li>
           {#if editing === d.id}
-            <DebtForm {people} initial={d} onsubmit={(c) => save(d, c)} oncancel={() => (editing = null)} />
+            <!-- Keyed by version: after a 409 reload the form restarts from the stored debt, not a stale baseline. -->
+            {#key d.version}<DebtForm {people} initial={d} onsubmit={(c) => save(d, c)} oncancel={() => (editing = null)} />{/key}
           {:else}
             <span class="name">{d.lender}</span>
             <span class="meta">
@@ -89,7 +90,7 @@
             </span>
             <span class="actions">
               <button class="link" onclick={() => (editing = d.id)} aria-label={`Edit ${d.lender}`}>Edit</button>
-              <button class="link" onclick={() => setStatus(d, 'settle')} aria-label={`Settle ${d.lender}`}>Mark settled</button>
+              <button class="link" onclick={() => setStatus(d, 'settle')} aria-label={`Mark settled: ${d.lender}`}>Mark settled</button>
             </span>
           {/if}
         </li>

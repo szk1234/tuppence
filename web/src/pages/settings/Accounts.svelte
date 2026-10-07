@@ -80,7 +80,8 @@
       {#each open as a (a.id)}
         <li>
           {#if editing === a.id}
-            <AccountForm {people} initial={a} onsubmit={(c) => save(a, c)} oncancel={() => (editing = null)} />
+            <!-- Keyed by version: after a 409 reload the form restarts from the stored account, not a stale baseline. -->
+            {#key a.version}<AccountForm {people} initial={a} onsubmit={(c) => save(a, c)} oncancel={() => (editing = null)} />{/key}
           {:else}
             <span class="name">{a.nickname}</span>
             <span class="meta">{a.provider_name} · {KINDS[a.kind]}{a.last4 ? ` · ending ${a.last4}` : ''} · {a.joint ? 'Joint: ' : ''}{owners(a)}{a.credit_limit ? ` · limit ${formatGBP(a.credit_limit)}` : ''}</span>

@@ -86,13 +86,14 @@
       {#each active as g (g.id)}
         <li>
           {#if editing === g.id}
-            <GoalForm initial={g} onsubmit={(c) => save(g, c)} oncancel={() => (editing = null)} />
+            <!-- Keyed by version: after a 409 reload the form restarts from the stored goal, not a stale baseline. -->
+            {#key g.version}<GoalForm initial={g} onsubmit={(c) => save(g, c)} oncancel={() => (editing = null)} />{/key}
           {:else}
             <span class="name">{g.name}</span>
             <span class="meta">{progress(g)} · {PRIORITIES[g.priority]}{g.target_date ? ` · by ${ukDate(g.target_date)}` : ''}</span>
             <span class="actions">
               <button class="link" onclick={() => (editing = g.id)} aria-label={`Edit ${g.name}`}>Edit</button>
-              <button class="link" onclick={() => setStatus(g, 'achieved', `${g.name} marked as achieved.`)} aria-label={`Mark ${g.name} achieved`}>Achieved</button>
+              <button class="link" onclick={() => setStatus(g, 'achieved', `${g.name} marked as achieved.`)} aria-label={`Mark achieved: ${g.name}`}>Mark achieved</button>
               <button class="link" onclick={() => setStatus(g, 'abandoned', `${g.name} dropped.`)} aria-label={`Drop ${g.name}`}>Drop</button>
             </span>
           {/if}

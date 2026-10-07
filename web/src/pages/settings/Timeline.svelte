@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import MoneyInput from '../../components/forms/MoneyInput.svelte'
+  import Modal from '../../components/Modal.svelte'
   import Notice from '../../components/Notice.svelte'
   import { api } from '../../lib/api'
   import { todayISO, ukDate } from '../../lib/dates'
@@ -21,6 +22,8 @@
   let attribute = $state('')
   let value = $state('')
   let from = $state(todayISO())
+  /** The entry waiting for "Remove change" to be confirmed (removing history can't be undone). */
+  let confirming = $state<{ entry: TimelineEntry; subject: Subject } | null>(null)
 
   const subjects = $derived<Subject[]>([
     { type: 'household', id: HOUSEHOLD_ID, label: 'Household' },
@@ -78,8 +81,11 @@
     } catch (err) { fail(err) } finally { saving = false }
   }
 
+  const describe = (e: TimelineEntry, s: Subject) =>
+    `${s.type === 'household' ? "the household's" : `${s.label}'s`} ${(defs(s)[e.attribute]?.label ?? e.attribute).toLowerCase()} change from ${ukDate(e.valid_from)}`
+
   async function remove(entry: TimelineEntry, s: Subject) {
-    error = ''; saved = ''
+    confirming = null; error = ''; saved = ''
     try {
       await api(`/api/household/timeline/${entry.id}?expected_version=${entry.version}`, { method: 'DELETE' })
       await loadHistory(s)
@@ -133,10 +139,20 @@
           <li>
             <span class="name">{defs(s)[e.attribute]?.label ?? e.attribute}</span>
             <span class="meta">{showValue(defs(s)[e.attribute], e.value)} · from {ukDate(e.valid_from)}{e.valid_to ? ` until ${ukDate(e.valid_to)}` : ''}</span>
-            <span class="actions"><button class="link" onclick={() => remove(e, s)} aria-label={`Remove ${defs(s)[e.attribute]?.label ?? e.attribute} change from ${ukDate(e.valid_from)} for ${s.label}`}>Remove</button></span>
+            <span class="actions"><button class="link" onclick={() => (confirming = { entry: e, subject: s })} aria-label={`Remove ${defs(s)[e.attribute]?.label ?? e.attribute} change from ${ukDate(e.valid_from)} for ${s.label}`}>Remove</button></span>
           </li>
         {/each}
       </ul>
     </div>
   {/each}
 </section>
+
+<Modal open={confirming !== null} title="Remove this change?" onclose={() => (confirming = null)}>
+  {#if confirming}
+    <p>Remove {describe(confirming.entry, confirming.subject)}? The value before it then carries on until the next change. This can't be undone.</p>
+    <div class="row">
+      <button type="button" onclick={() => confirming && remove(confirming.entry, confirming.subject)}>Remove change</button>
+      <button type="button" onclick={() => (confirming = null)}>Cancel</button>
+    </div>
+  {/if}
+</Modal>

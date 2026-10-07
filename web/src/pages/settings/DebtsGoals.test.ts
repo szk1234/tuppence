@@ -25,7 +25,8 @@ it('settles a debt and reports details removed on a kind change', async () => {
   await fireEvent.click(screen.getByRole('button', { name: 'Save debt' }))
   expect(await screen.findByText(/Details that no longer apply were removed: balloon/)).toBeInTheDocument()
   expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ changes: { kind: 'personal_loan' }, expected_version: 1 })
-  await fireEvent.click(screen.getByRole('button', { name: 'Settle Motor Co' }))
+  // The accessible name starts with the visible label (WCAG 2.5.3).
+  await fireEvent.click(screen.getByRole('button', { name: 'Mark settled: Motor Co' }))
   expect(await screen.findByRole('heading', { name: 'Settled' })).toBeInTheDocument()
 })
 
@@ -74,4 +75,34 @@ it('accepting the emergency fund suggestion on Goals does not clear the form', a
   await fireEvent.click(screen.getByRole('button', { name: 'Add emergency fund goal' }))
   expect(await screen.findByText('Emergency fund added.')).toBeInTheDocument()
   expect(screen.getByLabelText('Goal name')).toHaveValue('House deposit')
+})
+
+it('goal buttons are named after their visible labels, and a stale edit restarts from the stored goal', async () => {
+  const goal = (over: Record<string, unknown> = {}) => ({ id: 'g_1', name: 'Holiday', kind: 'holiday', saved_amount: '0.00', target_amount: null, target_date: null, priority: 2, status: 'active', version: 1, ...over })
+  let current = goal()
+  let patches = 0
+  const calls = stubApi((url, method, body) => {
+    if (url.startsWith('/api/goals?')) return json({ goals: [current] })
+    if (url === '/api/goals/suggestions') return json({ emergency_fund: false })
+    if (url === '/api/goals/g_1' && method === 'PATCH') {
+      patches += 1
+      if (patches === 1) { current = goal({ name: 'Summer holiday', version: 2 }); return json({ detail: 'This was changed somewhere else. Reload and try again.', current_version: 2 }, 409) }
+      current = { ...current, ...body.changes, version: 3 }; return json(current)
+    }
+  })
+  render(Goals)
+  expect(await screen.findByRole('button', { name: 'Mark achieved: Holiday' })).toHaveTextContent('Mark achieved')
+  await fireEvent.click(screen.getByRole('button', { name: 'Edit Holiday' }))
+  await fireEvent.input(screen.getByLabelText('Saved so far'), { target: { value: '100' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Save goal' }))
+  expect(await screen.findByText('This was changed somewhere else. Reload and try again.')).toBeInTheDocument()
+  await vi.waitFor(() => expect(screen.getByLabelText('Goal name')).toHaveValue('Summer holiday'))
+  await fireEvent.input(screen.getByLabelText('Saved so far'), { target: { value: '100' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Save goal' }))
+  expect(await screen.findByText('Summer holiday saved.')).toBeInTheDocument()
+  // The retry is measured against the stored goal: only the saved amount changes, at the new version.
+  expect(calls.filter((c) => c.method === 'PATCH').map((c) => c.body)).toEqual([
+    { changes: { saved_amount: '100.00' }, expected_version: 1 },
+    { changes: { saved_amount: '100.00' }, expected_version: 2 },
+  ])
 })

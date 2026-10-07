@@ -86,7 +86,8 @@
       {#each active as i (i.id)}
         <li>
           {#if editing === i.id}
-            <IncomeForm {people} {accounts} initial={i} onsubmit={(c) => save(i, c)} oncancel={() => (editing = null)} />
+            <!-- Keyed by version: after a 409 reload the form restarts from the stored income, not a stale baseline. -->
+            {#key i.version}<IncomeForm {people} {accounts} initial={i} onsubmit={(c) => save(i, c)} oncancel={() => (editing = null)} />{/key}
           {:else}
             <span class="name">{i.name}</span>
             <span class="meta">

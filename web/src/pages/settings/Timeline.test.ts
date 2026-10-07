@@ -32,7 +32,7 @@ it('lists history and records a change with expected_current', async () => {
   expect(await screen.findByText(/Self-employed · from/)).toBeInTheDocument()
 })
 
-it('removes an entry with its version', async () => {
+it('removes an entry with its version, only after confirming', async () => {
   const calls = stubApi((url, method) => {
     if (url === '/api/household/people') return json({ people: [person] })
     if (url.startsWith('/api/household/timeline?subject_type=household')) return json({ entries: [] })
@@ -40,7 +40,41 @@ it('removes an entry with its version', async () => {
     if (method === 'DELETE') return json(undefined, 204) as never
   })
   render(Timeline)
-  await fireEvent.click(await screen.findByRole('button', { name: /Remove Income band change from 1 Apr 2024 for Alex Example/ }))
+  const remove = await screen.findByRole('button', { name: /Remove Income band change from 1 Apr 2024 for Alex Example/ })
+  await fireEvent.click(remove)
+  expect(await screen.findByText(/Remove Alex Example's income band change from 1 Apr 2024\?/)).toBeInTheDocument()
+  await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(calls.some((c) => c.method === 'DELETE')).toBe(false)
+  await fireEvent.click(remove)
+  await fireEvent.click(await screen.findByRole('button', { name: 'Remove change' }))
   await vi.waitFor(() => expect(calls.some((c) => c.method === 'DELETE')).toBe(true))
   expect(calls.find((c) => c.method === 'DELETE')?.url).toBe('/api/household/timeline/7?expected_version=1')
+})
+
+it('sends a housing cost as pounds text and bedrooms as a whole number, and refuses "1 450"', async () => {
+  const calls = stubApi((url, method, body) => {
+    if (url === '/api/household/people') return json({ people: [] })
+    if (url.startsWith('/api/household/timeline?')) return json({ entries: [] })
+    if (url === '/api/household/timeline' && method === 'POST') return json({ ...entry(9, body.attribute, body.value, body.valid_from), subject_type: 'household', subject_id: '1' }, 201)
+  })
+  render(Timeline)
+  await vi.waitFor(() => expect(screen.getByLabelText('What changed?')).toBeEnabled())
+  await fireEvent.change(screen.getByLabelText('What changed?'), { target: { value: 'housing_monthly_pence' } })
+  await fireEvent.input(screen.getByLabelText('New value'), { target: { value: '1 450' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add change' }))
+  expect(await screen.findByText('Enter an amount like 1450 or 1,450.50.', { selector: '[role="alert"]:not(.warn)' })).toBeInTheDocument()
+  expect(calls.some((c) => c.method === 'POST')).toBe(false)
+  await fireEvent.input(screen.getByLabelText('New value'), { target: { value: '1,450' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add change' }))
+  await vi.waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1))
+  expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ attribute: 'housing_monthly_pence', value: '1450.00', expected_current: null })
+  await vi.waitFor(() => expect(screen.getByLabelText('What changed?')).toBeEnabled())
+  await fireEvent.change(screen.getByLabelText('What changed?'), { target: { value: 'bedrooms' } })
+  await fireEvent.input(screen.getByLabelText('New value'), { target: { value: '21' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add change' }))
+  expect(await screen.findByText('Enter a whole number from 0 to 20.')).toBeInTheDocument()
+  await fireEvent.input(screen.getByLabelText('New value'), { target: { value: '3' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add change' }))
+  await vi.waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2))
+  expect(calls.filter((c) => c.method === 'POST')[1].body).toMatchObject({ attribute: 'bedrooms', value: 3 })
 })
