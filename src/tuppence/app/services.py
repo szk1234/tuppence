@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+import httpx
+
 from tuppence.config.service import ConfigService
 from tuppence.core.auth import LoginLimiter, Sessions, Users, prune_auth
 from tuppence.core.backup import daily_backup
@@ -17,6 +19,10 @@ from tuppence.core.migrate import migrate
 from tuppence.core.secrets import SecretStore, choose_secret_store
 from tuppence.core.settings_store import SettingsStore
 from tuppence.core.timeline import Timeline
+from tuppence.llm.catalogue import ModelCatalogue, load_baseline
+from tuppence.llm.connections import ClientFactory, ConnectionRegistry
+from tuppence.net import client as netclient
+from tuppence.net.client import CallContext
 from tuppence.net.privacy_log import PrivacyLog
 from tuppence.paths import DataPaths
 from tuppence.settings import RuntimeSettings
@@ -40,6 +46,9 @@ class Services:
     worker: Worker
     privacy_log: PrivacyLog
     secrets: SecretStore
+    catalogue: ModelCatalogue
+    client_factory: ClientFactory
+    connections: ConnectionRegistry
     periodic: list[Periodic] = field(default_factory=list)
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _launch_used: bool = field(default=False, repr=False)
@@ -89,6 +98,19 @@ def build_services(runtime: RuntimeSettings) -> Services:
         {"maintenance.daily_backup": backup_handler, "maintenance.prune_auth": prune_handler},
         exclusive_kinds=EXCLUSIVE_KINDS,
     )
+    privacy_log = PrivacyLog(db)
+    secrets = choose_secret_store(runtime.mode, db, paths.root)
+    catalogue = load_baseline()
+
+    def client_factory(ctx: CallContext, timeout: float) -> httpx.Client:
+        # Looked up at call time so tests can patch tuppence.net.client.make_client.
+        return netclient.make_client(
+            ctx,
+            privacy_log=privacy_log,
+            local_only=lambda: bool(settings_store.get("privacy.local_only")),
+            timeout=timeout,
+        )
+
     services = Services(
         runtime=runtime,
         paths=paths,
@@ -102,8 +124,11 @@ def build_services(runtime: RuntimeSettings) -> Services:
         config=ConfigService(db, settings_store, paths.config),
         queue=queue,
         worker=worker,
-        privacy_log=PrivacyLog(db),
-        secrets=choose_secret_store(runtime.mode, db, paths.root),
+        privacy_log=privacy_log,
+        secrets=secrets,
+        catalogue=catalogue,
+        client_factory=client_factory,
+        connections=ConnectionRegistry(db, secrets, catalogue, client_factory=client_factory),
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
     services.sessions.purge_kind("launch")
