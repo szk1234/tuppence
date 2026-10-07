@@ -48,6 +48,31 @@ def doc_with(*summary: str, rows=("01/10/2026 SHOP 5.00 95.00",)):
         (["Previous balance 100.00 CR", "New balance 20.00 CR"], "card", -10000, -2000),
         (["Previous balance (100.00)", "New balance 20.00 DR"], "card", -10000, 2000),
         (["Opening balance £1,000.00   Closing balance £1,857.82"], "household", 100000, 185782),
+        # overdrawn markers after the figure
+        (["Opening balance 100.00 D", "Closing balance 65.00 D"], "household", -10000, -6500),
+        (["Opening balance 100.00D", "Closing balance 65.00OD"], "household", -10000, -6500),
+        (["Opening balance 100.00 OD", "Closing balance 65.00 O/D"], "household", -10000, -6500),
+        (
+            ["Opening balance 100.00 overdrawn", "Closing balance £65.00 (overdrawn)"],
+            "household",
+            -10000,
+            -6500,
+        ),
+        (
+            ["Opening balance 100.00 in credit", "Closing balance 65.00 Dr."],
+            "household",
+            10000,
+            -6500,
+        ),
+        (
+            ["Opening balance 1,000.00 Money in 900.00", "Closing balance 1,857.82 on 31/10/2026"],
+            "household",
+            100000,
+            185782,
+        ),
+        # a word after the figure that isn't understood leaves the figure unread
+        (["Opening balance 100.00 XQ", "Closing balance 65.00 Dx"], "household", None, None),
+        (["Previous balance 100.00 D", "New balance 20.00 in credit"], "card", None, -2000),
     ],
 )
 def test_balance_phrasings_and_signs(lines, perspective, opening, closing):
@@ -191,3 +216,23 @@ def test_a_signed_row_needs_no_proof():
     doc = day_end_doc("01/10/2026 SHOP -10.00", "02/10/2026 CAFE -5.00")
     parsed = statement(row("P1L2", -1000, "-10.00", None), row("P1L3", -500, "-5.00", None))
     assert repair_signs(doc, parsed, opening=None, level="full").errors == []
+
+
+def test_an_overdrawn_brought_forward_line_starts_the_balances():
+    doc = pages_document(
+        [[TABLE, "Balance brought forward 100.00 D", "01/10/2026 ACME 50.00 50.00 D"]],
+        sha256="x",
+        kind="pdf",
+    )
+    parsed = statement(
+        row("P1L3", -5000, "50.00", -5000), skipped=[SkippedLine(ref="P1L2", reason="bf")]
+    )
+    result = repair_signs(doc, parsed, opening=None, level="full")
+    assert result.repaired == ["P1L3"] and parsed.rows[0].amount_pence == 5000
+
+
+def test_the_read_prompt_says_how_overdrawn_balances_are_marked():
+    from tuppence.ingest.prompts import load_prompt
+
+    prompt = load_prompt("read")
+    assert all(marker in prompt for marker in ("105.00 D", "OD", "overdrawn"))

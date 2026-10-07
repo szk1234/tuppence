@@ -10,7 +10,7 @@ On a current or savings account, copy the sign that is printed. Never flip a pri
 
 On a credit card (see ACCOUNT), the statement is printed from the card's point of view: a purchase, fee or interest is a plain positive figure, and a payment or a refund has a minus or CR (150.00 CR). Store the household's view: a purchase, fee or interest is negative; a payment or refund is positive. amount_text keeps the printed figure, including the minus or CR. sign_from is null.
 
-running_balance is the balance printed on that line, or null. Read it as a number: £1,356.45 is 1356.45. Set opening_balance and closing_balance only from figures under STATEMENT HEADER or lines labelled as the statement's opening and closing balances; otherwise null. Never copy them onto a transaction.
+running_balance is the balance printed on that line, or null. Read it as a number: £1,356.45 is 1356.45. On a current or savings account a balance printed as overdrawn is negative, however the statement marks it: with DR, D, OD, a minus, brackets or the word overdrawn (105.00 D is -105.00). The same goes for opening_balance and closing_balance. Set opening_balance and closing_balance only from figures under STATEMENT HEADER or lines labelled as the statement's opening and closing balances; otherwise null. Never copy them onto a transaction.
 
 These lines are not transactions. Put them in skipped with a short reason: page headers and footers, column headings, balance brought forward or carried forward, summary totals (previous balance, payments, new balance), minimum payment, credit limit, payment due date, zero-amount card checks and declined payments. A transaction is a dated row with an amount.
 

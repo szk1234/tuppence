@@ -191,3 +191,27 @@ def test_the_models_opening_balance_never_proves_a_first_row(ingest_env):
     out, _ = parse_pages(services, [page])
     assert out.parsed.opening_balance_pence == 280000  # kept only as Check's fallback
     assert any("can't tell whether" in e for e in out.errors)
+
+
+def test_an_overdrawn_statement_marked_d_is_not_read_as_in_credit(ingest_env):
+    # N3: balances print a trailing D when overdrawn. The model reads them as plain numbers
+    # and every direction comes out inverted, consistently.
+    services, scripted = ingest_env
+    page = [
+        *HEAD,
+        "Opening balance 100.00 D",
+        "Closing balance 65.00 D",
+        TABLE,
+        "01/10/2026 SHOP 5.00 105.00 D",
+        "02/10/2026 ACME PAYROLL 50.00 55.00 D",
+        "03/10/2026 CAFE 10.00 65.00 D",
+    ]
+    rows = [
+        model_row("D2", 5.0, "5.00", 105.0, "Paid in"),
+        model_row("D3", -50.0, "50.00", 55.0, "Paid out", "2026-10-02"),
+        model_row("D4", 10.0, "10.00", 65.0, "Paid in", "2026-10-03"),
+    ]
+    scripted.replies = [{"content": scripted_rows(*rows)}] * 3
+    out, _ = parse_pages(services, [page])
+    assert (out.parsed.opening_balance_pence, out.parsed.closing_balance_pence) == (-10000, -6500)
+    assert any("balance mismatch" in e for e in out.errors)

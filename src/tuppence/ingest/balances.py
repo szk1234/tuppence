@@ -71,13 +71,47 @@ def _balance_pence(token: str, perspective: Perspective) -> int | None:
     return to_pence(value)
 
 
+# What may follow a balance figure: a marker saying which side of zero it is on, then the end
+# of the line, a date word or the next summary label. Anything else leaves the figure unread.
+_AFTER_FILL = re.compile(r"^[\s.,;:|()]+")
+_AFTER_MARKER = re.compile(
+    r"^(?:(?P<overdrawn>O/D|OD|DR|D|overdrawn)|(?P<credit>CR|in\s+credit))(?![A-Za-z])\.?",
+    re.IGNORECASE,
+)
+_AFTER_REST = re.compile(
+    r"^(?:[\s.,;:|()]|\b(?:on|at|as|of|date)\b)*"
+    r"(?:$|(?:money|paid|payments?|totals?|withdrawals|deposits|credits|debits|interest"
+    r"|charges|fees|minimum|credit\s+limit|available|arranged|overdraft|statement|page|sort"
+    r"|account|balance|opening|closing|new|previous|in|out)\b)",
+    re.IGNORECASE,
+)
+
+
+def _signed(token: str, after: str, perspective: Perspective) -> int | None:
+    """The figure `token` with any marker printed after it ("100.00 D", "100.00 OD",
+    "100.00 overdrawn", "100.00 in credit"), or None when what follows isn't understood."""
+    after = _AFTER_FILL.sub("", after)
+    marker = _AFTER_MARKER.match(after)
+    rest = after[marker.end() :] if marker else after
+    if _AFTER_REST.match(rest) is None:
+        return None
+    pence = _balance_pence(token, perspective)
+    if pence is None or marker is None:
+        return pence
+    if perspective == "card":  # a card prints owed (DR) or in credit (CR), never "overdrawn"
+        if marker.group("credit"):
+            return -abs(pence)
+        return abs(pence) if marker.group("overdrawn").upper() == "DR" else None
+    return -abs(pence) if marker.group("overdrawn") else abs(pence)
+
+
 def _figure(tail: str, perspective: Perspective) -> int | None:
     """The one amount that follows a label, or None when anything else is in the way."""
     plain = _DATE.sub(" ", tail)
     match = _MONEY.search(plain)
     if match is None or not _FILLER.match(plain[: match.start()]):
         return None
-    return _balance_pence(match.group(0), perspective)
+    return _signed(match.group(0), plain[match.end() :], perspective)
 
 
 def local_balances(doc: Document, *, perspective: Perspective) -> LocalBalances:
@@ -145,8 +179,11 @@ def _carried(doc: Document, ref: str) -> int | None:
     if line is None or not _CARRIED.search(line.text):
         return None
     plain = _DATE.sub(" ", line.text)
-    figures = _MONEY.findall(plain)
-    return _balance_pence(figures[-1], "household") if figures else None
+    figures = list(_MONEY.finditer(plain))
+    if not figures:
+        return None
+    last = figures[-1]
+    return _signed(last.group(0), plain[last.end() :], "household")
 
 
 @dataclass
