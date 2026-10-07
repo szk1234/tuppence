@@ -37,9 +37,9 @@ def unknown(fixtures, name="credit-union.csv", known=None):
     return csv_document(data, sha256=name, known=known)
 
 
-def test_mapping_becomes_a_layout_and_repairs_the_date_format():
+def test_mapping_becomes_a_layout_with_the_date_format_read_here():
     sample = [["21/10/2026", "x", "1.00", "", "2.00"]]
-    layout = mapping_to_layout(mapping(date_format="%m/%d/%Y"), HEADER, sample)
+    layout = mapping_to_layout(mapping(date_format="%m/%d/%Y"), HEADER, sample)  # ignored
     assert layout.date_formats == ["%d/%m/%Y"] and layout.money_out == "Withdrawals"
     assert layout.signature == HEADER and layout.source == "learned"
     assert "%d/%m/%Y" in ALLOWED_DATE_FORMATS
@@ -74,7 +74,7 @@ def test_a_mapping_that_fails_check_is_retried_then_given_up(ingest_env, fixture
     scripted.replies = [{"content": swapped}] * 3
     outcome = propose_layout(unknown(fixtures), llm=services.llm, run=budget())
     assert outcome.layout is None and outcome.attempts == 3 and outcome.result is not None
-    assert any("running balance mismatch" in e for e in outcome.errors)
+    assert any("Running balances don't add up" in e for e in outcome.errors)
     assert "Your previous answer didn't work" in scripted.requests[1]["messages"][-1]["content"]
 
 

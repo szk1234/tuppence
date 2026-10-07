@@ -33,19 +33,6 @@ _SKIP_WORDS = (
 )
 OUT_LABELS = ("Paid out", "Money out", "Debit", "Withdrawals")
 IN_LABELS = ("Paid in", "Money in", "Credit", "Deposits")
-DATE_FORMATS = [
-    "%d/%m/%Y",
-    "%d/%m/%y",
-    "%d-%m-%Y",
-    "%d.%m.%Y",
-    "%d %b %Y",
-    "%d %B %Y",
-    "%d-%b-%Y",
-    "%Y-%m-%d",
-    "%Y-%m-%d %H:%M:%S",
-    "%d/%m/%Y %H:%M",
-    "%m/%d/%Y",
-]
 
 
 def reply(messages: list[dict[str, Any]]) -> str:
@@ -187,18 +174,14 @@ def _find(headings: list[str], *words: str) -> str | None:
 
 
 def mapping(user: str) -> dict[str, Any]:
+    """Column roles from the heading names (the request carries no cell values)."""
     headings: list[str] = json.loads(_section(user, "HEADINGS")[0])
-    rows = [json.loads(r) for r in _section(user, "ROWS") if r.startswith("[")]
     date_column = _find(headings, "transaction date", "date") or headings[0]
-    index = headings.index(date_column)
-    samples = [r[index] for r in rows if len(r) > index and r[index]]
-    date_format = next((f for f in DATE_FORMATS if all(_try(f, s) for s in samples)), "%d/%m/%Y")
     amount = _find(headings, "amount", "value")
     out = None if amount else _find(headings, "withdrawal", "paid out", "money out", "debit", "out")
     paid_in = None if amount else _find(headings, "deposit", "paid in", "money in", "credit", "in")
     return {
         "date_column": date_column,
-        "date_format": date_format,
         "description_columns": [
             h
             for h in [_find(headings, "details", "description", "narrative", "memo", "payee")]
@@ -213,14 +196,6 @@ def mapping(user: str) -> dict[str, Any]:
         "category_column": _find(headings, "category"),
         "type_column": None,
     }
-
-
-def _try(fmt: str, value: str) -> bool:
-    try:
-        datetime.strptime(value, fmt)
-    except ValueError:
-        return False
-    return True
 
 
 class OracleLLM:

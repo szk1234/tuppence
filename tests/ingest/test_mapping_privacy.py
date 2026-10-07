@@ -10,7 +10,7 @@ from evals import oracle
 from ingest.helpers import budget, use_local_model
 from tuppence.ingest.extract import ExtractLimits, extract_document
 from tuppence.ingest.identify import identify
-from tuppence.ingest.mapping import mask_cell, propose_layout
+from tuppence.ingest.mapping import HIDDEN, propose_layout
 from tuppence.ingest.parse import ReaderLimits, parse_document
 from tuppence.ingest.registry import LayoutRegistry, load_bank_pack
 from tuppence.ingest.textprep import csv_document
@@ -58,18 +58,6 @@ def good_mapping(**changes):
     return {**base, **changes}
 
 
-def test_cells_are_masked_by_class_and_dates_and_amounts_are_kept():
-    assert mask_cell("12-34-56") == "<SORT>"
-    assert mask_cell("12345678") == "<ACCT>"
-    assert mask_cell("4929 1234 5678 9012") == "<CARD>"
-    assert mask_cell("GB29 NWBK 6016 1331 9268 19") == "<INTL_ACCT>"
-    assert mask_cell("FPO TO PAT 20-00-00 87654321") == "FPO TO PAT <CARD>"
-    assert mask_cell("Mr Alex Example") == "<ID>"
-    assert mask_cell("EX1 2MP") == "<ID>"
-    for kept in ("21/10/2026", "2026-10-21", "1,234.56", "-42.18", "£3.40", "SHOP NUMBER 1", ""):
-        assert mask_cell(kept) == kept
-
-
 def test_no_identifier_is_sent_on_the_first_try_or_on_retries(ingest_env):
     services, scripted = ingest_env
     use_local_model(services)
@@ -80,7 +68,7 @@ def test_no_identifier_is_sent_on_the_first_try_or_on_retries(ingest_env):
     sent = "\n".join(user_messages(scripted))
     assert [i for i in IDENTIFIERS if i in sent] == []
     assert "Alex Example" not in sent
-    assert "<ACCT>" in sent and "<SORT>" in sent  # the shape of the columns is still visible
+    assert HIDDEN in sent and "<NUMBER:8 digits>" in sent  # the shape is still visible
 
 
 def test_retries_never_quote_cell_values(ingest_env):
@@ -117,7 +105,7 @@ def test_a_date_format_that_does_not_fit_is_named_without_values(ingest_env):
     scripted.replies = [{"content": json.dumps(bad)}] * 3
     outcome = propose_layout(csv_document(build_csv(), sha256="x"), llm=services.llm, run=budget())
     assert outcome.errors == [
-        "Dates in column 'Type' didn't match %d/%m/%Y or any other allowed date format"
+        "Column 'Type' (date_column) doesn't hold dates in a format Tuppence can read"
     ]
 
 
@@ -134,9 +122,10 @@ def test_an_incomplete_amount_mapping_says_what_is_missing(ingest_env):
 
 def test_the_oracle_answers_a_mapping_retry():
     user = (
-        'ALLOWED_DATE_FORMATS: ["%d/%m/%Y"]\nHEADINGS:\n["Date", "Details", "Amount"]\n'
-        'ROWS:\n["01/10/2026", "SHOP", "-1.00"]\n\nYour previous answer didn\'t work:\n'
-        "Dates in column 'Date' didn't match %d/%m/%Y\n{}"
+        'HEADINGS:\n["Date", "Details", "<HIDDEN>", "Amount"]\n'
+        'ROWS:\n["<DATE:dd/mm/yyyy>", "<TEXT>", "<NUMBER:8 digits>", "<AMOUNT:-12.30>"]\n\n'
+        "Your previous answer didn't work:\n"
+        "Dates in column 'Date' couldn't be read as dd/mm/yyyy on 2 rows\n{}"
     )
     answer = oracle.reply(
         [
@@ -240,7 +229,7 @@ def test_two_columns_swapped_is_refused_by_check(ingest_env, tmp_path):
     scripted.replies = [{"content": json.dumps(swapped)}] * 3
     out, doc = parse_csv(services, tmp_path, registry, "current", data)
     # the column headings contradict the signs, so Check refuses it and nothing is kept
-    assert any("sign mismatch" in e for e in out.errors) and registry.match(doc) is None
+    assert any("wrong way round" in e for e in out.errors) and registry.match(doc) is None
 
 
 @pytest.mark.parametrize("kind", ["savings"])

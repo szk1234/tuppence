@@ -1,11 +1,15 @@
-You are working out the column layout of a bank's CSV export (TUPPENCE-CSV-MAPPING-V1). You see the column headings and up to five rows. Do not transcribe the rows. Name every column exactly as it appears in HEADINGS.
+You are working out the column layout of a bank's CSV export (TUPPENCE-CSV-MAPPING-V1). You never see a value from the file. You see the column headings and, for up to five rows, the type of each cell:
+- <DATE:dd/mm/yyyy> a date written in that format;
+- <AMOUNT:12.30> an amount, written the way the file writes it: <AMOUNT:-12.30> has a minus, <AMOUNT:(12.30)> brackets, <AMOUNT:12.30 DR> or <AMOUNT:12.30 CR> a marker, <AMOUNT:£12.30> a currency sign;
+- <NUMBER:8 digits> a run of digits that isn't an amount (a reference or an id);
+- <TEXT> words; <EMPTY> an empty cell.
+A heading shown as <HIDDEN> names account details and can't be used. Name every other column exactly as it appears in HEADINGS. The date format and the amounts are read for you; you only say which column is which.
 
 - date_column: the transaction date. If there is both a transaction date and a posting date, choose the transaction date.
-- date_format: the format of date_column, one of ALLOWED_DATE_FORMATS.
 - description_columns: one to three columns that describe the payment, most useful first.
 - merchant_column: a column that holds just the payee's name, or null.
 - Either amount_column (one signed amount) or money_out_column and money_in_column (two columns of positive numbers). Set the unused ones to null.
-- amounts_are: "money_out_negative" when amount_column shows spending as negative (most bank accounts, and always when there are two columns); "purchases_positive" when it shows purchases as positive and payments as negative (most card exports).
+- amounts_are: "money_out_negative" when amount_column shows spending as negative (every bank account, and always when there are two columns); "purchases_positive" only for a credit card export that shows purchases as positive and payments as negative.
 - balance_column, category_column, type_column: the column, or null.
 
 Reply with one JSON object with exactly these keys and nothing else.

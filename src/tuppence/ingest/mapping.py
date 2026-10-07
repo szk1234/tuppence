@@ -1,12 +1,21 @@
-"""Learn an unfamiliar CSV layout: the AI proposes a column mapping once, the
-mapping is checked like any importer, and a mapping that passes is saved so later
-files in that layout need no AI call (spec §6.2 step 3)."""
+"""Learn an unfamiliar CSV layout: the AI assigns column roles once, the mapping is checked
+like any importer, and a mapping that passes is saved so later files in that layout need no
+AI call (spec §6.2 step 3).
+
+The model never sees a value from the file. It gets a sketch of the file's shape: the column
+headings (a heading that names account details is hidden, long digit runs are replaced) and,
+for a few rows, one type token per cell such as <DATE:dd/mm/yyyy>, <AMOUNT:-12.30>,
+<NUMBER:8 digits>, <TEXT> or <EMPTY>. The date format is worked out on this device from every
+value in the column the model picks, and amounts are read with the importer's own money rules,
+so the model only says which column is which. Feedback on a retry names columns and counts
+problems; it never quotes a cell.
+"""
 
 from __future__ import annotations
 
 import json
 import re
-from collections import Counter
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Literal
 
@@ -19,10 +28,12 @@ from tuppence.ingest.models import Document
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, tidy
 from tuppence.ingest.registry import CsvLayout, data_records, header_cells, header_key, norm
-from tuppence.ingest.textprep import is_date_cell, is_money_cell, is_sensitive
+from tuppence.ingest.textprep import is_sensitive
 from tuppence.llm.types import LLMBadResponse, Message
 
 SAMPLE_ROWS = 5
+# Every format has a separator or a month name, so no run of bare digits (an account number,
+# a sort code) can pass for a date.
 ALLOWED_DATE_FORMATS = (
     "%d/%m/%Y",
     "%d/%m/%y",
@@ -31,18 +42,34 @@ ALLOWED_DATE_FORMATS = (
     "%d %b %Y",
     "%d %B %Y",
     "%d-%b-%Y",
+    "%d-%b-%y",
     "%d %b %y",
     "%Y-%m-%d",
     "%Y/%m/%d",
     "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
     "%d/%m/%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S",
     "%m/%d/%Y",
 )
+_FORMAT_NAMES = {
+    "%d": "dd",
+    "%m": "mm",
+    "%Y": "yyyy",
+    "%y": "yy",
+    "%b": "mon",
+    "%B": "month",
+    "%H": "hh",
+    "%M": "mm",
+    "%S": "ss",
+}
+HIDDEN = "<HIDDEN>"
 
 
 class MappingOut(BaseModel):
+    """Column roles only. Formats are worked out on this device."""
+
     date_column: str
-    date_format: str
     description_columns: list[str]
     merchant_column: str | None
     amount_column: str | None
@@ -66,41 +93,166 @@ class MappingOutcome(BaseModel):
     attempts: int = 0
 
 
-def _parses(fmt: str, values: list[str]) -> bool:
-    try:
-        for value in values:
-            datetime.strptime(value, fmt)
-    except ValueError:
+# --- the sketch -----------------------------------------------------------------------------
+
+_SIGN = "+\\-−–"
+_AMOUNT = re.compile(
+    rf"^(?P<open>\()?\s*(?P<lead>[{_SIGN}])?\s*(?P<cur>£|\$|€|GBP\s*)?\s*(?P<lead2>[{_SIGN}])?\s*"
+    r"(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{1,2}\s*(?P<close>\))?\s*(?P<trail>[\-−])?\s*"
+    r"(?P<marker>CR|DR)?\.?$",
+    re.IGNORECASE,
+)
+_NUMBERISH = re.compile(rf"^[{_SIGN}'\s]*\d[\d\s.,/'{_SIGN}]*$")
+_DIGIT_RUN = re.compile(r"\d{4,}")
+
+
+def _format_name(fmt: str) -> str:
+    return re.sub(r"%[a-zA-Z]", lambda m: _FORMAT_NAMES.get(m.group(0), "?"), fmt).replace("T", " ")
+
+
+def _date_format(cell: str) -> str | None:
+    for fmt in ALLOWED_DATE_FORMATS:
+        try:
+            datetime.strptime(cell, fmt)
+        except ValueError:
+            continue
+        return fmt
+    return None
+
+
+def cell_token(cell: str) -> str:
+    """What the model sees of one cell: its type and how it is written, never its value."""
+    text = " ".join(cell.split())
+    if not text:
+        return "<EMPTY>"
+    fmt = _date_format(text)
+    if fmt is not None:
+        return f"<DATE:{_format_name(fmt)}>"
+    amount = _AMOUNT.match(text)
+    if amount and bool(amount["open"]) == bool(amount["close"]):
+        shown = f"{amount['cur'].strip().upper() if amount['cur'] else ''}12.30"
+        if amount["open"]:
+            shown = f"({shown})"
+        sign = amount["lead"] or amount["lead2"]
+        if sign:
+            shown = ("+" if sign == "+" else "-") + shown
+        if amount["trail"]:
+            shown += "-"
+        if amount["marker"]:
+            shown += f" {amount['marker'].upper()}"
+        return f"<AMOUNT:{shown}>"
+    if _NUMBERISH.match(text):
+        return f"<NUMBER:{sum(ch.isdigit() for ch in text)} digits>"
+    return "<TEXT>"
+
+
+def shown_heading(cell: str) -> str:
+    """A column heading as the model sees it: hidden when it names account details (a sort
+    code or account number column, say), with any run of four or more digits replaced."""
+    text = " ".join(cell.split())
+    if not text:
+        return ""
+    if is_sensitive(text):
+        return HIDDEN
+    return _DIGIT_RUN.sub("<NUM>", text)
+
+
+_HEADING_WORDS = re.compile(
+    r"\b(?:date|posted|posting|description|details|narrative|memo|notes?|payee|merchant"
+    r"|reference|ref|transaction|type|category|amount|value|balance|debit|credit|paid"
+    r"|money|withdrawals?|deposits?|counter\s*party|currency|spend|received)\b",
+    re.IGNORECASE,
+)
+_TITLED_NAME = re.compile(
+    r"^\s*(?:(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+[A-Za-z]|(?:statement|prepared)\s+for\b)",
+    re.IGNORECASE,
+)
+
+
+def _holds_details(cell: str) -> bool:
+    """A heading cell that carries an identifier or a name, not just a label like 'Sort Code'."""
+    if not is_sensitive(cell):
         return False
-    return True
+    titled = _TITLED_NAME.match(cell) is not None and not _HEADING_WORDS.search(cell)
+    return titled or any(ch.isdigit() for ch in cell)
+
+
+def header_problem(header: Sequence[str]) -> str | None:
+    """Why this row can't be the file's column headings, in plain words, or None.
+
+    A real header has three or more headings, at least two of them recognisable column names,
+    no account details, and no 'Label:' cells (a key/value preamble such as `Name,Alex Example`
+    above the table)."""
+    filled = [" ".join(c.split()) for c in header if c.strip()]
+    if any(_holds_details(c) for c in filled):
+        return (
+            "This file's column headings include account details, so its layout can't be "
+            "worked out automatically."
+        )
+    if (
+        len(filled) < 3
+        or any(c.endswith(":") for c in filled)
+        or sum(1 for c in filled if _HEADING_WORDS.search(c)) < 2
+    ):
+        return (
+            "This file's first row doesn't look like column headings, so its layout can't be "
+            "worked out automatically."
+        )
+    return None
+
+
+def sketch(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+    """The text the model gets: headings, then one row of type tokens per sample row."""
+    return f"HEADINGS:\n{json.dumps([shown_heading(h) for h in header])}\nROWS:\n" + "\n".join(
+        json.dumps([cell_token(c) for c in row]) for row in rows
+    )
+
+
+# --- from the model's answer to a layout ----------------------------------------------------
+
+
+def _best_date_format(values: Sequence[str]) -> str | None:
+    """The allowed format that reads the most of these values (UK day-first wins a tie)."""
+    best, best_count = None, 0
+    for fmt in ALLOWED_DATE_FORMATS:
+        count = 0
+        for value in values:
+            try:
+                datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+            count += 1
+        if count > best_count:
+            best, best_count = fmt, count
+    return best
 
 
 def mapping_to_layout(
-    mapping: MappingOut, header: list[str], samples: list[list[str]]
+    mapping: MappingOut,
+    header: Sequence[str],
+    rows: Sequence[Sequence[str]],
 ) -> CsvLayout:
-    """A CsvLayout from the model's answer, or a MappingError naming what's wrong."""
-    known = {norm(h): h for h in header if h.strip()}
+    """A CsvLayout from the model's answer, or a MappingError naming what's wrong.
+
+    The model names columns as it saw them; they are mapped back to the file's own headings.
+    A hidden heading can't be chosen. The date format comes from every value in the date
+    column (`rows` is every data row)."""
+    shown = [shown_heading(h) for h in header]
+    index: dict[str, int] = {}
+    for i, name in enumerate(shown):
+        if name and name != HIDDEN:
+            index.setdefault(norm(name), i)
+
+    def position(name: str, what: str) -> int:
+        i = index.get(norm(name))
+        if i is None:
+            raise MappingError(f"Column '{tidy(name, 60)}' ({what}) isn't in the header")
+        return i
 
     def column(name: str | None, what: str) -> str | None:
-        if name is None:
-            return None
-        if norm(name) not in known:
-            raise MappingError(f"Column '{tidy(name, 60)}' ({what}) isn't in the header")
-        return known[norm(name)]
+        return None if name is None else header[position(name, what)]
 
-    date_column = column(mapping.date_column, "date_column")
-    assert date_column is not None
-    index = [norm(h) for h in header].index(norm(date_column))
-    dates = [row[index] for row in samples if len(row) > index and row[index].strip()]
-    formats = [mapping.date_format, *ALLOWED_DATE_FORMATS]
-    date_format = next(
-        (f for f in formats if f in ALLOWED_DATE_FORMATS and _parses(f, dates)), None
-    )
-    if date_format is None:
-        raise MappingError(
-            f"Dates in column '{tidy(date_column, 60)}' didn't match "
-            f"{tidy(mapping.date_format, 30)} or any other allowed date format"
-        )
+    date_at = position(mapping.date_column, "date_column")
     descriptions = [
         c for c in (column(d, "description_columns") for d in mapping.description_columns[:3]) if c
     ]
@@ -110,93 +262,115 @@ def mapping_to_layout(
         raise MappingError(
             "Give either amount_column, or both money_out_column and money_in_column"
         )
+    roles = {
+        "merchant_column": mapping.merchant_column,
+        "amount_column": mapping.amount_column,
+        "money_out_column": None if mapping.amount_column else mapping.money_out_column,
+        "money_in_column": None if mapping.amount_column else mapping.money_in_column,
+        "balance_column": mapping.balance_column,
+        "category_column": mapping.category_column,
+        "type_column": mapping.type_column,
+    }
+    columns = {what: column(name, what) for what, name in roles.items()}
+    dates = [" ".join(row[date_at].split()) for row in rows if len(row) > date_at]
+    date_format = _best_date_format([d for d in dates if d])
+    if date_format is None:
+        raise MappingError(
+            f"Column '{shown[date_at]}' (date_column) doesn't hold dates in a format Tuppence "
+            "can read"
+        )
+    card = mapping.amounts_are == "purchases_positive" and mapping.amount_column is not None
     return CsvLayout(
         id=f"learned-{header_key(header)}",
         name="Your bank's export (learned)",
         source="learned",
         signature=[h for h in header if h.strip()],
-        date=date_column,
+        date=header[date_at],
         date_formats=[date_format],
         description=descriptions,
-        merchant=column(mapping.merchant_column, "merchant_column"),
-        amount=column(mapping.amount_column, "amount_column"),
-        money_out=None
-        if mapping.amount_column
-        else column(mapping.money_out_column, "money_out_column"),
-        money_in=None
-        if mapping.amount_column
-        else column(mapping.money_in_column, "money_in_column"),
-        perspective="card"
-        if mapping.amounts_are == "purchases_positive" and mapping.amount_column
-        else "household",
-        balance=column(mapping.balance_column, "balance_column"),
-        category=column(mapping.category_column, "category_column"),
-        type=column(mapping.type_column, "type_column"),
+        merchant=columns["merchant_column"],
+        amount=columns["amount_column"],
+        money_out=columns["money_out_column"],
+        money_in=columns["money_in_column"],
+        perspective="card" if card else "household",
+        balance=columns["balance_column"],
+        category=columns["category_column"],
+        type=columns["type_column"],
     )
 
 
-_ID_CARD = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
-_ID_SORT = re.compile(r"\b\d{2}-\d{2}-\d{2}\b")
-_ID_IBAN = re.compile(r"\b[A-Z]{2}\d{2}\s?[A-Z0-9]{4}(?:\s?\d{4}){2,}(?:\s?[A-Z0-9]{1,4})?\b")
-_ID_LONG = re.compile(r"\b\d{6,}\b")
+# --- feedback: counts and column names only -------------------------------------------------
+
+_CHECK_KINDS = (
+    ("larger than any real transaction", "Amounts are larger than any real transaction"),
+    ("running balance mismatch", "Running balances don't add up"),
+    ("balance mismatch", "Opening balance plus the amounts doesn't give the closing balance"),
+    ("sign mismatch", "Money in and money out are the wrong way round"),
+    ("sign_from", "Money in and money out are the wrong way round"),
+    ("amount_text", "Amounts don't match their lines"),
+    ("missing refs", "Some rows weren't read"),
+    ("duplicate ref", "Some rows were read twice"),
+    ("outside", "Dates fall outside the statement period"),
+    ("period", "The statement period doesn't make sense"),
+)
 
 
-def mask_cell(cell: str) -> str:
-    """A sample cell with account numbers, sort codes, card numbers, IBANs and other long digit
-    runs replaced by placeholders. Dates and amounts stay as they are: the model needs them to
-    tell the columns apart."""
-    text = cell.strip()
-    if (
-        not text
-        or is_date_cell(text)
-        or (is_money_cell(text) and not re.fullmatch(r"\d{6,}", text))
-    ):
-        return cell
-    masked = _ID_IBAN.sub("<INTL_ACCT>", text)
-    masked = _ID_CARD.sub("<CARD>", masked)
-    masked = _ID_SORT.sub("<SORT>", masked)
-    masked = _ID_LONG.sub("<ACCT>", masked)
-    return "<ID>" if is_sensitive(masked) else masked
+def _plural(n: int) -> str:
+    return f"{n} row{'s' if n != 1 else ''}"
 
 
-_CATEGORY = re.compile(r"^\S+: ")
+def summarise_checks(errors: Sequence[str]) -> list[str]:
+    """Check failures as fixed descriptions with a count each. No text from a failure (which
+    may quote a figure, a reference or a row) is kept."""
+    counts: dict[str, int] = {}
+    for error in errors:
+        label = next((text for key, text in _CHECK_KINDS if key in error), "Other check failures")
+        counts[label] = counts.get(label, 0) + 1
+    return [f"{label} ({_plural(n)})" for label, n in counts.items()]
 
 
-def _summarise(errors: list[str]) -> list[str]:
-    """Check failures by kind and count, without the figures or text of any row."""
-    kinds = Counter(
-        re.split(r" \(|: |\"", _CATEGORY.sub("", e), maxsplit=1)[0][:60] for e in errors
-    )
-    return [f"{kind} ({n} row{'s' if n != 1 else ''})" for kind, n in kinds.most_common(10)]
+def _describe(problems: Sequence[str], layout: CsvLayout, header: Sequence[str]) -> list[str]:
+    """Rows the importer couldn't read, counted by column. Problems quote cells, so only
+    their kind is used."""
+    shown = {h: shown_heading(h) for h in header}
 
+    def name(column: str | None) -> str:
+        return shown.get(column or "", "") or "?"
 
-def _describe(problems: list[str], layout: CsvLayout) -> list[str]:
-    """Row problems from the importer as statements about columns and formats."""
-    dates = [p for p in problems if "can't read the date" in p]
-    amounts = [p for p in problems if "can't read the amount" in p]
-    both = [p for p in problems if "both money out and money in" in p]
+    dates = sum(1 for p in problems if "can't read the date" in p)
+    amounts = sum(1 for p in problems if "can't read the amount" in p)
+    both = sum(1 for p in problems if "both money out and money in" in p)
     out: list[str] = []
     if dates:
         out.append(
-            f"Dates in column '{tidy(layout.date, 60)}' didn't match "
-            f"{layout.date_formats[0]} on {len(dates)} rows"
+            f"Dates in column '{name(layout.date)}' couldn't be read as "
+            f"{_format_name(layout.date_formats[0])} on {_plural(dates)}"
         )
     if amounts:
-        column = layout.amount or f"{layout.money_out}' and '{layout.money_in}"
-        out.append(
-            f"Amounts in column '{tidy(column, 100)}' couldn't be read on {len(amounts)} rows"
+        where = (
+            f"column '{name(layout.amount)}'"
+            if layout.amount
+            else f"columns '{name(layout.money_out)}' and '{name(layout.money_in)}'"
         )
+        out.append(f"Amounts in {where} couldn't be read on {_plural(amounts)}")
     if both:
         out.append(
-            f"Columns '{tidy(layout.money_out or '', 60)}' and '{tidy(layout.money_in or '', 60)}' "
-            f"are both filled in on {len(both)} rows"
+            f"Columns '{name(layout.money_out)}' and '{name(layout.money_in)}' are both filled "
+            f"in on {_plural(both)}"
         )
-    rest = [p for p in problems if p not in dates and p not in amounts and p not in both]
-    return out + _summarise(rest)
+    rest = len(problems) - dates - amounts - both
+    if rest:
+        out.append(f"{_plural(rest)} couldn't be read")
+    return out
 
 
 def propose_layout(
-    doc: Document, *, llm: StructuredLLM, run: Any, max_attempts: int = 3, prompt: str | None = None
+    doc: Document,
+    *,
+    llm: StructuredLLM,
+    run: Any,
+    max_attempts: int = 3,
+    prompt: str | None = None,
 ) -> MappingOutcome:
     header = header_cells(doc)
     if header is None:
@@ -208,12 +382,11 @@ def propose_layout(
                 "worked out automatically."
             ],
         )
-    samples = [cells for _, cells in data_records(doc)[:SAMPLE_ROWS]]
-    base = (
-        f"ALLOWED_DATE_FORMATS: {json.dumps(list(ALLOWED_DATE_FORMATS))}\n"
-        f"HEADINGS:\n{json.dumps(header)}\nROWS:\n"
-        + "\n".join(json.dumps([mask_cell(c) for c in row]) for row in samples)
-    )
+    problem = header_problem(header)
+    if problem is not None:
+        return MappingOutcome(layout=None, result=None, errors=[problem])
+    rows = [cells for _, cells in data_records(doc)]
+    base = sketch(header, rows[:SAMPLE_ROWS])
     system = Message(role="system", content=prompt or load_prompt("csv_mapping"))
     errors: list[str] = []
     previous: str | None = None
@@ -237,17 +410,21 @@ def propose_layout(
                 run=run,
             )
         except LLMBadResponse as exc:
-            errors, previous = [safe_error_text(exc)], None
+            errors, previous = [tidy(safe_error_text(exc))], None
             continue
-        previous = mapping.model_dump_json()
+        previous = tidy(mapping.model_dump_json(), 2000)
         try:
-            layout = mapping_to_layout(mapping, header, samples)
+            layout = mapping_to_layout(mapping, header, rows)
             last = parse_with_layout(doc, layout)
-        except (MappingError, LayoutMismatch) as exc:
+        except MappingError as exc:
             errors = [tidy(safe_error_text(exc))]
             continue
-        problems = _describe(last.problems, layout)
-        errors = problems + _summarise(check_document(doc, last.parsed))
+        except LayoutMismatch:
+            errors = ["One of the columns in that answer isn't in the file"]
+            continue
+        errors = _describe(last.problems, layout, header) + summarise_checks(
+            check_document(doc, last.parsed)
+        )
         if not errors:
             return MappingOutcome(layout=layout, result=last, errors=[], attempts=attempt)
     return MappingOutcome(layout=None, result=last, errors=errors, attempts=max_attempts)
