@@ -62,7 +62,9 @@ class HostAllowlistMiddleware:
 
     local/desktop: only loopback names on this server's own port.
     server: anything, unless an allow-list is configured (settings or TUPPENCE_ALLOWED_HOSTS).
-    An explicit list matches hostnames only; the port is ignored.
+    An explicit list matches hostnames only; the port is ignored. In server mode loopback names
+    stay allowed alongside a list (the Docker health check probes 127.0.0.1); a rebinding page
+    always sends its own hostname, never a loopback one.
     """
 
     def __init__(self, app: ASGIApp, settings: RuntimeSettings) -> None:
@@ -77,10 +79,10 @@ class HostAllowlistMiddleware:
     def _allowed(self, scope: Scope) -> bool:
         raw = dict(scope.get("headers", [])).get(b"host", b"").decode("latin-1")
         host, port = _split_host(raw)
-        if self.listed is not None:
-            return host in self.listed
-        if self.settings.mode == "server":
+        if self.listed is not None and host in self.listed:
             return True
+        if self.settings.mode == "server":
+            return self.listed is None or host in _LOOPBACK
         if host not in _LOOPBACK:
             return False
         want = self.settings.port

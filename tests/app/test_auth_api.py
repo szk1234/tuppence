@@ -195,11 +195,18 @@ def test_launch_session_rejected_in_server_mode(tmp_path, make_app):
     assert server.get("/api/settings").status_code == 401
 
 
-@pytest.mark.parametrize("name", ["", "   ", "x" * 65])
+@pytest.mark.parametrize("name", ["", "   "])
 def test_setup_rejects_bad_username_with_422(make_app, name):
     c = TestClient(make_app("server"))
     r = c.post("/api/auth/setup", json={"username": name, "password": "correct-horse-battery"})
     assert r.status_code == 422 and "between 1 and 64" in r.json()["detail"]
+
+
+def test_setup_rejects_overlong_username_at_the_body_cap(make_app):
+    c = TestClient(make_app("server"))
+    body = {"username": "x" * 65, "password": "correct-horse-battery"}
+    r = c.post("/api/auth/setup", json=body)
+    assert r.status_code == 422 and r.json()["detail"][0]["loc"] == ["body", "username"]
 
 
 def test_session_cookie_slides_when_renewed(make_app):
@@ -456,3 +463,32 @@ def test_busy_attempt_between_failures_still_locks_on_the_fifth(make_app, monkey
     assert c.post("/api/auth/login", json=WRONG).status_code == 401
     locked = c.post("/api/auth/login", json=RIGHT)
     assert locked.status_code == 429 and int(locked.headers["retry-after"]) > 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"username": "x" * 65, "password": "correct-horse-battery"},
+        {"username": "alex", "password": "p" * 1025},
+    ],
+)
+def test_oversized_credentials_rejected_with_422(make_app, body):
+    c, _ = _signed_in(make_app)
+    c.cookies.clear()
+    assert c.post("/api/auth/login", json=body).status_code == 422
+    assert TestClient(make_app("server")).post("/api/auth/setup", json=body).status_code == 422
+    with c.app.state.services.db.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM login_attempt").fetchone()[0] == 0
+
+
+def test_limiter_stores_hashed_keys_only(make_app):
+    import re
+
+    c, _ = _signed_in(make_app)
+    c.cookies.clear()
+    name = "someone-with-a-long-name"
+    assert c.post("/api/auth/login", json={**WRONG, "username": name}).status_code == 401
+    with c.app.state.services.db.connection() as conn:
+        keys = [r[0] for r in conn.execute("SELECT key FROM login_attempt")]
+    assert len(keys) == 1 and re.fullmatch(r"[0-9a-f]{64}", keys[0])
+    assert name not in keys[0] and "testclient" not in keys[0]

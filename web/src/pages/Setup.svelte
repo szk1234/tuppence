@@ -20,7 +20,7 @@
   <p>Create the administrator account for this household. There are no default passwords.</p>
   <form onsubmit={submit}>
     <label for="su-user">Username</label>
-    <input id="su-user" autocomplete="username" required bind:value={username} />
+    <input id="su-user" autocomplete="username" maxlength="64" required bind:value={username} />
     <label for="su-pass">Password</label>
     <input id="su-pass" type="password" autocomplete="new-password" minlength="10" required bind:value={password} />
     <p class="hint">At least 10 characters. A short sentence works well.</p>

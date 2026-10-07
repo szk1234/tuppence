@@ -38,6 +38,11 @@ def port_available(host: str, port: int) -> bool:
     return True
 
 
+def env_flag(name: str) -> bool:
+    """True when an environment variable is set to 1/true/yes/on (any case)."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -55,7 +60,12 @@ def _serve(args: argparse.Namespace) -> int:
         return 2
     launch_token = secrets.token_urlsafe(32) if args.mode == "local" else None
     settings = RuntimeSettings.for_mode(
-        args.mode, data_dir=data_dir, host=args.host, port=args.port, launch_token=launch_token
+        args.mode,
+        data_dir=data_dir,
+        host=args.host,
+        port=args.port,
+        launch_token=launch_token,
+        secure_cookies=args.secure_cookies or env_flag("TUPPENCE_SECURE_COOKIES"),
     )
     if not port_available(settings.host, settings.port):
         print(
@@ -98,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=None)
     serve.add_argument("--data-dir", default=None)
     serve.add_argument("--no-browser", action="store_true")
+    serve.add_argument(
+        "--secure-cookies",
+        action="store_true",
+        help="mark the sign-in cookie Secure; only when served over HTTPS"
+        " (or set TUPPENCE_SECURE_COOKIES=1)",
+    )
     serve.set_defaults(func=_serve)
 
     desktop = sub.add_parser("desktop", help="run the desktop app window")

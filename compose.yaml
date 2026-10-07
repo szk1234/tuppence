@@ -9,6 +9,12 @@ services:
     volumes:
       - tuppence-data:/data
     restart: unless-stopped
+    # Server-mode hardening (see SECURITY.md). Uncomment and edit:
+    # environment:
+    #   # Hostnames you use to reach Tuppence (comma-separated); blocks DNS rebinding.
+    #   TUPPENCE_ALLOWED_HOSTS: "money.home.lan"
+    #   # Only when you reach Tuppence over HTTPS (e.g. behind Caddy): Secure sign-in cookie.
+    #   TUPPENCE_SECURE_COOKIES: "1"
 
   ollama:
     image: ollama/ollama:latest

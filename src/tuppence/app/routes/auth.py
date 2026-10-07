@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tuppence.app.deps import (
     SESSION_COOKIE,
@@ -18,7 +18,14 @@ from tuppence.app.deps import (
 )
 from tuppence.app.services import Services
 from tuppence.app.session_cookie import RENEW_KEY, clear_session_cookie
-from tuppence.core.auth import AuthBusy, SetupComplete, WeakPassword, hash_slot
+from tuppence.core.auth import (
+    MAX_PASSWORD,
+    MAX_USERNAME,
+    AuthBusy,
+    SetupComplete,
+    WeakPassword,
+    hash_slot,
+)
 
 Svc = Annotated[Services, Depends(get_services)]
 
@@ -33,8 +40,10 @@ EXPIRED_HTML = (
 
 
 class Credentials(BaseModel):
-    username: str
-    password: str
+    # Hard caps: login keys and hashing work must stay small whatever an unauthenticated
+    # client sends (the friendlier setup rules live in validate_new_password).
+    username: str = Field(max_length=MAX_USERNAME)
+    password: str = Field(max_length=MAX_PASSWORD)
 
 
 class SessionUser(BaseModel):

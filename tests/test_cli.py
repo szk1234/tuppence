@@ -110,3 +110,31 @@ def test_server_mode_prints_plain_url(tmp_path, capsys, monkeypatch):
     args = ["serve", "--mode", "server", "--port", str(port), "--data-dir", str(tmp_path)]
     assert main(args) == 0
     assert "auth/launch" not in capsys.readouterr().out
+
+
+def _serve_capturing_app(monkeypatch, tmp_path, *extra):
+    import uvicorn
+
+    apps = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **k: apps.append(app))
+    port = _free_port()
+    args = ["serve", "--mode", "server", "--port", str(port), "--data-dir", str(tmp_path), *extra]
+    assert main(args) == 0
+    return apps[0].state.settings
+
+
+def test_secure_cookies_off_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("TUPPENCE_SECURE_COOKIES", raising=False)
+    assert _serve_capturing_app(monkeypatch, tmp_path).secure_cookies is False
+
+
+def test_secure_cookies_flag_turns_them_on(tmp_path, monkeypatch):
+    monkeypatch.delenv("TUPPENCE_SECURE_COOKIES", raising=False)
+    settings = _serve_capturing_app(monkeypatch, tmp_path, "--secure-cookies")
+    assert settings.secure_cookies is True
+
+
+@pytest.mark.parametrize("value,expected", [("1", True), ("true", True), ("0", False), ("", False)])
+def test_secure_cookies_env_var(tmp_path, monkeypatch, value, expected):
+    monkeypatch.setenv("TUPPENCE_SECURE_COOKIES", value)
+    assert _serve_capturing_app(monkeypatch, tmp_path).secure_cookies is expected

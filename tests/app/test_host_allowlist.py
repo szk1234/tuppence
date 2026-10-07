@@ -62,3 +62,29 @@ def test_server_mode_honours_env_allowlist(tmp_path, monkeypatch):
     assert c.get("/health", headers={"host": "money.example:8040"}).status_code == 200
     assert c.get("/health", headers={"host": "home.lan"}).status_code == 200
     assert c.get("/health", headers={"host": "evil.example"}).status_code == 403
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1", "127.0.0.1:8040", "localhost", "localhost:9999", "[::1]:8040"]
+)
+def test_server_allowlist_always_accepts_loopback(tmp_path, monkeypatch, host):
+    # The Docker HEALTHCHECK probes http://127.0.0.1:8040/health; a configured allow-list
+    # must not turn the container unhealthy (a rebinding page never sends a loopback Host).
+    monkeypatch.setenv("TUPPENCE_ALLOWED_HOSTS", "money.home.lan")
+    c = TestClient(build(tmp_path, "server"))
+    assert c.get("/health", headers={"host": host}).status_code == 200
+
+
+def test_server_allowlist_still_rejects_unlisted_hosts(tmp_path, monkeypatch):
+    monkeypatch.setenv("TUPPENCE_ALLOWED_HOSTS", "money.home.lan")
+    c = TestClient(build(tmp_path, "server"))
+    assert c.get("/health", headers={"host": "money.home.lan:8040"}).status_code == 200
+    assert c.get("/health", headers={"host": "evil.example"}).status_code == 403
+    assert c.get("/health", headers={"host": "192.168.1.20:8040"}).status_code == 403
+
+
+def test_explicit_list_in_local_mode_keeps_loopback_port_check(tmp_path):
+    c = TestClient(build(tmp_path, "local", port=8123, allowed_hosts=["testserver"]))
+    assert c.get("/health", headers={"host": "testserver"}).status_code == 200
+    assert c.get("/health", headers={"host": "127.0.0.1:8123"}).status_code == 200
+    assert c.get("/health", headers={"host": "127.0.0.1:9999"}).status_code == 403

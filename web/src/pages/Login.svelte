@@ -19,7 +19,7 @@
   <h1>Sign in</h1>
   <form onsubmit={submit}>
     <label for="li-user">Username</label>
-    <input id="li-user" autocomplete="username" required bind:value={username} />
+    <input id="li-user" autocomplete="username" maxlength="64" required bind:value={username} />
     <label for="li-pass">Password</label>
     <input id="li-pass" type="password" autocomplete="current-password" required bind:value={password} />
     <Notice message={error} />

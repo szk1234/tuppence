@@ -23,6 +23,7 @@ _hasher = PasswordHasher()
 _hash_slots = threading.BoundedSemaphore(2)
 _slot_owner = threading.local()
 MIN_PASSWORD = 10
+MAX_PASSWORD = 1024
 MAX_USERNAME = 64
 
 
@@ -228,12 +229,23 @@ class Sessions:
 
 
 class LoginLimiter:
+    """Login throttling per key (the route uses "ip|username").
+
+    Keys are stored as SHA-256 hex digests: fixed-size rows whatever a client sends, and no
+    usernames or addresses at rest.
+    """
+
     def __init__(self, db: Database, *, max_failures: int = 5, lockout_seconds: int = 60) -> None:
         self.db = db
         self.max_failures = max_failures
         self.lockout = timedelta(seconds=lockout_seconds)
 
+    @staticmethod
+    def _stored(key: str) -> str:
+        return hashlib.sha256(key.encode()).hexdigest()
+
     def retry_after(self, key: str) -> int | None:
+        key = self._stored(key)
         with self.db.connection() as conn:
             row = conn.execute(
                 "SELECT locked_until FROM login_attempt WHERE key = ?", [key]
@@ -245,6 +257,7 @@ class LoginLimiter:
 
     def begin_attempt(self, key: str) -> int | None:
         """Charge an attempt up front, atomically. Returns seconds to wait if locked, else None."""
+        key = self._stored(key)
         now = utcnow()
         with self.db.transaction() as conn:
             row = conn.execute(
@@ -270,6 +283,7 @@ class LoginLimiter:
         return None
 
     def record_failure(self, key: str) -> None:
+        key = self._stored(key)
         now = utcnow()
         with self.db.transaction() as conn:
             row = conn.execute(
@@ -288,6 +302,7 @@ class LoginLimiter:
             )
 
     def reset(self, key: str) -> None:
+        key = self._stored(key)
         with self.db.transaction() as conn:
             conn.execute("DELETE FROM login_attempt WHERE key = ?", [key])
 
