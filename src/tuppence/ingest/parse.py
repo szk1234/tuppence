@@ -7,6 +7,7 @@ PDF, OCR and plain-text statements. Used by the ingest graph and the eval harnes
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 from typing import Any
 
@@ -46,29 +47,75 @@ class ParseOutcome(BaseModel):
     errors: list[str] = Field(default_factory=list)
     level: CheckLevel = "full"
     info: dict[str, Any] = Field(default_factory=dict)
-    # A newly proposed CSV layout that read the file but whose signs look wrong. It is not
-    # saved; the caller may save it once the person has confirmed the statement.
+    # A newly proposed CSV layout that read the file but whose signs can't be confirmed yet.
+    # It is not saved; the caller may save it once the person has confirmed the statement.
     pending_layout: CsvLayout | None = None
 
 
-def sign_doubt(parsed: ParsedStatement, account_kind: AccountKind) -> str | None:
-    """Unverifiable sign conventions: a single amount column can add up (with a balance
-    column too) whichever way round it was read, so the account type is the evidence. On a
-    current account or a card most amounts are money out; a file where most are money in has
-    probably been read back to front."""
-    if account_kind not in ("current", "credit_card"):
+_CARD_CREDIT = re.compile(
+    r"payment\s*(?:-\s*)?(?:received|thank)|thank\s*you|\brefund|\bcash\s*back\b"
+    r"|direct\s+debit\s+payment",
+    re.IGNORECASE,
+)
+_TYPE_CREDIT = {"cr", "credit", "payment", "refund"}
+_TYPE_DEBIT = {"dr", "debit", "purchase", "sale"}
+_ACCOUNT_WORDS = {"current": "a current account", "savings": "a savings account"}
+
+
+def _card_evidence(parsed: ParsedStatement) -> tuple[int, int]:
+    """(rows that agree, rows that disagree) with the signs read: a payment to the card or a
+    refund is money in, a row typed as a purchase or debit is money out."""
+    agree = disagree = 0
+    for row in parsed.rows:
+        kind = (row.bank_type or "").strip().casefold()
+        if kind in _TYPE_CREDIT or _CARD_CREDIT.search(row.raw_description):
+            want = 1
+        elif kind in _TYPE_DEBIT:
+            want = -1
+        else:
+            continue
+        if row.amount_pence * want > 0:
+            agree += 1
+        elif row.amount_pence:
+            disagree += 1
+    return agree, disagree
+
+
+def sign_doubt(
+    parsed: ParsedStatement, account_kind: AccountKind, layout: CsvLayout, *, new: bool
+) -> str | None:
+    """Why a learned layout's signs can't be trusted yet, or None.
+
+    Two money columns are checked by Check against their headings. A single amount column
+    adds up (with a balance column too) whichever way round it is read, so:
+    - on a current or savings account, a layout that reads it the card's way is a
+      contradiction;
+    - on a card, the rows are the evidence: a payment or refund read as money out (or a
+      purchase read as money in) means back to front, and a new layout with no such row
+      waits for the person to confirm it."""
+    if layout.amount is None:
         return None
-    rows = [r for r in parsed.rows if r.amount_pence != 0]
-    if len(rows) < 4:
-        return None
-    incoming = sum(1 for r in rows if r.amount_pence > 0)
-    if incoming / len(rows) <= 0.6:
-        return None
-    what = "card" if account_kind == "credit_card" else "current account"
-    return (
-        f"{incoming} of these {len(rows)} amounts would be money in, which is unusual for a "
-        f"{what}. The signs may be back to front, so please check them."
-    )
+    if account_kind in _ACCOUNT_WORDS:
+        if layout.perspective != "card":
+            return None
+        return (
+            "The remembered layout for this file reads purchases as positive, as a card "
+            f"statement does, which doesn't fit {_ACCOUNT_WORDS[account_kind]}. The signs may "
+            "be back to front, so please check them."
+        )
+    agree, disagree = _card_evidence(parsed)
+    if disagree:
+        return (
+            f"{disagree} of these rows (payments to the card, refunds or purchases) would be "
+            "stored the wrong way round, so the signs may be back to front. Please check them."
+        )
+    if not agree and new:
+        return (
+            "Nothing in this file shows which way round the card's amounts are (such as a "
+            "payment to the card or a refund), so please check the signs before this layout "
+            "is remembered."
+        )
+    return None
 
 
 def level_for(doc: Document) -> CheckLevel:
@@ -120,7 +167,9 @@ def parse_document(
                     info={"importer": f"csv:{layout.id}"},
                 )
             errors = result.problems + check_document(doc, result.parsed)
-            if layout.source == "learned" and (doubt := sign_doubt(result.parsed, account_kind)):
+            if layout.source == "learned" and (
+                doubt := sign_doubt(result.parsed, account_kind, layout, new=False)
+            ):
                 errors.append(doubt)
             return ParseOutcome(
                 parsed=result.parsed, errors=errors, info={"importer": result.parsed.importer}
@@ -129,11 +178,12 @@ def parse_document(
             doc,
             llm=llm,
             run=run,
+            account_kind=account_kind,
             max_attempts=limits.max_attempts_per_chunk,
             prompt=load_prompt("csv_mapping", prompts_dir),
         )
         if outcome.layout is not None and outcome.result is not None:
-            doubt = sign_doubt(outcome.result.parsed, account_kind)
+            doubt = sign_doubt(outcome.result.parsed, account_kind, outcome.layout, new=True)
             if doubt:  # read the file, but don't trust the layout enough to keep it
                 parsed = outcome.result.parsed
                 return ParseOutcome(

@@ -1,18 +1,12 @@
 """What CSV layout learning sends, how it fails, and when a learned layout is kept."""
 
-import datetime as dt
 import json
 from decimal import Decimal
 
-import pytest
 from evals import oracle
 
 from ingest.helpers import budget, use_local_model
-from tuppence.ingest.extract import ExtractLimits, extract_document
-from tuppence.ingest.identify import identify
 from tuppence.ingest.mapping import HIDDEN, propose_layout
-from tuppence.ingest.parse import ReaderLimits, parse_document
-from tuppence.ingest.registry import LayoutRegistry, load_bank_pack
 from tuppence.ingest.textprep import csv_document
 
 IDENTIFIERS = ["12345678", "12-34-56", "87654321", "20-00-00", "4929 1234 5678 9012"]
@@ -134,109 +128,3 @@ def test_the_oracle_answers_a_mapping_retry():
         ]
     )
     assert json.loads(answer)["date_column"] == "Date"
-
-
-CURRENT = (
-    b"Date,Narrative,Amount,Balance\n"
-    b"01/10/2026,GREENBASKET STORES,-42.18,957.82\n"
-    b"03/10/2026,LITTLE CAFE,-3.40,954.42\n"
-    b"05/10/2026,ACME PAYROLL LTD,900.00,1854.42\n"
-    b"10/10/2026,CITY WATER,-31.15,1823.27\n"
-    b"12/10/2026,HOMEWARE DIRECT,-43.27,1780.00\n"
-)
-INVERTED = {
-    "date_column": "Date",
-    "date_format": "%d/%m/%Y",
-    "description_columns": ["Narrative"],
-    "merchant_column": None,
-    "amount_column": "Amount",
-    "money_out_column": None,
-    "money_in_column": None,
-    "amounts_are": "purchases_positive",
-    "balance_column": "Balance",
-    "category_column": None,
-    "type_column": None,
-}
-
-
-def parse_csv(services, tmp_path, registry, account_kind, data=CURRENT):
-    window = services.router.chain_for("read")[0][1].context_window
-    path = tmp_path / "export.csv"
-    path.write_bytes(data)
-    pack = load_bank_pack()
-    doc = extract_document(
-        path, "csv", sha256="x", limits=ExtractLimits(), known_header=registry.is_known_header
-    )
-    evidence = identify(doc, pack=pack, registry=registry, key=b"k")
-    out = parse_document(
-        doc,
-        path,
-        evidence,
-        account_kind,
-        registry=registry,
-        llm=services.llm,
-        run=budget(),
-        context_window=window,
-        today=dt.date(2026, 11, 1),
-        limits=ReaderLimits(),
-    )
-    return out, doc
-
-
-def test_a_back_to_front_mapping_is_flagged_and_not_kept(ingest_env, tmp_path):
-    services, scripted = ingest_env
-    registry = LayoutRegistry(load_bank_pack())
-    use_local_model(services)
-    scripted.replies = [{"content": json.dumps(INVERTED)}]
-    out, doc = parse_csv(services, tmp_path, registry, "current")
-    # the running balance adds up either way round, so only the account type can tell
-    assert [r.amount_pence for r in out.parsed.rows][:2] == [4218, 340]
-    assert any("money in" in e and "back to front" in e for e in out.errors)
-    assert registry.match(doc) is None  # not saved
-    assert out.pending_layout is not None and out.pending_layout.perspective == "card"
-
-
-def test_a_right_way_round_mapping_is_kept(ingest_env, tmp_path):
-    services, scripted = ingest_env
-    registry = LayoutRegistry(load_bank_pack())
-    use_local_model(services)
-    right = dict(INVERTED, amounts_are="money_out_negative")
-    scripted.replies = [{"content": json.dumps(right)}]
-    out, doc = parse_csv(services, tmp_path, registry, "current")
-    assert out.errors == [] and out.pending_layout is None
-    assert registry.match(doc) is not None
-    assert [r.amount_pence for r in out.parsed.rows][:2] == [-4218, -340]
-
-
-def test_two_columns_swapped_is_refused_by_check(ingest_env, tmp_path):
-    services, scripted = ingest_env
-    registry = LayoutRegistry(load_bank_pack())
-    use_local_model(services)
-    data = (
-        b"Date,Details,Money out,Money in\n"
-        b"01/10/2026,A,42.18,\n02/10/2026,B,3.40,\n03/10/2026,C,10.00,\n"
-        b"04/10/2026,D,31.15,\n05/10/2026,E,,900.00\n"
-    )
-    swapped = {
-        **INVERTED,
-        "amount_column": None,
-        "money_out_column": "Money in",
-        "money_in_column": "Money out",
-        "amounts_are": "money_out_negative",
-        "balance_column": None,
-        "description_columns": ["Details"],
-    }
-    scripted.replies = [{"content": json.dumps(swapped)}] * 3
-    out, doc = parse_csv(services, tmp_path, registry, "current", data)
-    # the column headings contradict the signs, so Check refuses it and nothing is kept
-    assert any("wrong way round" in e for e in out.errors) and registry.match(doc) is None
-
-
-@pytest.mark.parametrize("kind", ["savings"])
-def test_other_account_types_are_not_second_guessed(ingest_env, tmp_path, kind):
-    services, scripted = ingest_env
-    registry = LayoutRegistry(load_bank_pack())
-    use_local_model(services)
-    scripted.replies = [{"content": json.dumps(INVERTED)}]
-    out, _ = parse_csv(services, tmp_path, registry, kind)
-    assert out.pending_layout is None

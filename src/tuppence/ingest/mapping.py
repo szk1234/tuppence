@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from tuppence.core.errors import UserFacing, safe_error_text
 from tuppence.ingest.check import check_document
 from tuppence.ingest.importers.csv_layout import ImportResult, LayoutMismatch, parse_with_layout
-from tuppence.ingest.models import Document
+from tuppence.ingest.models import AccountKind, Document
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, tidy
 from tuppence.ingest.registry import CsvLayout, data_records, header_cells, header_key, norm
@@ -227,16 +227,22 @@ def _best_date_format(values: Sequence[str]) -> str | None:
     return best
 
 
+_KIND_WORDS = {"current": "a current account", "savings": "a savings account"}
+
+
 def mapping_to_layout(
     mapping: MappingOut,
     header: Sequence[str],
     rows: Sequence[Sequence[str]],
+    *,
+    account_kind: AccountKind | None = None,
 ) -> CsvLayout:
     """A CsvLayout from the model's answer, or a MappingError naming what's wrong.
 
     The model names columns as it saw them; they are mapped back to the file's own headings.
     A hidden heading can't be chosen. The date format comes from every value in the date
-    column (`rows` is every data row)."""
+    column (`rows` is every data row). On a bank account, a single amount column read as a
+    card's (purchases positive) contradicts the account type and is refused."""
     shown = [shown_heading(h) for h in header]
     index: dict[str, int] = {}
     for i, name in enumerate(shown):
@@ -280,6 +286,11 @@ def mapping_to_layout(
             "can read"
         )
     card = mapping.amounts_are == "purchases_positive" and mapping.amount_column is not None
+    if card and account_kind in _KIND_WORDS:
+        raise MappingError(
+            f"amounts_are can't be purchases_positive for {_KIND_WORDS[account_kind]}: "
+            "a bank account's single amount column shows money out as negative"
+        )
     return CsvLayout(
         id=f"learned-{header_key(header)}",
         name="Your bank's export (learned)",
@@ -369,6 +380,7 @@ def propose_layout(
     *,
     llm: StructuredLLM,
     run: Any,
+    account_kind: AccountKind | None = None,
     max_attempts: int = 3,
     prompt: str | None = None,
 ) -> MappingOutcome:
@@ -414,7 +426,7 @@ def propose_layout(
             continue
         previous = tidy(mapping.model_dump_json(), 2000)
         try:
-            layout = mapping_to_layout(mapping, header, rows)
+            layout = mapping_to_layout(mapping, header, rows, account_kind=account_kind)
             last = parse_with_layout(doc, layout)
         except MappingError as exc:
             errors = [tidy(safe_error_text(exc))]
