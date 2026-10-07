@@ -44,7 +44,7 @@ def test_redacts_identifiers_but_not_money_dates_or_merchants():
     for kept in ["TESCO STORES 3123", "-£54.20", "03/09/2026", "£1,450.00", "20260907", "99887766"]:
         assert kept in out, kept
     assert "Adult A" in out and "Adult B" in out and "Person 1" in out
-    assert "ACCT_1 ending ••78" in out and "ending ••34" in out and "SORTCODE_1" in out
+    assert "ending ••78" in out and "ending ••34" in out and "SORTCODE_1" in out
     assert p.count >= 10
 
 
@@ -195,7 +195,7 @@ def test_card_numbers_luhn_for_separated_runs():
     for text in [
         "2026 10 07 12 34 56 78",
         "Total 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
-        "1234 5678 9012 3456",
+        "123 4567 8901 23456",
     ]:
         assert p.redact(text) == text, text
 
@@ -274,3 +274,119 @@ def test_ibans_need_a_valid_checksum_and_stop_at_their_length():
 def test_hyphenated_configured_name_is_one_stand_in():
     p = Pseudonymiser([], ["Jo", "Jo-Jo"])
     assert p.redact("Jo-Jo and Jo") == "Person 2 and Person 1"
+
+
+def test_cards_are_masked_before_accounts_and_never_split():
+    p = Pseudonymiser([])
+    assert p.redact("account 4111 1111 1111 1111") == "account ACCT_1 ending ••11"
+    assert p.redact("Card account number 5555 5555 5555 4444") == (
+        "Card account number ACCT_2 ending ••44"
+    )
+    assert p.redact("sort code 12-34-56 4111 1111 1111 1111") == (
+        "sort code SORTCODE_1 ACCT_1 ending ••11"
+    )
+    assert p.redact("4111 1111 1111 1111 12-34-56") == "ACCT_1 ending ••11 SORTCODE_1"
+
+
+def test_card_shapes_are_masked_without_luhn_but_other_shapes_need_luhn():
+    p = Pseudonymiser([])
+    for text in [
+        "4111 1111 1111 1112",
+        "3782 822463 10006",
+        "4111 111111 1111",
+        "4111 1111 1111 1111 123",
+    ]:
+        out = p.redact(text)
+        assert out.startswith("ACCT_"), (text, out)
+    for text in ["123 4567 8901 23456", "12 34 56 78 90 12 34"]:
+        assert p.redact(text) == text, text
+
+
+def test_any_whitespace_or_dash_separates_groups():
+    p = Pseudonymiser([])
+    for text in [
+        "4111  1111  1111  1111",
+        "4111\t1111\t1111\t1111",
+        "4111–1111‑1111−1111",
+        "4111 - 1111 - 1111 - 1111",
+        "41111111 11111111",
+        "4111​1111​1111​1111",
+    ]:
+        assert p.redact(text).startswith("ACCT_"), text
+    assert p.redact("sort code 40‑47‑84") == "sort code SORTCODE_1"
+    assert p.redact("12  34\t56") == "SORTCODE_2"
+    assert p.redact("GB33-BUKB-2020-1555-5555-55") == "IBAN_1"
+    assert p.redact("gb33  bukb  2020  1555  5555  55") == "IBAN_1"
+    assert p.redact("account no 1234\t5678").startswith("account no ACCT_")
+
+
+def test_date_like_sort_codes_with_keywords_and_accounts():
+    def r(text: str) -> str:
+        return Pseudonymiser([]).redact(text)
+
+    assert r("09-01-28 12345678") == "SORTCODE_1 ACCT_1 ending ••78"
+    assert r("Payee JOHN 09-01-28 12345678 £45.00") == (
+        "Payee JOHN SORTCODE_1 ACCT_1 ending ••78 £45.00"
+    )
+    assert r("Sort code and account number: 09-01-28 12345678") == (
+        "Sort code and account number: SORTCODE_1 ACCT_1 ending ••78"
+    )
+    assert r("56-12-03 is my sort code") == "SORTCODE_1 is my sort code"
+    assert r("09-01-28 is my sort code") == "SORTCODE_1 is my sort code"
+    assert r("My sort code and account number are 09-01-28 and 12345678") == (
+        "My sort code and account number are SORTCODE_1 and ACCT_1 ending ••78"
+    )
+    assert (
+        r("Sort-code 07 10 26 / sort/acc 09-01-28") == "Sort-code SORTCODE_1 / sort/acc SORTCODE_2"
+    )
+    assert r("sort code 40-47-84 12 Oct") == "sort code SORTCODE_1 12 Oct"
+    for text in ["Paid 07-10-26 £12.00", "07 10 26", "Paid £45.12 07-10-26 AMAZON"]:
+        assert r(text) == text, text
+    # a keyword on an earlier line does not turn a date into a sort code
+    assert r("sort code below\n07-10-26") == "sort code below\n07-10-26"
+
+
+def test_yyyymmdd_exemption_is_narrow():
+    def r(text: str) -> str:
+        return Pseudonymiser([]).redact(text)
+
+    assert r("Account balance 20201007") == "Account balance 20201007"
+    assert r("acc 19991231") == "acc 19991231"
+    assert r("account number 20201007") == "account number ACCT_1 ending ••07"
+    assert r("a/c no: 20201007") == "a/c no: ACCT_1 ending ••07"
+    assert r("acc no 20201007") == "acc no ACCT_1 ending ••07"
+    assert r("account 18991231") == "account ACCT_1 ending ••31"
+    assert r("account 21001231") == "account ACCT_1 ending ••31"
+
+
+def test_ibans_any_country_ascii_only_and_never_raise():
+    p = Pseudonymiser([])
+    assert p.redact("FK88 SC12 3456 7890 12") == "IBAN_1"
+    assert p.redact("MN121234123456789123") == "IBAN_2"
+    assert p.redact("GB12 İSTA NBUL 1234 5678 90") == "GB12 İSTA NBUL 1234 5678 90"
+
+
+def test_redact_never_raises_on_odd_unicode():
+    import random
+
+    rnd = random.Random(11)
+    alphabet = list("0123456789 -./,£@'\nA") + [
+        "İ", "ı", "́", "א", "‮", "٣", "‑", "​",
+        "\ud800", "\x00", "ﬁ", "①", "²", "ǅ", "ß", "GB", "sort code ",
+    ]  # fmt: skip
+    p = Pseudonymiser([("Zoë İ", "adult"), ("Alex Example", "adult")], ["ß"])
+    for _ in range(400):
+        text = "".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 80)))
+        p.restore(p.redact(text))
+
+
+def test_single_word_names_title_case_caps_and_mixed_case():
+    p = Pseudonymiser([("alex", "adult")], ["bob"])
+    assert (
+        p.redact("Alex ALEX alex Bob BOB bob")
+        == "Adult A Adult A Adult A Person 1 Person 1 Person 1"
+    )
+    q = Pseudonymiser([("Will", "adult")])
+    assert q.redact("I will pay Will, WILL") == "I will pay Adult A, Adult A"
+    m = Pseudonymiser([("Sam McDonald", "adult")])
+    assert m.redact("McDonald MCDONALD Mcdonald mcdonald") == "Adult A Adult A Adult A mcdonald"
