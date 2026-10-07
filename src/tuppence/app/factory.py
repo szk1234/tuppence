@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 
@@ -16,7 +19,18 @@ from tuppence.settings import RuntimeSettings
 
 
 def create_app(settings: RuntimeSettings) -> FastAPI:
+    services = build_services(settings)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        services.start()
+        try:
+            yield
+        finally:
+            services.stop()
+
     app = FastAPI(
+        lifespan=lifespan,
         title="Tuppence",
         version=__version__,
         docs_url=None,
@@ -24,7 +38,6 @@ def create_app(settings: RuntimeSettings) -> FastAPI:
         openapi_url="/api/openapi.json",
     )
     app.state.settings = settings
-    services = build_services(settings)
     app.state.services = services
     app.state.paths = services.paths
     install_error_handlers(app)

@@ -8,7 +8,7 @@ import secrets
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Literal
 
 from argon2 import PasswordHasher
@@ -261,10 +261,11 @@ class LoginLimiter:
             failures += 1
             locked = to_iso(now + self.lockout) if failures >= self.max_failures else None
             conn.execute(
-                "INSERT INTO login_attempt (key, failures, locked_until) VALUES (?, ?, ?)"
+                "INSERT INTO login_attempt (key, failures, locked_until, updated_at)"
+                " VALUES (?, ?, ?, ?)"
                 " ON CONFLICT(key) DO UPDATE SET failures = excluded.failures,"
-                " locked_until = excluded.locked_until",
-                [key, failures, locked],
+                " locked_until = excluded.locked_until, updated_at = excluded.updated_at",
+                [key, failures, locked, to_iso(now)],
             )
         return None
 
@@ -279,12 +280,27 @@ class LoginLimiter:
                 failures = 1
             locked = to_iso(now + self.lockout) if failures >= self.max_failures else None
             conn.execute(
-                "INSERT INTO login_attempt (key, failures, locked_until) VALUES (?, ?, ?)"
+                "INSERT INTO login_attempt (key, failures, locked_until, updated_at)"
+                " VALUES (?, ?, ?, ?)"
                 " ON CONFLICT(key) DO UPDATE SET failures = excluded.failures,"
-                " locked_until = excluded.locked_until",
-                [key, failures, locked],
+                " locked_until = excluded.locked_until, updated_at = excluded.updated_at",
+                [key, failures, locked, to_iso(now)],
             )
 
     def reset(self, key: str) -> None:
         with self.db.transaction() as conn:
             conn.execute("DELETE FROM login_attempt WHERE key = ?", [key])
+
+
+def prune_auth(db: Database, *, now: datetime | None = None) -> dict[str, int]:
+    """Delete expired sessions and login-throttle rows that are unlocked and over a day old."""
+    now = now or utcnow()
+    stamp = to_iso(now)
+    with db.transaction() as conn:
+        sessions = conn.execute("DELETE FROM session WHERE expires_at <= ?", [stamp]).rowcount
+        attempts = conn.execute(
+            "DELETE FROM login_attempt WHERE (locked_until IS NULL OR locked_until <= ?)"
+            " AND updated_at <= ?",
+            [stamp, to_iso(now - timedelta(days=1))],
+        ).rowcount
+    return {"sessions": sessions, "login_attempts": attempts}
