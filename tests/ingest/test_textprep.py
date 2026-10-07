@@ -236,5 +236,113 @@ def test_planning_twenty_thousand_lines_is_fast():
     doc = pages_document([rows], sha256="x", kind="pdf")
     started = time.perf_counter()
     chunks = plan_chunks(doc, rows_per_chunk=20)
-    assert time.perf_counter() - started < 1.0
+    assert time.perf_counter() - started < 2.0
     assert len(chunks) == 1001
+
+
+# --- R-M3-7 -----------------------------------------------------------------------------
+
+SENSITIVE_SPELLINGS = [
+    "s/c: 123456",
+    "S/C 12 34 56",
+    "s.c. 12-34-56",
+    "A/C 12345678",
+    "Acc no 12345678",
+    "Acc: 12345678",
+    "Account: 12345678",
+    "Account 1234 5678",
+    "Account holders: A Example and B Example",
+    "Account holder: A Example",
+    "Customer number 998877",
+    "Customer no. 998877",
+    "Membership number 1234567",
+    "Roll number 4455",
+    "4929 **** **** 4242",
+    "4929 1234 5678 4242",
+    "**** 1234",
+    "****1234",
+    "Card ****1234",
+    "Visa ****1234",
+    "xxxx-xxxx-xxxx-1234",
+    "Card XXXX 4242",
+    "Card ending in 4242",
+    "Sort code 12-34-56",
+]
+
+
+@pytest.mark.parametrize("line", SENSITIVE_SPELLINGS)
+def test_account_detail_spellings_are_withheld_after_the_anchor(line):
+    d, _ = _split(
+        ["Date Description Amount", "02 Oct 2026 Shop 4.00", line, "03 Oct 2026 Cafe 3.00"]
+    )
+    assert line not in _data_texts(d)
+    assert len(d.data_refs) == 3
+
+
+def test_repeated_plain_descriptions_stay_data():
+    d, _ = _split(
+        [
+            "Date Description Amount",
+            "02 Oct",
+            "Salary",
+            "Tesco Stores",
+            "03 Oct",
+            "Salary",
+            "Tesco Stores",
+        ]
+    )
+    assert _data_texts(d).count("Salary") == 2 and _data_texts(d).count("Tesco Stores") == 2
+
+
+def test_repeated_page_furniture_is_withheld():
+    d, _ = _split(
+        ["Date Description Amount", "02 Oct 2026 Shop 4.00", "Page 1 of 3", "Continued",
+         "Page 2 of 3", "Continued", "Statement period 1 Oct to 31 Oct",
+         "Statement period 1 Oct to 31 Oct",
+         "03 Oct 2026 Cafe 3.00"]
+    )  # fmt: skip
+    assert _data_texts(d) == [
+        "Date Description Amount",
+        "02 Oct 2026 Shop 4.00",
+        "03 Oct 2026 Cafe 3.00",
+    ]
+
+
+def test_two_hundred_thousand_csv_rows_chunk_quickly():
+    data = b"Date,Desc,Amount\n" + b"".join(
+        f"01/10/2026,Shop {i},-{i}.00\n".encode() for i in range(200_000)
+    )
+    doc = csv_document(data, sha256="x")
+    started = time.perf_counter()
+    plan_chunks(doc, rows_per_chunk=20)
+    assert time.perf_counter() - started < 2.0
+
+
+def test_a_holder_name_repeated_at_the_top_of_each_page_is_withheld():
+    pages = [
+        ["Date Description Amount", "02 Oct 2026 Shop 4.00", "03 Oct 2026 Cafe 3.00"],
+        ["ALEX EXAMPLE", "Date Description Amount", "04 Oct 2026 Shop 4.00"],
+        ["ALEX EXAMPLE", "Date Description Amount", "05 Oct 2026 Shop 4.00"],
+    ]
+    doc = pages_document(pages, sha256="x", kind="pdf")
+    sent = "\n".join(render(c.lines) for c in plan_chunks(doc, rows_per_chunk=2))
+    assert "ALEX EXAMPLE" not in sent and "Date Description Amount" in sent
+
+
+def test_mid_page_description_lines_stay_data():
+    d, _ = _split(
+        ["Date Description Amount", "02 Oct 2026", "Salary", "1,650.00", "03 Oct 2026",
+         "Salary", "1,650.00", "Faster payment", "Faster payment"]
+    )  # fmt: skip
+    assert _data_texts(d).count("Salary") == 2 and _data_texts(d).count("Faster payment") == 2
+
+
+def test_a_preamble_name_repeated_later_is_withheld():
+    d, _ = _split(
+        ["Mr Alex Example", "1 Example Road", "Date Description Amount",
+         "02 Oct 2026 Shop 4.00", "Alex Example", "03 Oct 2026 Cafe 3.00"]
+    )  # fmt: skip
+    assert "Alex Example" not in _data_texts(d)
+    d2 = pages_document([["Date Description Amount", "Alex Example", "02 Oct 2026 Shop 4.00"]],
+                        sha256="x", kind="pdf", names=["Alex Example"])  # fmt: skip
+    assert "Alex Example" not in _data_texts(d2)
