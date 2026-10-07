@@ -8,17 +8,28 @@ DATA="$(mktemp -d)"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
 uv run tuppence serve --mode server --host 127.0.0.1 --port "$PORT" --data-dir "$DATA" >"$DATA/server.log" 2>&1 &
 PID=$!
+LLM_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+uv run python tests/fakes/fake_llm.py --port "$LLM_PORT" >"$DATA/fake_llm.log" 2>&1 &
+LLM_PID=$!
+export FAKE_LLM_URL="http://127.0.0.1:$LLM_PORT"
 cleanup() {
   local status=$?
-  kill "$PID" 2>/dev/null || true
+  kill "$PID" "$LLM_PID" 2>/dev/null || true
   if [ "$status" -ne 0 ] && [ -f "$DATA/server.log" ]; then
     echo "--- Tuppence server log ---" >&2
     cat "$DATA/server.log" >&2 || true
+    echo "--- Fake LLM log ---" >&2
+    cat "$DATA/fake_llm.log" >&2 || true
   fi
   rm -rf "$DATA"
   exit "$status"
 }
 trap cleanup EXIT
 uv run --quiet python scripts/smoke_http.py "http://127.0.0.1:$PORT" --timeout 60 --expect-mode server
+for _ in $(seq 1 100); do
+  if curl -fsS "$FAKE_LLM_URL/health" >/dev/null 2>&1; then break; fi
+  sleep 0.2
+done
+curl -fsS "$FAKE_LLM_URL/health" >/dev/null
 cd web
 TUPPENCE_URL="http://127.0.0.1:$PORT" npx playwright test "$@"

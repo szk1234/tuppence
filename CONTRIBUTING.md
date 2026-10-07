@@ -18,6 +18,25 @@ npm --prefix web test        # UI tests
 bash scripts/e2e.sh          # browser end-to-end tests against a fresh server
 ```
 
+The end-to-end and `tests/integration` tests talk to a fake LLM server
+(`tests/fakes/fake_llm.py`) that speaks the OpenAI, Anthropic and Gemini wire formats.
+
+### Live tests (optional, never in CI)
+
+`uv run pytest -m live tests/live` calls real endpoints. Each test is skipped unless its
+environment variables are set:
+
+| Test | Variables |
+| --- | --- |
+| OpenAI-compatible | `TUPPENCE_LIVE_OPENAI_BASE`, `TUPPENCE_LIVE_OPENAI_KEY`, `TUPPENCE_LIVE_OPENAI_MODEL` |
+| Anthropic | `ANTHROPIC_API_KEY` (optional `TUPPENCE_LIVE_ANTHROPIC_MODEL`, default `claude-haiku-4-5`) |
+| Gemini | `GEMINI_API_KEY`, `TUPPENCE_LIVE_GEMINI_MODEL` |
+| Local | `TUPPENCE_LIVE_LOCAL_BASE`, `TUPPENCE_LIVE_LOCAL_MODEL` |
+
+Cloud tests may cost a little money. Add `-k local` to run only the local one.
+`bash scripts/live_llamacpp.sh` needs Docker: it downloads Qwen2.5 0.5B (about 490 MB, cached in
+`~/.cache/tuppence-models`), runs it in a llama.cpp server container and runs the local live test.
+
 The end-to-end tests need a browser; on first run: `cd web && npx playwright install chromium`.
 
 ## Personal-data guard

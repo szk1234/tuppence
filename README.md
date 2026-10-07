@@ -29,9 +29,10 @@ such as Tailscale.
 - **Guidance, not regulated financial advice.** Tuppence explains your money
   and points you to official tools and free advice services (MoneyHelper,
   StepChange, Citizens Advice). It never recommends specific investment products.
-- **Bring any AI:** local (Ollama, LM Studio, llama.cpp, vLLM, Jan) or cloud
-  (Anthropic, OpenAI, Gemini, OpenRouter, Mistral, Groq, DeepSeek, Qwen, Kimi,
-  GLM…) with your own key.
+- **Bring any AI:** local (Ollama, LM Studio, llama.cpp, vLLM, Jan, Foundry Local) or
+  cloud (Anthropic, OpenAI, Gemini, OpenRouter, Mistral, Groq, Together AI, xAI,
+  DeepSeek, Qwen, Kimi, GLM) with your own key, or any OpenAI-compatible server
+  through the custom option.
 - **Works without AI** for importing, rules, budgets and UK checks; AI adds the
   understanding.
 
