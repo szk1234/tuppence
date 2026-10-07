@@ -10,7 +10,8 @@ from tuppence.app.deps import get_services
 from tuppence.app.services import Services
 from tuppence.core.errors import InputError
 from tuppence.core.household import Household, HouseholdPatch, Person, PersonIn, PersonPatch
-from tuppence.core.timeline import TimelineEntry
+from tuppence.core.money import format_pounds
+from tuppence.core.timeline import POUNDS_ATTRIBUTES, TimelineEntry
 
 Svc = Annotated[Services, Depends(get_services)]
 
@@ -38,6 +39,13 @@ class TimelineIn(BaseModel):
     value: Any
     valid_from: date
     expected_current: Any = None
+
+
+def _api_entry(entry: TimelineEntry) -> TimelineEntry:
+    """Money crosses the API as pounds strings; storage stays integer pence."""
+    if entry.attribute in POUNDS_ATTRIBUTES:
+        return entry.model_copy(update={"value": format_pounds(entry.value)})
+    return entry
 
 
 def _parse(model: type[BaseModel], data: dict[str, Any]) -> Any:
@@ -83,7 +91,7 @@ def retire_person(person_id: str, body: VersionOnly, services: Svc) -> Person:
 
 @router.get("/timeline")
 def timeline(subject_type: str, subject_id: str, services: Svc) -> dict[str, list[TimelineEntry]]:
-    return {"entries": services.timeline.history(subject_type, subject_id)}
+    return {"entries": [_api_entry(e) for e in services.timeline.history(subject_type, subject_id)]}
 
 
 @router.post("/timeline", status_code=201)
@@ -91,8 +99,10 @@ def add_timeline(body: TimelineIn, services: Svc) -> TimelineEntry:
     extra: dict[str, Any] = {}
     if "expected_current" in body.model_fields_set:
         extra["expected_current"] = body.expected_current
-    return services.timeline.set(
-        body.subject_type, body.subject_id, body.attribute, body.value, body.valid_from, **extra
+    return _api_entry(
+        services.timeline.set(
+            body.subject_type, body.subject_id, body.attribute, body.value, body.valid_from, **extra
+        )
     )
 
 

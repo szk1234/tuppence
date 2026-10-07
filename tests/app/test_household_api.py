@@ -191,7 +191,10 @@ def test_money_timeline_attribute_takes_pounds_and_overflow_is_422(client):
         "valid_from": "2025-01-01",
     }
     ok = client.post("/api/household/timeline", json={**base, "value": "1450.00"})
-    assert ok.status_code == 201 and ok.json()["value"] == 145000
+    assert ok.status_code == 201 and ok.json()["value"] == "1450.00"
+    q = {"subject_type": "household", "subject_id": "1"}
+    listed = client.get("/api/household/timeline", params=q).json()["entries"]
+    assert [e["value"] for e in listed if e["attribute"] == "housing_monthly_pence"] == ["1450.00"]
     for bad in ["99999999999999999999999.99", 1450, 1e300]:
         assert (
             client.post("/api/household/timeline", json={**base, "value": bad}).status_code == 422
