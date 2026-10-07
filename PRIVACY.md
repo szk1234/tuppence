@@ -2,6 +2,8 @@
 
 Tuppence is local-first. There is no Tuppence account, and no telemetry.
 
+> **Status: pre-alpha.** Controls such as the Local only switch, the privacy log and the pseudonymise toggle are being built; some are not in the code yet.
+
 ## What is stored
 
 Everything lives in your data folder: a SQLite database and the statement files

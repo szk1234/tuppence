@@ -17,9 +17,9 @@ gives UK-specific guidance — from bills creeping up to money you may be owed.
 
 | How | For | Command |
 |---|---|---|
-| Docker | home servers, NAS, self-hosters | `docker compose up -d` then open `http://<server>:8040` |
+| Docker | home servers, NAS, self-hosters | from a clone of this repo: `git clone https://github.com/szk1234/tuppence && cd tuppence && docker compose up -d --build`, then open `http://<server>:8040` (a published image arrives with the developer preview) |
 | Desktop app | Windows, macOS, Linux | download from Releases (coming with the developer preview) |
-| uvx | technical users | `uvx tuppence` |
+| uvx | technical users | not yet on PyPI; arrives with the developer preview. For now, from a clone: `uv run tuppence serve` |
 
 Never expose Tuppence directly to the internet. For remote access use a VPN
 such as Tailscale.
