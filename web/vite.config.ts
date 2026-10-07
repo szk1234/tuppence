@@ -18,6 +18,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    include: ['src/**/*.{test,spec}.ts'],
     setupFiles: ['./src/test-setup.ts'],
   },
   resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,

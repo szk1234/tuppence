@@ -18,3 +18,5 @@ src/tuppence/web_dist/
 .superpowers/
 .env*
 !.env.example
+web/test-results/
+web/playwright-report/

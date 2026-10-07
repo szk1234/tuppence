@@ -15,7 +15,10 @@ uv run tuppence serve        # http://127.0.0.1:8040
 uv run pytest                # fast tests
 uv run pytest -m slow        # packaging smoke tests (builds images/bundles)
 npm --prefix web test        # UI tests
+bash scripts/e2e.sh          # browser end-to-end tests against a fresh server
 ```
+
+The end-to-end tests need a browser; on first run: `cd web && npx playwright install chromium`.
 
 ## Personal-data guard
 
