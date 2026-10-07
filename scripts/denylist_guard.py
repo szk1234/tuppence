@@ -58,6 +58,12 @@ def scan_text(text: str, patterns: list[re.Pattern[str]]) -> list[tuple[int, int
     return hits
 
 
+def redact(text: str, patterns: list[re.Pattern[str]]) -> str:
+    for pattern in patterns:
+        text = pattern.sub("[redacted]", text)
+    return text
+
+
 def candidate_files(root: Path) -> list[str]:
     out = subprocess.run(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -87,15 +93,16 @@ def main(argv: list[str] | None = None) -> int:
     patterns = compile_terms(terms)
     failures = 0
     for rel in candidate_files(root):
+        shown = redact(rel, patterns)
         for _, index in scan_text(rel, patterns):
-            print(f"{rel}: path matches denylisted term #{index + 1}")
+            print(f"{shown}: path matches denylisted term #{index + 1}")
             failures += 1
         path = root / rel
         if not path.is_file():
             continue
         text = path.read_bytes().decode("utf-8", errors="ignore")
         for lineno, index in scan_text(text, patterns):
-            print(f"{rel}:{lineno}: matches denylisted term #{index + 1}")
+            print(f"{shown}:{lineno}: matches denylisted term #{index + 1}")
             failures += 1
     if failures:
         print(

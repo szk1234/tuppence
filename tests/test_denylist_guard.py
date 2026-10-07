@@ -40,11 +40,22 @@ def test_main_reports_term_index_not_term(tmp_path, capsys, monkeypatch):
     assert "secretword" not in (out.out + out.err).lower()
 
 
-def test_main_checks_file_paths_too(tmp_path, monkeypatch):
+def test_main_checks_file_paths_too(tmp_path, capsys, monkeypatch):
     repo = _git_repo(tmp_path)
     (repo / "secretword-notes.md").write_text("clean\n", encoding="utf-8")
     monkeypatch.setenv("TUPPENCE_DENYLIST", "secretword")
+    monkeypatch.delenv("TUPPENCE_DENYLIST_FILE", raising=False)
     assert guard.main(["--root", str(repo)]) == 1
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert "secretword" not in combined.lower()
+    assert "[redacted]-notes.md" in combined
+    assert "term #1" in combined
+
+
+def test_redact_replaces_every_match_case_insensitively():
+    patterns = guard.compile_terms(["Alex Example"])
+    assert guard.redact("alex example/ALEX EXAMPLE.md", patterns) == "[redacted]/[redacted].md"
 
 
 def test_no_terms_passes_unless_required(tmp_path, monkeypatch):
