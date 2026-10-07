@@ -14,16 +14,22 @@ from pathlib import Path
 
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.migrate import MigrationError
+from tuppence.core.secrets import SecretError
 
 # What opening the data can raise: a damaged database file, a failed or unknown migration, or a
 # filesystem problem (e.g. the disk filling up while the pre-migration backup is written).
-STARTUP_ERRORS: tuple[type[BaseException], ...] = (sqlite3.DatabaseError, MigrationError, OSError)
+STARTUP_ERRORS: tuple[type[BaseException], ...] = (
+    sqlite3.DatabaseError,
+    MigrationError,
+    SecretError,
+    OSError,
+)
 
 ERROR_FILE = "startup-error.txt"
 
 
 def startup_failure(data_dir: Path, exc: BaseException) -> str:
-    if isinstance(exc, MigrationError):
+    if isinstance(exc, MigrationError | SecretError):
         detail = str(exc)
     elif isinstance(exc, sqlite3.DatabaseError):
         detail = f"its database couldn't be opened ({exc}). The file may be damaged."

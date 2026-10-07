@@ -28,6 +28,7 @@ CREATE TABLE llm_model (
   source TEXT NOT NULL CHECK (source IN ('provider', 'catalogue', 'default', 'user')),
   fetched_at TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
   PRIMARY KEY (connection_id, model_id)
 );
 
@@ -58,4 +59,9 @@ CREATE TABLE secret (
   ref TEXT PRIMARY KEY,
   ciphertext BLOB NOT NULL,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE secret_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );

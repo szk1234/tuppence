@@ -40,6 +40,14 @@ def test_unwritable_data_dir_exits_2(tmp_path, capsys, monkeypatch):
     assert "TUPPENCE_DATA_DIR" in capsys.readouterr().err
 
 
+def test_bad_secret_key_file_exits_2(tmp_path, capsys, monkeypatch):
+    bad = tmp_path / "nokey"
+    monkeypatch.setenv("TUPPENCE_SECRET_KEY_FILE", str(bad))
+    rc = main(["serve", "--no-browser", "--mode", "server", "--data-dir", str(tmp_path / "d")])
+    assert rc == 2
+    assert str(bad) in capsys.readouterr().err
+
+
 def _ipv6_loopback_usable() -> bool:
     if not socket.has_ipv6:
         return False

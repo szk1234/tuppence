@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -36,6 +37,7 @@ def test_desktop_bundle_smoke():
         capture_output=True,
         text=True,
         timeout=1800,
+        env={**os.environ, "PYTHON_KEYRING_BACKEND": "keyring.backends.fail.Keyring"},
     )
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
     assert "smoke: ok desktop" in result.stdout
