@@ -1,5 +1,8 @@
 export class ApiError extends Error {
-  constructor(public status: number, public detail: string, public currentVersion?: number) {
+  constructor(
+    public status: number, public detail: string, public currentVersion?: number,
+    public code?: string, public connectionId?: string,
+  ) {
     super(detail)
   }
 }
@@ -34,7 +37,11 @@ export async function api<T = unknown>(path: string, opts: { method?: string; bo
       const msg = typeof first?.msg === 'string' ? first.msg : detail
       detail = field !== undefined && field !== 'body' ? `${field}: ${msg}` : msg
     }
-    throw new ApiError(res.status, detail, data?.current_version)
+    throw new ApiError(
+      res.status, detail, data?.current_version,
+      typeof data?.code === 'string' ? data.code : undefined,
+      typeof data?.connection_id === 'string' ? data.connection_id : undefined,
+    )
   }
   return data as T
 }

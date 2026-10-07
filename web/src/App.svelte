@@ -9,9 +9,13 @@
   import NotFound from './pages/NotFound.svelte'
   import Setup from './pages/Setup.svelte'
   import Agents from './pages/settings/Agents.svelte'
+  import AI from './pages/settings/AI.svelte'
   import Household from './pages/settings/Household.svelte'
+  import Privacy from './pages/settings/Privacy.svelte'
+  import Usage from './pages/Usage.svelte'
 
-  const routes: Record<string, typeof Home> = { '/': Home, '/login': Home, '/setup': Home, '/settings/household': Household, '/settings/agents': Agents }
+  const routes: Record<string, typeof Home> = { '/': Home, '/login': Home, '/setup': Home, '/settings/household': Household, '/settings/agents': Agents,
+    '/settings/ai': AI, '/settings/privacy': Privacy, '/usage': Usage }
   let failed = $state(false)
   onMount(() => { loadSession().catch(() => { failed = true }) })
   const Page = $derived(routes[router.path] ?? NotFound)

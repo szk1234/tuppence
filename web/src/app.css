@@ -29,3 +29,10 @@ fieldset { border: 1px solid var(--line); border-radius: 8px; margin: .75rem 0; 
 fieldset.bare { border: 0; margin: 0; padding: 0; min-width: 0; }
 .field { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
 .field label { min-width: 16rem; font-weight: 500; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--line); font-size: .92rem; }
+.toggle { margin: .5rem 0 1rem; }
+.toggle label { font-weight: 500; display: flex; gap: .5rem; align-items: center; margin: 0; }
+.badge.cloud { background: var(--danger-bg); color: var(--danger); }
+textarea { font: inherit; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); width: 100%; box-sizing: border-box; }
+.table-wrap { overflow-x: auto; }

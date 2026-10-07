@@ -11,6 +11,9 @@
     { href: '/', label: 'Home' },
     { href: '/settings/household', label: 'Household' },
     { href: '/settings/agents', label: 'Agents' },
+    { href: '/settings/ai', label: 'AI' },
+    { href: '/settings/privacy', label: 'Privacy' },
+    { href: '/usage', label: 'Usage' },
   ]
 </script>
 
