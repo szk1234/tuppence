@@ -39,3 +39,14 @@ def test_desktop_bundle_smoke():
     )
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
     assert "smoke: ok desktop" in result.stdout
+
+
+@pytest.mark.slow
+def test_wheel_contains_ui_and_runs():
+    if not (ROOT / "src" / "tuppence" / "web_dist" / "index.html").is_file():
+        pytest.skip("UI not built")
+    result = subprocess.run(
+        ["bash", "scripts/smoke_wheel.sh"], cwd=ROOT, capture_output=True, text=True, timeout=900
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "smoke: ok wheel" in result.stdout
