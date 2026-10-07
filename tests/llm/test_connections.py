@@ -321,6 +321,15 @@ def test_surrounding_spaces_on_a_pasted_key_are_trimmed(reg):
     assert reg.api_key(c.id) == "sk-good-123"
 
 
+def test_header_names_and_values_are_trimmed_like_keys(reg, seen):
+    c = reg.create("custom", base_url="http://10.0.0.5:8000/v1", headers={" X-Org ": " abc \n"})
+    reg.test(c.id)
+    assert seen[-1].headers["x-org"] == "abc"
+    c = reg.update(c.id, {"headers": {"X-Org": "  def  "}}, expected_version=c.version)
+    reg.test(c.id)
+    assert seen[-1].headers["x-org"] == "def"
+
+
 @pytest.mark.parametrize(
     "headers",
     [

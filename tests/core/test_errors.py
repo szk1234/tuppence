@@ -23,9 +23,13 @@ def test_httpx_status_error_keeps_its_status():
     assert safe_error_text(exc) == "HTTPStatusError (HTTP 503)"
 
 
-def test_network_errors_never_carry_their_text():
-    assert safe_error_text(LLMConnectionError("Couldn't reach x: sk-LEAK")) == "LLMConnectionError"
-    assert safe_error_text(LLMTimeout("Timed out: sk-LEAK")) == "LLMTimeout"
+def test_connection_errors_are_worded_from_safe_facts_only():
+    down = LLMConnectionError("box.lan", "Ollama")
+    assert safe_error_text(down) == "Couldn't reach Ollama. Is it running?"
+    assert (
+        safe_error_text(LLMConnectionError("box.lan")) == "Couldn't reach box.lan. Is it running?"
+    )
+    assert safe_error_text(LLMTimeout("box.lan", "Ollama")) == "Ollama took too long to answer."
 
 
 def test_messages_tuppence_wrote_are_kept():

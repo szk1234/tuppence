@@ -111,25 +111,36 @@ def test_the_provider_reports_a_slow_drip_as_a_timeout(log):
 
 
 def test_each_request_gets_its_own_deadline(log):
-    """A client used for several requests (paged model lists) gives each the full timeout."""
-    hits = []
+    """Two requests on one client each get the full timeout: the second isn't cut short."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(2)
+    port = sock.getsockname()[1]
+    reply = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
 
-    def handler(req):
-        hits.append(req.url.path)
-        return httpx.Response(200, json={})
+    def serve():
+        for _ in range(2):
+            try:
+                conn, _addr = sock.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(65536)
+                time.sleep(0.7)  # each answer takes most of the 1.0 s limit
+                conn.sendall(reply)
 
-    ctx = CallContext(purpose="llm", local=True)
-    with make_client(
-        ctx,
-        privacy_log=log,
-        local_only=lambda: False,
-        timeout=0.5,
-        transport=httpx.MockTransport(handler),
-    ) as client:
-        for _ in range(3):
-            client.get("http://127.0.0.1:9/v1/models")
-            time.sleep(0.2)
-    assert len(hits) == 3
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        with client_for(log, 1.0) as client:
+            start = time.monotonic()
+            first = client.get(f"http://127.0.0.1:{port}/v1/models")
+            second = client.get(f"http://127.0.0.1:{port}/v1/models")
+            elapsed = time.monotonic() - start
+    finally:
+        sock.close()
+    # 1.4 s in total is over one deadline, so a shared clock would have cut the second off.
+    assert first.status_code == second.status_code == 200
+    assert elapsed > 1.0, elapsed
 
 
 def test_time_spent_resolving_the_name_counts_against_the_limit(log, monkeypatch):

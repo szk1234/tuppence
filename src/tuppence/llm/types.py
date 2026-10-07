@@ -91,14 +91,31 @@ class LLMHTTPError(LLMError):
         self.status, self.body, self.retry_after = status, body, retry_after
 
 
-class LLMConnectionError(LLMError):
-    def __init__(self, message: str) -> None:
-        super().__init__(message, retryable=True)
+class _Unreachable(UserFacing, LLMError):
+    """A failure to get an answer, worded from safe facts only (never the exception text).
+
+    `name` is the connection's name; the client fills it in, as providers only know the host.
+    """
+
+    what = ""
+
+    def __init__(self, host: str | None = None, name: str | None = None) -> None:
+        super().__init__(self.what, retryable=True)
+        self.host, self.name = host, name
+
+    @property
+    def subject(self) -> str:
+        return self.name or self.host or "the AI server"
 
 
-class LLMTimeout(LLMError):
-    def __init__(self, message: str) -> None:
-        super().__init__(message, retryable=True)
+class LLMConnectionError(_Unreachable):
+    def __str__(self) -> str:
+        return f"Couldn't reach {self.subject}. Is it running?"
+
+
+class LLMTimeout(_Unreachable):
+    def __str__(self) -> str:
+        return f"{self.subject} took too long to answer."
 
 
 class LLMRefused(LLMError):

@@ -202,6 +202,20 @@ def test_every_model_failing_is_502(client, scripted):
     assert r.status_code == 502 and "m-small" in r.json()["detail"]
 
 
+def test_try_against_a_stopped_server_says_so_in_plain_words(client, scripted):
+    conn = ready(client, scripted)
+
+    def refuse(req):
+        raise httpx.ConnectError("boom-detail-xyz")
+
+    scripted.handler = refuse
+    r = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
+    detail = r.json()["detail"]
+    assert r.status_code == 502
+    assert f"Couldn't reach {conn['name']}. Is it running?" in detail
+    assert "LLMConnectionError" not in detail and "boom-detail" not in detail
+
+
 def test_forget_keys_then_use_is_409(client, scripted):
     conn = ready(client, scripted)
     forgot = client.post("/api/llm/secrets/forget")

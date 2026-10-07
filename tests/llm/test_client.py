@@ -834,7 +834,7 @@ def test_a_clamped_timeout_is_the_runs_limit_not_a_sick_server(env):
     t[0] = 20.0
 
     def timeout(req):
-        raise LLMTimeout("timed out")
+        raise LLMTimeout("127.0.0.1")
 
     real = services.connections._provider
 
@@ -879,10 +879,11 @@ def test_provider_error_text_never_reaches_the_ledger_or_the_reasons(env):
     scripted.handler = leak
     with pytest.raises(AllModelsFailed) as exc:
         services.llm.chat("coach", U)
-    assert "PROBEKEY" not in str(exc.value) and "LLMConnectionError" in str(exc.value)
+    assert "PROBEKEY" not in str(exc.value) and "Couldn't reach" in str(exc.value)
     with services.db.connection() as conn:
         errors = [r[0] for r in conn.execute("SELECT error FROM llm_usage")]
-    assert errors == ["LLMConnectionError"]
+    assert len(errors) == 1 and errors[0].endswith(" Is it running?")
+    assert "LLMConnectionError" not in errors[0] and "PROBEKEY" not in errors[0]
 
 
 def test_http_error_bodies_are_not_stored_or_returned(env):

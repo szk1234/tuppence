@@ -30,6 +30,7 @@ from tuppence.llm.types import (
     ChatResponse,
     ConnectionChanged,
     ContextTooLarge,
+    LLMConnectionError,
     LLMError,
     LLMHTTPError,
     LLMTimeout,
@@ -348,6 +349,8 @@ class LLMClient:
             except ConnectionChanged as exc:
                 return safe_error_text(exc)  # not the server's fault: no breaker, no ledger
             except LLMError as exc:
+                if isinstance(exc, LLMConnectionError | LLMTimeout):
+                    exc.name = conn.name
                 # Only a connection that looks unhealthy counts towards the breaker; a
                 # refusal or a malformed reply means the server answered.
                 if exc.retryable:

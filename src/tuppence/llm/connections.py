@@ -151,6 +151,7 @@ def _clean_headers(headers: Any) -> dict[str, str]:
                 f"A header name can only use letters, digits and - (up to {MAX_HEADER_NAME} "
                 "characters), with no spaces or ':'."
             )
+        value = value.strip()  # a pasted stray space would make every request fail
         if len(value) > MAX_HEADER_VALUE:
             raise InputError(f"Header values can be up to {MAX_HEADER_VALUE:,} characters.")
         if not _printable(value, spaces=True):
