@@ -16,7 +16,12 @@ import httpx
 import uvicorn
 
 from tuppence import __version__
-from tuppence.paths import DataDirError, resolve_data_dir
+from tuppence.paths import (
+    DataDirError,
+    InstanceLocked,
+    acquire_instance_lock,
+    resolve_data_dir,
+)
 from tuppence.settings import RuntimeSettings
 
 
@@ -131,30 +136,38 @@ def run_desktop(
     except DataDirError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    sock = bind_loopback_socket()
-    port = int(sock.getsockname()[1])
-    token = new_launch_token()
-    settings = RuntimeSettings.for_mode("desktop", data_dir=root, port=port, launch_token=token)
-    server = ServerThread(create_app(settings), "127.0.0.1", port, sock)
-    server.start()
     try:
+        lock = acquire_instance_lock(root)
+    except InstanceLocked as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        sock = bind_loopback_socket()
+        port = int(sock.getsockname()[1])
+        token = new_launch_token()
+        settings = RuntimeSettings.for_mode("desktop", data_dir=root, port=port, launch_token=token)
+        server = ServerThread(create_app(settings), "127.0.0.1", port, sock)
+        server.start()
         try:
-            server.wait_until_healthy()
-        except (TimeoutError, RuntimeError) as exc:
-            print(f"Tuppence could not start: {exc}", file=sys.stderr)
-            return 1
-        if smoke:
-            result = {"ok": True, "url": server.url, "version": __version__, "mode": "desktop"}
-            text = json.dumps(result)
-            if smoke_out:
-                Path(smoke_out).write_text(text, encoding="utf-8")
-            print(text)
+            try:
+                server.wait_until_healthy()
+            except (TimeoutError, RuntimeError) as exc:
+                print(f"Tuppence could not start: {exc}", file=sys.stderr)
+                return 1
+            if smoke:
+                result = {"ok": True, "url": server.url, "version": __version__, "mode": "desktop"}
+                text = json.dumps(result)
+                if smoke_out:
+                    Path(smoke_out).write_text(text, encoding="utf-8")
+                print(text)
+                return 0
+            launch_url = f"{server.url}auth/launch?token={token}"
+            if not (open_window or open_webview_window)(launch_url):
+                print("No desktop window available; opening Tuppence in your browser.")
+                (open_browser or webbrowser.open)(launch_url)
+                (wait_forever or _wait_forever)()
             return 0
-        launch_url = f"{server.url}auth/launch?token={token}"
-        if not (open_window or open_webview_window)(launch_url):
-            print("No desktop window available; opening Tuppence in your browser.")
-            (open_browser or webbrowser.open)(launch_url)
-            (wait_forever or _wait_forever)()
-        return 0
+        finally:
+            server.stop()
     finally:
-        server.stop()
+        lock.release()

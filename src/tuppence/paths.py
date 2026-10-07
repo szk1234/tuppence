@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from platformdirs import user_data_dir
 
@@ -62,3 +64,56 @@ class DataPaths:
         for directory in (self.root, self.files, self.backups, self.config):
             directory.mkdir(parents=True, exist_ok=True)
         return self
+
+
+class InstanceLocked(RuntimeError):
+    """Another Tuppence process already holds this data folder."""
+
+
+class InstanceLock:
+    """An exclusive OS lock on `<data>/tuppence.lock`, held until released or the process exits."""
+
+    def __init__(self, handle: IO[bytes]) -> None:
+        self._handle: IO[bytes] | None = handle
+
+    def release(self) -> None:
+        handle, self._handle = self._handle, None
+        if self in _held_locks:
+            _held_locks.remove(self)
+        if handle is None:
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+_held_locks: list[InstanceLock] = []  # keeps every lock alive for the process lifetime
+
+
+def acquire_instance_lock(data_dir: str | os.PathLike[str]) -> InstanceLock:
+    handle = open(Path(data_dir) / "tuppence.lock", "a+b")  # noqa: SIM115 - held on purpose
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise InstanceLocked("Tuppence is already running with this data folder.") from exc
+    lock = InstanceLock(handle)
+    _held_locks.append(lock)
+    return lock

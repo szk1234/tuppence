@@ -78,7 +78,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
         return {"backup": str(made) if made else None}
 
     def prune_handler(_job: Job) -> dict[str, Any]:
-        return dict(prune_auth(db))
+        return {**prune_auth(db), "old_jobs": queue.prune_finished(days=30)}
 
     worker = Worker(
         queue,

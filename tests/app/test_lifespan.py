@@ -28,3 +28,24 @@ def test_prune_job_is_registered_and_runs(make_app):
         ):
             time.sleep(0.1)
         assert any(j.kind == "maintenance.prune_auth" and j.status == "done" for j in q.list())
+
+
+def test_running_job_is_recovered_on_startup(make_app):
+    from tuppence.core.clock import to_iso, utcnow
+
+    app = make_app("server")
+    q = app.state.services.queue
+    now = to_iso(utcnow())
+    with app.state.services.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO job (kind, scope_key, status, attempts, run_after, created_at, started_at)"
+            " VALUES ('maintenance.daily_backup', 'orphan', 'running', 1, ?, ?, ?)",
+            [now, now, now],
+        )
+    with TestClient(app):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not any(
+            j.scope_key == "orphan" and j.status == "done" for j in q.list()
+        ):
+            time.sleep(0.1)
+        assert any(j.scope_key == "orphan" and j.status == "done" for j in q.list())

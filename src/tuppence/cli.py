@@ -11,7 +11,12 @@ import webbrowser
 from typing import NoReturn
 
 from tuppence import __version__
-from tuppence.paths import DataDirError, resolve_data_dir
+from tuppence.paths import (
+    DataDirError,
+    InstanceLocked,
+    acquire_instance_lock,
+    resolve_data_dir,
+)
 from tuppence.settings import RuntimeSettings
 
 
@@ -42,6 +47,11 @@ def _serve(args: argparse.Namespace) -> int:
     except DataDirError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    try:
+        lock = acquire_instance_lock(data_dir)
+    except InstanceLocked as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     launch_token = secrets.token_urlsafe(32) if args.mode == "local" else None
     settings = RuntimeSettings.for_mode(
         args.mode, data_dir=data_dir, host=args.host, port=args.port, launch_token=launch_token
@@ -52,6 +62,7 @@ def _serve(args: argparse.Namespace) -> int:
             f"Try another with --port, e.g. --port {settings.port + 1}.",
             file=sys.stderr,
         )
+        lock.release()
         return 2
     shown_host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host  # noqa: S104
     url = f"http://{shown_host}:{settings.port}/"
@@ -59,7 +70,12 @@ def _serve(args: argparse.Namespace) -> int:
     print(f"Tuppence {__version__} running at {open_url}  (data: {data_dir})")
     if settings.mode == "local" and not args.no_browser:
         webbrowser.open(open_url)
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="warning")
+    try:
+        uvicorn.run(
+            create_app(settings), host=settings.host, port=settings.port, log_level="warning"
+        )
+    finally:
+        lock.release()
     return 0
 
 

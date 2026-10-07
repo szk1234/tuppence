@@ -120,7 +120,7 @@ def test_worker_runs_handlers_and_records_results(env):
     assert seen == [{"v": 1}] and q.get(ok).status == "done" and q.get(ok).result == {"ok": True}
     assert q.get(bad).status == "failed" and "division by zero" in q.get(bad).error
     assert q.get(later).status == "queued" and q.get(later).error == "waiting for data"
-    assert q.get(unknown).status == "failed" and "No handler" in q.get(unknown).error
+    assert q.get(unknown).status == "queued"  # kinds without a handler are left alone
 
 
 def test_worker_thread_start_stop(env):
@@ -184,3 +184,147 @@ def test_limiter_stamps_updated_at(tmp_path):
     LoginLimiter(db).begin_attempt("k")
     with db.connection() as conn:
         assert conn.execute("SELECT updated_at FROM login_attempt").fetchone()[0] > "2020"
+
+
+MERGE = lambda old, new: {"ids": sorted(set(old["ids"]) | set(new["ids"]))}  # noqa: E731
+
+
+def _merging_env(tmp_path):
+    db = Database(tmp_path / "m.db")
+    migrate(db, tmp_path / "b")
+    clock = Clock()
+    return JobQueue(db, clock=clock, merges={"analysis": MERGE}), clock
+
+
+def _running_then_newer(q, first_ids, newer_ids):
+    first = q.enqueue("analysis", scope_key="s", payload={"ids": first_ids})
+    claimed = q.claim()
+    assert claimed.id == first
+    newer = q.enqueue("analysis", scope_key="s", payload={"ids": newer_ids})
+    assert newer != first
+    return first, newer
+
+
+def test_registered_merge_applies_on_enqueue(tmp_path):
+    q, _ = _merging_env(tmp_path)
+    jid = q.enqueue("analysis", payload={"ids": [1]})
+    q.enqueue("analysis", payload={"ids": [2]})
+    assert q.get(jid).payload == {"ids": [1, 2]}
+
+
+@pytest.mark.parametrize("path", ["fail", "defer", "recover"])
+def test_requeue_conflict_keeps_both_payloads(tmp_path, path):
+    q, _ = _merging_env(tmp_path)
+    first, newer = _running_then_newer(q, [1], [2])
+    if path == "fail":
+        q.fail(first, "boom")
+    elif path == "defer":
+        q.defer(first, "wait", delay_s=60)
+    else:
+        q.recover_running()
+    assert q.get(first).status == "cancelled"
+    assert q.get(newer).status == "queued" and q.get(newer).payload == {"ids": [1, 2]}
+
+
+def test_requeue_conflict_without_merge_drops_old_payload(env):
+    q, _ = env
+    first = q.enqueue("analysis", scope_key="s", payload={"ids": [1]})
+    q.claim()
+    newer = q.enqueue("analysis", scope_key="s", payload={"ids": [2]})
+    q.fail(first, "boom")
+    assert q.get(newer).payload == {"ids": [2]}
+
+
+def test_recover_running_fails_poison_jobs(env):
+    q, _ = env
+    jid = q.enqueue("analysis", max_attempts=1)
+    q.claim()
+    assert q.recover_running() == 1
+    job = q.get(jid)
+    assert job.status == "failed" and job.error == "Stopped after repeated interruptions"
+
+
+def test_claim_only_takes_listed_kinds(env):
+    q, _ = env
+    q.enqueue("mystery")
+    assert q.claim(kinds=frozenset({"echo"})) is None
+    assert q.claim(kinds=frozenset()) is None
+    assert q.claim(kinds=frozenset({"mystery"})) is not None
+
+
+def test_prune_finished_removes_old_terminal_jobs(env):
+    q, clock = env
+    done = q.enqueue("a")
+    q.complete(q.claim().id)
+    q.enqueue("b", max_attempts=1)
+    q.fail(q.claim().id, "x")
+    queued = q.enqueue("c")
+    clock.advance(29 * 86400)
+    assert q.prune_finished(days=30) == 0
+    clock.advance(2 * 86400)
+    q.enqueue("recent")
+    assert q.prune_finished(days=30) == 2
+    assert [j.kind for j in q.list()] == ["recent", "c"]
+    assert done and queued
+
+
+def test_periodic_survives_enqueue_errors(env):
+    import sqlite3
+    import time
+
+    from tuppence.core.jobs import Periodic
+
+    q, _ = env
+    real, calls = q.enqueue, []
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(*a, **kw)
+
+    q.enqueue = flaky  # type: ignore[method-assign]
+    p = Periodic(q, "tick", scope_key="s", interval_s=0.05)
+    p.start()
+    deadline = time.monotonic() + 5
+    while not q.list() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    alive = p._thread.is_alive()
+    p.stop()
+    assert alive and len(calls) >= 2 and q.list()
+
+
+def test_worker_retries_bookkeeping_write(env):
+    import sqlite3
+
+    q, _ = env
+    jid = q.enqueue("echo")
+    real, attempts = q.complete, []
+
+    def flaky(job_id, result=None):
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        real(job_id, result)
+
+    q.complete = flaky  # type: ignore[method-assign]
+    w = Worker(q, {"echo": lambda j: {"ok": 1}})
+    w.retry_delays = (0, 0, 0)
+    assert w.run_once()
+    assert len(attempts) == 3 and q.get(jid).status == "done"
+
+
+def test_worker_gives_up_bookkeeping_after_retries(env):
+    import sqlite3
+
+    q, _ = env
+    jid = q.enqueue("echo")
+
+    def broken(job_id, result=None):
+        raise sqlite3.OperationalError("database is locked")
+
+    q.complete = broken  # type: ignore[method-assign]
+    w = Worker(q, {"echo": lambda j: None})
+    w.retry_delays = (0, 0)
+    assert w.run_once()
+    assert q.get(jid).status == "running"  # recover_running handles it on next start
