@@ -11,11 +11,17 @@
     headers: Array<{ name: string; has_value: boolean }>; needs_notice: boolean; notice_acknowledged_at: string | null
     enabled: boolean; version: number
   }
-  type Model = { connection_id: string; model_id: string; display_name: string }
+  type Model = {
+    connection_id: string; model_id: string; display_name: string | null; context_window: number
+    price_in_usd_per_mtok: number | null; price_out_usd_per_mtok: number | null; source: string
+    price_source: string | null; version: number
+  }
   type Ref = { connection_id: string; model_id: string }
   type TaskRoute = { chain: Ref[]; local_only: boolean; version: number }
   type Routing = { mode: string; mode_version: number; simple_model: Ref | null; simple_version: number; tasks: Record<string, TaskRoute> }
   type Detected = { preset: string; base_url: string; model_count: number }
+  /** A custom header row in a form. `saved` rows already have a value stored (write-only: never shown). */
+  type HeaderRow = { name: string; value: string; saved: boolean; existing: boolean }
 
   let presets = $state<Preset[]>([])
   let connections = $state<Connection[]>([])
@@ -31,6 +37,7 @@
   let newName = $state('')
   let newUrl = $state('')
   let newKey = $state('')
+  let newHeaders = $state<HeaderRow[]>([])
 
   // per-connection UI state
   let testResult = $state<Record<string, string>>({})
@@ -39,6 +46,15 @@
   let editName = $state('')
   let editUrl = $state('')
   let editKey = $state('')
+  let editClearKey = $state(false)
+  let editHeaders = $state<HeaderRow[]>([])
+
+  // model editing
+  let editingModel = $state<string | null>(null)
+  // Number inputs bind as numbers (null or undefined when empty).
+  let modelContext = $state<number | null>(null)
+  let modelPriceIn = $state<number | null>(null)
+  let modelPriceOut = $state<number | null>(null)
 
   // modals
   let noticeFor = $state<Connection | null>(null)
@@ -55,12 +71,26 @@
   const canEdit = $derived(session.mode !== 'server' || session.user?.is_admin === true)
   const preset = $derived(presets.find((p) => p.id === presetId))
   const isLocalPreset = $derived(preset?.kind === 'local')
+  const presetOf = (c: Connection) => presets.find((p) => p.id === c.preset)
+  const keyOptional = (c: Connection) => presetOf(c)?.key_required !== true
   const nameOf = (id: string) => connections.find((c) => c.id === id)?.name ?? id
+  const isLocalConn = (id: string) => connections.find((c) => c.id === id)?.is_local === true
   const refKey = (r: Ref | null | undefined) => (r ? JSON.stringify([r.connection_id, r.model_id]) : '')
   const parseKey = (v: string): Ref | null => {
     if (!v) return null
     const [connection_id, model_id] = JSON.parse(v) as [string, string]
     return { connection_id, model_id }
+  }
+  const usd = (n: number | null) => (n === null ? 'unknown' : `$${n.toLocaleString('en-GB', { maximumFractionDigits: 4 })}`)
+  const PRICE_FROM: Record<string, string> = { user: 'your price', provider: 'from the provider', catalogue: 'from the catalogue' }
+
+  function priceText(m: Model): string {
+    if (isLocalConn(m.connection_id) || m.price_source === 'local') return 'free: it runs on your own computer or network'
+    if (m.price_in_usd_per_mtok === null && m.price_out_usd_per_mtok === null) {
+      return 'no known price, so Tuppence counts $5 in and $15 out per million tokens'
+    }
+    const from = m.price_source ? ` (${PRICE_FROM[m.price_source] ?? m.price_source})` : ''
+    return `${usd(m.price_in_usd_per_mtok)} in, ${usd(m.price_out_usd_per_mtok)} out per million tokens${from}`
   }
 
   const fail = (e: unknown) => { saved = ''; error = e instanceof ApiError ? e.detail : 'Something went wrong.' }
@@ -68,6 +98,10 @@
 
   async function loadModels() { models = (await api<{ models: Model[] }>('/api/llm/models')).models }
   async function loadRouting() { routing = await api<Routing>('/api/llm/routing') }
+  async function reloadConnections() {
+    const fresh = await api<{ connections: Connection[] }>('/api/llm/connections').catch(() => null)
+    if (fresh) connections = fresh.connections
+  }
   async function load() {
     presets = (await api<{ presets: Preset[] }>('/api/llm/presets')).presets
     if (!presetId && presets.length) pickPreset(presets[0].id)
@@ -111,11 +145,15 @@
     try { await create({ preset: d.preset, base_url: d.base_url }); detected = detected?.filter((x) => x !== d) ?? null } catch (e) { fail(e) } finally { busy = false }
   }
 
+  const blankHeader = (): HeaderRow => ({ name: '', value: '', saved: false, existing: false })
+
   async function addConnection(e: SubmitEvent) {
     e.preventDefault(); error = ''; saved = ''; busy = true
     const body: Record<string, unknown> = { preset: presetId, name: newName.trim() || undefined, base_url: newUrl.trim() || undefined }
-    if (!isLocalPreset && newKey) body.api_key = newKey
-    try { await create(body); newKey = '' } catch (err) { fail(err) } finally { busy = false }
+    if (newKey) body.api_key = newKey
+    const headers = Object.fromEntries(newHeaders.filter((h) => h.name.trim()).map((h) => [h.name.trim(), h.value]))
+    if (Object.keys(headers).length) body.headers = headers
+    try { await create(body); newKey = ''; newHeaders = [] } catch (err) { fail(err) } finally { busy = false }
   }
 
   async function test(c: Connection) {
@@ -141,7 +179,18 @@
     } catch (e) { fail(e) }
   }
 
-  function startEdit(c: Connection) { editing = c.id; editName = c.name; editUrl = c.base_url; editKey = '' }
+  function startEdit(c: Connection) {
+    editing = c.id; editName = c.name; editUrl = c.base_url; editKey = ''; editClearKey = false
+    editHeaders = c.headers.map((h) => ({ name: h.name, value: '', saved: h.has_value, existing: true }))
+  }
+
+  /** The headers change, or null when the user left them alone. A blank value keeps a saved one. */
+  function headerChanges(c: Connection): Record<string, string | null> | null {
+    const rows = editHeaders.filter((h) => h.name.trim())
+    const untouched = rows.length === c.headers.length && rows.every((h) => h.existing && !h.value)
+    if (untouched) return null
+    return Object.fromEntries(rows.map((h) => [h.name.trim(), h.value ? h.value : h.existing ? null : '']))
+  }
 
   async function saveEdit(e: SubmitEvent, c: Connection) {
     e.preventDefault(); error = ''; saved = ''; busy = true
@@ -149,6 +198,9 @@
     if (editName.trim() && editName.trim() !== c.name) changes.name = editName.trim()
     if (editUrl.trim() && editUrl.trim() !== c.base_url) changes.base_url = editUrl.trim()
     if (editKey) changes.api_key = editKey
+    else if (editClearKey) changes.clear_api_key = true
+    const headers = headerChanges(c)
+    if (headers) changes.headers = headers
     if (Object.keys(changes).length === 0) { editing = null; busy = false; return }
     try {
       replaceConn(await api<Connection>(`/api/llm/connections/${c.id}`, { method: 'PATCH', body: { changes, expected_version: c.version } }))
@@ -159,9 +211,39 @@
     } finally { busy = false }
   }
 
-  async function reloadConnections() {
-    const fresh = await api<{ connections: Connection[] }>('/api/llm/connections').catch(() => null)
-    if (fresh) connections = fresh.connections
+  function startModelEdit(m: Model) {
+    editingModel = refKey(m)
+    modelContext = m.context_window
+    modelPriceIn = m.price_in_usd_per_mtok
+    modelPriceOut = m.price_out_usd_per_mtok
+  }
+
+  async function saveModel(e: SubmitEvent, m: Model) {
+    e.preventDefault(); error = ''; saved = ''
+    const changes: Record<string, number> = {}
+    const pick = (value: number | null | undefined, current: number | null, field: string) => {
+      if (value === null || value === undefined || String(value).trim() === '') return
+      const n = Number(value)
+      if (n !== current) changes[field] = n
+    }
+    pick(modelContext, m.context_window, 'context_window')
+    if (!isLocalConn(m.connection_id)) {
+      pick(modelPriceIn, m.price_in_usd_per_mtok, 'price_in_usd_per_mtok')
+      pick(modelPriceOut, m.price_out_usd_per_mtok, 'price_out_usd_per_mtok')
+    }
+    if (Object.values(changes).some((n) => !Number.isFinite(n))) { error = 'Enter numbers only.'; return }
+    if (Object.keys(changes).length === 0) { editingModel = null; return }
+    busy = true
+    const path = m.model_id.split('/').map(encodeURIComponent).join('/')
+    try {
+      const updated = await api<Model>(`/api/llm/models/${m.connection_id}/${path}`, { method: 'PATCH', body: { ...changes, expected_version: m.version } })
+      models = models.map((x) => (refKey(x) === refKey(updated) ? updated : x))
+      editingModel = null
+      saved = `${m.model_id} saved. Cost estimates and spending caps use these figures.`
+    } catch (err) {
+      fail(err)
+      if (err instanceof ApiError && err.status === 409) await loadModels().catch(() => {})
+    } finally { busy = false }
   }
 
   async function acknowledge() {
@@ -184,9 +266,12 @@
   async function forgetKeys() {
     confirmForget = false; error = ''; saved = ''
     try {
-      await api('/api/llm/secrets/forget', { method: 'POST' })
-      connections = (await api<{ connections: Connection[] }>('/api/llm/connections')).connections
-      saved = 'Saved AI keys forgotten. Enter a key again to use a cloud connection.'
+      const r = await api<{ not_removed: number } | undefined>('/api/llm/secrets/forget', { method: 'POST' })
+      await reloadConnections()
+      const left = r?.not_removed ?? 0
+      saved = left
+        ? `Saved AI keys forgotten, but ${left} ${left === 1 ? 'entry' : 'entries'} couldn't be removed from this computer's keychain (it may be locked). Unlock it and choose Forget saved AI keys again, or delete the "Tuppence" entries in your keychain app.`
+        : 'Saved AI keys forgotten. Enter a key again to use a cloud connection.'
     } catch (e) { fail(e) }
   }
 
@@ -220,6 +305,30 @@
   }
 </script>
 
+{#snippet headerRows(rows: HeaderRow[], prefix: string, onremove: (i: number) => void)}
+  {#each rows as h, i (i)}
+    <div class="row header-row">
+      {#if h.existing}
+        <p class="meta">{h.name}</p>
+        <div>
+          <label for={`${prefix}-hv-${i}`}>Value for {h.name}</label>
+          <input id={`${prefix}-hv-${i}`} type="password" autocomplete="off" bind:value={h.value} placeholder={h.saved ? 'Saved. Leave blank to keep it' : 'Enter the value'} />
+        </div>
+      {:else}
+        <div>
+          <label for={`${prefix}-hn-${i}`}>Header name</label>
+          <input id={`${prefix}-hn-${i}`} autocomplete="off" bind:value={h.name} placeholder="e.g. X-Gateway-Key" />
+        </div>
+        <div>
+          <label for={`${prefix}-hv-${i}`}>Header value</label>
+          <input id={`${prefix}-hv-${i}`} type="password" autocomplete="off" bind:value={h.value} />
+        </div>
+      {/if}
+      <button type="button" onclick={() => onremove(i)} aria-label={`Remove header ${h.name || i + 1}`}>Remove</button>
+    </div>
+  {/each}
+{/snippet}
+
 <section>
   <h1>AI</h1>
   <p>Choose which AI models Tuppence can use. With a local model, nothing leaves your machine. With a cloud model, your statement text goes to the provider you chose, and every call is logged in <a href="/settings/privacy">Privacy</a>.</p>
@@ -251,11 +360,16 @@
                 <label for={`eu-${c.id}`}>Base URL</label>
                 <input id={`eu-${c.id}`} bind:value={editUrl} />
                 <p class="hint">Changing the address clears the saved API key and header values. Enter the key again below if you still need it.</p>
-                {#if !c.is_local || c.has_key}
-                  <label for={`ek-${c.id}`}>API key</label>
-                  <input id={`ek-${c.id}`} type="password" autocomplete="off" bind:value={editKey} placeholder={c.has_key ? 'Saved. Leave blank to keep it' : ''} />
+                <label for={`ek-${c.id}`}>{keyOptional(c) ? 'API key (optional)' : 'API key'}</label>
+                <input id={`ek-${c.id}`} type="password" autocomplete="off" bind:value={editKey} placeholder={c.has_key ? 'Saved. Leave blank to keep it' : ''} />
+                {#if c.has_key && keyOptional(c)}
+                  <div class="toggle"><label><input type="checkbox" bind:checked={editClearKey} disabled={!!editKey} /> Remove the saved key</label></div>
                 {/if}
-                <button type="submit">Save changes</button>
+                <h4>Custom headers</h4>
+                <p class="hint">For gateways that need extra headers. Values are kept like API keys and never shown again.</p>
+                {@render headerRows(editHeaders, `e-${c.id}`, (i) => { editHeaders = editHeaders.filter((_, j) => j !== i) })}
+                <button type="button" onclick={() => { editHeaders = [...editHeaders, blankHeader()] }}>Add header</button>
+                <div><button type="submit">Save changes</button></div>
               </fieldset>
             </form>
           {/if}
@@ -288,12 +402,13 @@
           <input id="ai-name" bind:value={newName} />
           <label for="ai-url">Base URL</label>
           <input id="ai-url" bind:value={newUrl} />
-          {#if !isLocalPreset}
-            <label for="ai-key">API key</label>
-            <input id="ai-key" type="password" autocomplete="off" bind:value={newKey} />
-            <p class="hint">Stored in your system keychain, or encrypted on this machine. Never shown again.</p>
-          {/if}
-          <button type="submit">Save connection</button>
+          <label for="ai-key">{isLocalPreset || !preset?.key_required ? 'API key (optional)' : 'API key'}</label>
+          <input id="ai-key" type="password" autocomplete="off" bind:value={newKey} />
+          <p class="hint">{#if isLocalPreset}Only if your server asks for one. {/if}Stored in your system keychain, or encrypted on this machine. Never shown again.</p>
+          <h4>Custom headers (optional)</h4>
+          {@render headerRows(newHeaders, 'new', (i) => { newHeaders = newHeaders.filter((_, j) => j !== i) })}
+          <button type="button" onclick={() => { newHeaders = [...newHeaders, blankHeader()] }}>Add header</button>
+          <div><button type="submit">Save connection</button></div>
         </fieldset>
       </form>
       <p><button type="button" class="link" onclick={() => (confirmForget = true)}>Forget saved AI keys</button></p>
@@ -301,7 +416,47 @@
   </div>
 
   <div class="card">
-    <h2>Model</h2>
+    <h2>Models</h2>
+    {#if models.length === 0}
+      <p>No models yet. Press Test on a connection to fetch its models.</p>
+    {:else}
+      <p class="hint">Tuppence uses each model's price for cost estimates and the spending caps. If a cloud model has no known price, set its real one here.</p>
+      <ul class="people models">
+        {#each models as m (refKey(m))}
+          <li aria-label={`Model ${m.model_id}`}>
+            <div>
+              <strong>{nameOf(m.connection_id)} — {m.model_id}</strong>
+              <p class="meta">Context window {m.context_window.toLocaleString('en-GB')} tokens{m.source === 'user' ? ' (yours)' : ''} · {priceText(m)}</p>
+              {#if editingModel === refKey(m)}
+                <form onsubmit={(e) => saveModel(e, m)}>
+                  <fieldset class="bare" disabled={busy}>
+                    <label for={`mc-${refKey(m)}`}>Context window (tokens)</label>
+                    <input id={`mc-${refKey(m)}`} type="number" min="256" max="10000000" step="1" bind:value={modelContext} />
+                    {#if !isLocalConn(m.connection_id)}
+                      <label for={`mi-${refKey(m)}`}>Input price ($ per million tokens)</label>
+                      <input id={`mi-${refKey(m)}`} type="number" min="0" max="10000" step="any" bind:value={modelPriceIn} />
+                      <label for={`mo-${refKey(m)}`}>Output price ($ per million tokens)</label>
+                      <input id={`mo-${refKey(m)}`} type="number" min="0" max="10000" step="any" bind:value={modelPriceOut} />
+                    {/if}
+                    <div class="row">
+                      <button type="submit">Save model</button>
+                      <button type="button" onclick={() => (editingModel = null)}>Cancel</button>
+                    </div>
+                  </fieldset>
+                </form>
+              {/if}
+            </div>
+            {#if canEdit && editingModel !== refKey(m)}
+              <button type="button" onclick={() => startModelEdit(m)} aria-label={`Edit ${m.model_id}`}>Edit</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+
+  <div class="card">
+    <h2>Model choice</h2>
     {#if models.length === 0}
       <p>No models yet. Press Test on a connection to fetch its models.</p>
     {:else if routing}
@@ -337,6 +492,14 @@
               </div>
             </section>
           {/each}
+        {:else}
+          <h3>Keep tasks on this device</h3>
+          <p class="hint">A task kept on this device only ever uses local models, whichever model is chosen above.</p>
+          {#each Object.entries(routing.tasks) as [task, route] (task)}
+            <div class="toggle">
+              <label><input type="checkbox" checked={route.local_only} onchange={(e) => saveTask(task, refKey(route.chain[0]), refKey(route.chain[1]), (e.currentTarget as HTMLInputElement).checked)} /> Keep {task} on this device</label>
+            </div>
+          {/each}
         {/if}
       </fieldset>
     {/if}
@@ -365,7 +528,7 @@
 </Modal>
 
 <Modal open={confirmForget} title="Forget saved AI keys?" onclose={() => (confirmForget = false)}>
-  <p>Tuppence will delete every saved AI key and header value. Your connections stay, but cloud ones will need a key entering again.</p>
+  <p>Tuppence will delete every saved AI key and header value, including any it keeps in this computer's keychain. Your connections stay, but cloud ones will need a key entering again.</p>
   <div class="row">
     <button type="button" onclick={forgetKeys}>Forget keys</button>
     <button type="button" onclick={() => (confirmForget = false)}>Cancel</button>

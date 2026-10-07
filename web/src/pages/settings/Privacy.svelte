@@ -5,11 +5,11 @@
   import { session } from '../../lib/session.svelte'
 
   type Entry = { key: string; value: unknown; version: number; description: string }
-  type LogEntry = { id: number; ts: string; purpose: string; task: string | null; destination: string; bytes_out: number; bytes_in: number; outcome: string; note: string | null }
+  type LogEntry = { id: number; ts: string; purpose: string; task: string | null; destination: string; bytes_out: number; bytes_in: number; redactions: number; outcome: string; note: string | null }
 
   const TOGGLES: Array<[string, string, string]> = [
     ['privacy.local_only', 'Local only', 'AI and research calls stay on this device or your home network. Cloud models are refused while this is on.'],
-    ['privacy.pseudonymise', 'Pseudonymise before cloud AI', 'Names and account numbers become stand-ins like "Adult A" and "ACCT_2". Off by default.'],
+    ['privacy.pseudonymise', 'Pseudonymise before cloud AI', 'Names and account numbers become stand-ins like "Adult A" and "ACCT_2". Best-effort: some formats may slip through. Off by default.'],
     ['privacy.research_lookups', 'Research lookups', 'Look up unknown merchant names online. Only merchant names are sent, never amounts or your details.'],
     ['privacy.live_market_data', 'Live market data', 'Interest rates, inflation, exchange rates and share prices. Share lookups reveal which tickers you hold.'],
     ['privacy.datapack_updates', 'Data-pack updates', 'Anonymous downloads of updated UK tax, benefit and rent data.'],
@@ -26,6 +26,8 @@
   const canEdit = $derived(session.mode !== 'server' || session.user?.is_admin === true)
   const fail = (e: unknown) => { saved = ''; error = e instanceof ApiError ? e.detail : 'Something went wrong.' }
   const fmt = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`)
+  // Stored in UTC; always shown in UK time, whatever the browser's own time zone.
+  const when = (ts: string) => new Date(ts).toLocaleString('en-GB', { timeZone: 'Europe/London' })
 
   async function load() {
     const res = await api<{ settings: Entry[] }>('/api/settings')
@@ -85,14 +87,15 @@
   {/if}
   <div class="card">
     <h2>Privacy log</h2>
+    <p class="hint">Every call that leaves, or was stopped from leaving, this machine: when, where to, how much was sent and received, and how many values were swapped for stand-ins. It records these details, not what was sent.</p>
     {#if log.length === 0}<p>Nothing has left this machine yet.</p>{:else}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Time</th><th>Purpose</th><th>Task</th><th>Destination</th><th>Sent</th><th>Received</th><th>Outcome</th></tr></thead>
+          <thead><tr><th>Time (UK)</th><th>Purpose</th><th>Task</th><th>Destination</th><th>Sent</th><th>Received</th><th><abbr title="Values swapped for stand-ins before sending">Masked</abbr></th><th>Outcome</th></tr></thead>
           <tbody>
             {#each log as e (e.id)}
-              <tr><td>{new Date(e.ts).toLocaleString('en-GB')}</td><td>{e.purpose}</td><td>{e.task ?? '—'}</td><td>{e.destination}</td>
-                <td>{fmt(e.bytes_out)}</td><td>{fmt(e.bytes_in)}</td><td title={e.note ?? ''}>{e.outcome}</td></tr>
+              <tr><td>{when(e.ts)}</td><td>{e.purpose}</td><td>{e.task ?? '—'}</td><td>{e.destination}</td>
+                <td>{fmt(e.bytes_out)}</td><td>{fmt(e.bytes_in)}</td><td>{e.redactions}</td><td title={e.note ?? ''}>{e.outcome}</td></tr>
             {/each}
           </tbody>
         </table>

@@ -13,6 +13,11 @@ const conn = (over: Record<string, unknown> = {}) => ({
   id: 'c1', preset: 'openai', name: 'OpenAI', api_style: 'openai', base_url: 'https://api.openai.com/v1', is_local: false,
   has_key: true, headers: [], needs_notice: true, notice_acknowledged_at: null, enabled: true, version: 3, ...over,
 })
+const model = (over: Record<string, unknown> = {}) => ({
+  connection_id: 'c1', model_id: 'gpt-x', display_name: 'GPT X', context_window: 128000, max_output_tokens: null,
+  supports_tools: true, supports_json_schema: true, supports_vision: false, price_in_usd_per_mtok: null,
+  price_out_usd_per_mtok: null, source: 'catalogue', price_source: null, version: 2, ...over,
+})
 const routing = (over: Record<string, unknown> = {}) => ({
   mode: 'simple', mode_version: 0, simple_model: null, simple_version: 0,
   tasks: { coach: { chain: [], local_only: false, version: 0 }, read: { chain: [], local_only: false, version: 0 } }, ...over,
@@ -29,7 +34,7 @@ function setup(handler: (url: string, init?: RequestInit) => Response | undefine
       { id: 'ollama', label: 'Ollama', api_style: 'openai', base_url: 'http://localhost:11434/v1', kind: 'local', key_required: false },
     ] })
     if (url === '/api/llm/connections') return json({ connections: [state.conn] })
-    if (url === '/api/llm/models') return json({ models: [{ connection_id: 'c1', model_id: 'gpt-x', display_name: 'GPT X' }] })
+    if (url === '/api/llm/models') return json({ models: [model()] })
     if (url === '/api/llm/routing') return json(state.routing)
     if (url === '/api/llm/connections/c1/acknowledge-notice') { state.conn = conn({ needs_notice: false, version: 4 }); return json(state.conn) }
     return json({ detail: 'unexpected' }, 500)
@@ -123,8 +128,80 @@ it('detects local servers and adds one; adds a connection from a preset', async 
   await fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'ollama' } })
   expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe('http://localhost:11434/v1')
   expect(screen.queryByLabelText('API key')).toBeNull()
+  expect(screen.getByLabelText('API key (optional)')).toBeInTheDocument()  // e.g. vLLM with auth on
   const post = calls.find(([u, i]) => u === '/api/llm/connections' && i?.method === 'POST')!
   expect(JSON.parse(post[1]!.body as string)).toEqual({ preset: 'ollama', base_url: 'http://localhost:11434/v1' })
+})
+
+it('adds a local connection with an optional key and a custom header', async () => {
+  const calls = setup((url, init) => {
+    if (url === '/api/llm/connections' && init?.method === 'POST') return json(conn({ id: 'c2', name: 'Ollama', is_local: true, needs_notice: false, headers: [{ name: 'X-Gw', has_value: true }] }), 201)
+  })
+  render(AI)
+  await screen.findByRole('region', { name: 'OpenAI' })
+  await fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'ollama' } })
+  await fireEvent.input(screen.getByLabelText('API key (optional)'), { target: { value: 'local-key' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add header' }))
+  await fireEvent.input(screen.getByLabelText('Header name'), { target: { value: 'X-Gw' } })
+  await fireEvent.input(screen.getByLabelText('Header value'), { target: { value: 'gw-secret' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Save connection' }))
+  const card = await screen.findByRole('region', { name: 'Ollama' })
+  expect(within(card).getByText('Custom headers: X-Gw (saved)')).toBeInTheDocument()
+  expect(screen.queryByDisplayValue('gw-secret')).toBeNull()  // values are write-only
+  const post = calls.find(([u, i]) => u === '/api/llm/connections' && i?.method === 'POST')!
+  expect(JSON.parse(post[1]!.body as string)).toEqual({
+    preset: 'ollama', name: 'Ollama', base_url: 'http://localhost:11434/v1', api_key: 'local-key', headers: { 'X-Gw': 'gw-secret' },
+  })
+})
+
+it('removes one custom header and keeps the other saved value', async () => {
+  const state = { conn: conn({ headers: [{ name: 'X-Keep', has_value: true }, { name: 'X-Drop', has_value: true }] }), routing: routing() }
+  const calls = setup((url, init) => {
+    if (url === '/api/llm/connections/c1' && init?.method === 'PATCH') return json(conn({ headers: [{ name: 'X-Keep', has_value: true }], version: 4 }))
+  }, state)
+  render(AI)
+  const card = await screen.findByRole('region', { name: 'OpenAI' })
+  await fireEvent.click(within(card).getByRole('button', { name: 'Edit' }))
+  expect((within(card).getByLabelText('Value for X-Keep') as HTMLInputElement).value).toBe('')
+  await fireEvent.click(within(card).getByRole('button', { name: 'Remove header X-Drop' }))
+  await fireEvent.click(within(card).getByRole('button', { name: 'Save changes' }))
+  await waitFor(() => expect(calls.some(([, i]) => i?.method === 'PATCH')).toBe(true))
+  const patch = calls.find(([, i]) => i?.method === 'PATCH')!
+  expect(JSON.parse(patch[1]!.body as string)).toEqual({ changes: { headers: { 'X-Keep': null } }, expected_version: 3 })
+})
+
+it("edits a model's price and context window with its version", async () => {
+  const calls = setup((url, init) => {
+    if (url === '/api/llm/models/c1/gpt-x' && init?.method === 'PATCH') {
+      return json(model({ price_in_usd_per_mtok: 0.4, price_out_usd_per_mtok: 1.6, price_source: 'user', context_window: 64000, source: 'user', version: 3 }))
+    }
+  })
+  render(AI)
+  const row = await screen.findByRole('listitem', { name: 'Model gpt-x' })
+  expect(within(row).getByText(/no known price, so Tuppence counts \$5 in and \$15 out/)).toBeInTheDocument()
+  await fireEvent.click(within(row).getByRole('button', { name: 'Edit gpt-x' }))
+  await fireEvent.input(within(row).getByLabelText('Input price ($ per million tokens)'), { target: { value: '0.4' } })
+  await fireEvent.input(within(row).getByLabelText('Output price ($ per million tokens)'), { target: { value: '1.6' } })
+  await fireEvent.input(within(row).getByLabelText('Context window (tokens)'), { target: { value: '64000' } })
+  await fireEvent.click(within(row).getByRole('button', { name: 'Save model' }))
+  expect(await within(row).findByText(/\$0.4 in, \$1.6 out per million tokens \(your price\)/)).toBeInTheDocument()
+  const patch = calls.find(([u, i]) => u === '/api/llm/models/c1/gpt-x' && i?.method === 'PATCH')!
+  expect(JSON.parse(patch[1]!.body as string)).toEqual({
+    context_window: 64000, price_in_usd_per_mtok: 0.4, price_out_usd_per_mtok: 1.6, expected_version: 2,
+  })
+})
+
+it('offers the local-only pin per task in simple mode too', async () => {
+  const state = { conn: conn({ needs_notice: false }), routing: routing() }
+  const calls = setup((url, init) => {
+    if (url === '/api/llm/routing/tasks/read' && init?.method === 'PUT') return json(routing({ tasks: { coach: { chain: [], local_only: false, version: 0 }, read: { chain: [], local_only: true, version: 1 } } }))
+  }, state)
+  render(AI)
+  await fireEvent.click(await screen.findByLabelText('Keep read on this device'))
+  await waitFor(() => expect(calls.some(([u]) => u === '/api/llm/routing/tasks/read')).toBe(true))
+  const put = calls.find(([u]) => u === '/api/llm/routing/tasks/read')!
+  expect(JSON.parse(put[1]!.body as string)).toEqual({ chain: [], local_only: true, expected_version: 0 })
+  expect((screen.getByLabelText('Keep read on this device') as HTMLInputElement).checked).toBe(true)
 })
 
 it('picks the simple model and switches to advanced with a local-only pin', async () => {
@@ -150,13 +227,23 @@ it('picks the simple model and switches to advanced with a local-only pin', asyn
 })
 
 it('forgets saved keys after confirmation', async () => {
-  const calls = setup((url, init) => { if (url === '/api/llm/secrets/forget' && init?.method === 'POST') return new Response(null, { status: 204 }) })
+  const calls = setup((url, init) => { if (url === '/api/llm/secrets/forget' && init?.method === 'POST') return json({ not_removed: 0 }) })
   render(AI)
   await screen.findByRole('region', { name: 'OpenAI' })
   await fireEvent.click(screen.getByRole('button', { name: 'Forget saved AI keys' }))
   expect(calls.some(([u]) => u === '/api/llm/secrets/forget')).toBe(false)
   await fireEvent.click(await screen.findByRole('button', { name: 'Forget keys' }))
   await waitFor(() => expect(calls.some(([u]) => u === '/api/llm/secrets/forget')).toBe(true))
+  expect(await screen.findByText(/Saved AI keys forgotten\. Enter a key again/)).toBeInTheDocument()
+})
+
+it('says when the keychain kept some entries it was asked to forget', async () => {
+  setup((url, init) => { if (url === '/api/llm/secrets/forget' && init?.method === 'POST') return json({ not_removed: 2 }) })
+  render(AI)
+  await screen.findByRole('region', { name: 'OpenAI' })
+  await fireEvent.click(screen.getByRole('button', { name: 'Forget saved AI keys' }))
+  await fireEvent.click(await screen.findByRole('button', { name: 'Forget keys' }))
+  expect(await screen.findByText(/2 entries couldn't be removed from this computer's keychain/)).toBeInTheDocument()
 })
 
 it('reloads connections after a 409 on edit so a retry uses the fresh version', async () => {

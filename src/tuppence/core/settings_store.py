@@ -51,7 +51,7 @@ define(
     "privacy.pseudonymise",
     bool,
     False,
-    "Swap names and account numbers for stand-ins before cloud AI calls.",
+    "Swap names and account numbers for stand-ins before cloud AI calls (best-effort).",
 )
 define(
     "privacy.hidden_names",
