@@ -246,7 +246,7 @@ How routing works:
 
 | Control | Default | Behaviour |
 |---|---|---|
-| **Local only** | Off | Blocks every LLM and research call to a non-loopback host, at the HTTP client layer. Data-pack updates and live market data have their own on/off settings (§11.4, §12.1) |
+| **Local only** | Off | Blocks every LLM and research call to a host outside your own machine or private network, at the HTTP client layer. Loopback, private-network addresses (RFC 1918, IPv6 ULA, CGNAT, link-local) and single-label or `.local`/`.internal`/`.lan` names count as local, so a model in another Docker container or on a home server still works; a hostname counts as local only if every address it resolves to does. Cloud presets always count as cloud. Data-pack updates and live market data have their own on/off settings (§11.4, §12.1) |
 | **Cloud notice** | Shown once per cloud connection | "This provider will see your statement text." An acknowledgement, not a gate on every call |
 | **Pseudonymise before cloud calls** | **Off** | Swaps sensitive values for consistent stand-ins: household names → roles ("Adult A", "Child 1"); account and card numbers → "ACCT_2 ending ••34"; sort codes, IBANs, postcodes, emails and phone numbers → tokens; other people's names → "Person 3". The mapping stays local and replies are turned back into real values. Merchant names, amounts and dates are never masked. Statement header and address blocks are never sent |
 | **Privacy log** | On | Every outbound call (LLM, research, market data, packs) with time, destination, task, bytes and redaction count |
