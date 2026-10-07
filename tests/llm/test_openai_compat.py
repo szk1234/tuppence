@@ -208,3 +208,115 @@ def test_local_only_block_propagates():
 
     with pytest.raises(LocalOnlyBlocked):
         make(blocked).chat(ChatRequest(model="m", messages=[Message(role="user", content="x")]))
+
+
+def _chat(body):
+    p = make(lambda req: httpx.Response(200, json=body))
+    return p.chat(ChatRequest(model="m", messages=[Message(role="user", content="x")]))
+
+
+def _tc(arguments):
+    return {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [{"id": "c", "function": {"name": "f", "arguments": arguments}}]
+                }
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"choices": "oops"},
+        {"choices": []},
+        {"choices": ["x"]},
+        {"choices": [{"message": "x"}]},
+        {"choices": [{"message": {"tool_calls": "x"}}]},
+        {"choices": [{"message": {"tool_calls": ["x"]}}]},
+        {"choices": [{"message": {"content": {"a": 1}}}]},
+        _tc("[1]"),
+        _tc("null"),
+        _tc("3"),
+        _tc("{bad"),
+        _tc([1]),
+    ],
+)
+def test_malformed_200_is_bad_response(body):
+    with pytest.raises(LLMBadResponse):
+        _chat(body)
+
+
+def test_odd_but_acceptable_replies():
+    assert _chat(_tc({"q": 1})).tool_calls[0].arguments == {"q": 1}
+    parts = {
+        "choices": [
+            {"message": {"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}}
+        ]
+    }
+    assert _chat(parts).text == "ab"
+    r = _chat({"choices": [{"message": {"content": "ok"}}], "usage": "weird"})
+    assert (r.text, r.usage.input_tokens) == ("ok", 0)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Incorrect API key provided: sk-proj-abcdefghijklmnop1234",
+        "key sk-ant-abcdefghijklmnopqrstuv",
+        "bad AIzaSyA1234567890abcdefghijklmnop",
+        "invalid gsk_abcdefgh12345678",
+        "Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==",
+        "api key: 0123456789abcdef0123456789abcdef0123",
+    ],
+)
+def test_bare_keys_scrubbed(text):
+    from tuppence.llm.providers.base import _safe_body
+
+    out = _safe_body(text)
+    assert "[redacted]" in out
+    for secret in (
+        "abcdefghijklmnop1234",
+        "abcdefghijklmnopqrstuv",
+        "1234567890abcdef",
+        "dXNlcjpw",
+        "abcdefgh12345678",
+        "0123456789abcdef0123",
+    ):
+        assert secret not in out
+
+
+def test_prose_survives_scrub():
+    from tuppence.llm.providers.base import _safe_body
+
+    msg = (
+        "The model `gpt-x` does not exist or you do not have access to it. "
+        "Please check your plan and billing details."
+    )
+    assert _safe_body(msg) == msg
+
+
+def test_list_models_tolerates_junk():
+    body = {
+        "data": [
+            {"name": "no id"},
+            "x",
+            {"id": "ok", "pricing": "free"},
+            {"id": "auto", "pricing": {"prompt": "-1", "completion": "-1"}},
+        ]
+    }
+    models = make(lambda req: httpx.Response(200, json=body)).list_models()
+    assert [m.id for m in models] == ["ok", "auto"]
+    assert models[1].price_in_usd_per_mtok is None
+    with pytest.raises(LLMBadResponse):
+        make(lambda req: httpx.Response(200, json={"data": "x"})).list_models()
+
+
+def test_retry_after_edges():
+    from tuppence.llm.providers.base import parse_retry_after
+
+    assert parse_retry_after("inf") is None and parse_retry_after("nan") is None
+    assert parse_retry_after("-5") is None and parse_retry_after("2") == 2.0
+    assert parse_retry_after("Wed, 21 Oct 2099 07:28:00 -0000") is not None

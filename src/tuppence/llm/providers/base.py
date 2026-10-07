@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -17,27 +18,45 @@ def join_url(base: str, path: str) -> str:
 
 
 def parse_retry_after(value: str | None) -> float | None:
+    """Seconds to wait; None when absent or invalid (inf, nan, negative, junk)."""
     if not value:
         return None
     try:
-        return max(0.0, float(value))
+        seconds = float(value)
     except ValueError:
-        pass
-    try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
+        return max(0.0, seconds) if math.isfinite(seconds) else None
+    if not math.isfinite(seconds) or seconds < 0:
         return None
-    return max(0.0, (when - datetime.now(UTC)).total_seconds())
+    return seconds
 
 
 _SECRET = re.compile(
-    r"(bearer\s+|x-api-key[\"':\s]+|api[_-]?key[\"':=\s]+)[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE
+    r"""(?ix)
+    (?P<label>\b(?:bearer|basic)\s+|x-api-key["':\s]+|api[_-]?key["':=\s]+|\bkey["':=\s]+)
+    [A-Za-z0-9._~+/=-]{8,}
+    | \bsk-[A-Za-z0-9_-]{8,}
+    | \bAIza[A-Za-z0-9_-]{20,}
+    | \bgsk_[A-Za-z0-9]{8,}
+    | \bkey-[A-Za-z0-9]{8,}
+    """
 )
+
+
+def _redact(match: re.Match[str]) -> str:
+    label = match.group("label")
+    return f"{label}[redacted]" if label else "[redacted]"
 
 
 def _safe_body(text: str) -> str:
     """Truncate an error body and scrub anything that looks like an echoed credential."""
-    return _SECRET.sub(r"\1[redacted]", text[:500])
+    return _SECRET.sub(_redact, text[:500])
 
 
 def _send(client: httpx.Client, method: str, url: str, **kw: Any) -> dict[str, Any]:
