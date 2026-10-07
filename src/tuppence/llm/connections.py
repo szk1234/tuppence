@@ -8,18 +8,20 @@ their own user-facing message for the API layer to show.
 from __future__ import annotations
 
 import json
+import logging
 import secrets as pysecrets
 from collections.abc import Callable
 from typing import Any
 
 import httpx
+from keyring.errors import KeyringError
 from pydantic import BaseModel
 
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.errors import InputError
-from tuppence.core.records import NotFound, update_versioned
-from tuppence.core.secrets import SecretStore, SecretUnreadable
+from tuppence.core.records import NotFound, VersionConflict, update_versioned
+from tuppence.core.secrets import SecretError, SecretStore, SecretUnreadable
 from tuppence.llm.catalogue import CatalogueEntry, ModelCatalogue
 from tuppence.llm.presets import PRESETS, normalise_base_url
 from tuppence.llm.providers import build_provider
@@ -28,9 +30,20 @@ from tuppence.net.client import CallContext
 from tuppence.net.hosts import is_local_host
 
 ClientFactory = Callable[[CallContext, float], httpx.Client]
+log = logging.getLogger("tuppence")
+
+
+class ApiKeyMissing(SecretError):
+    """A connection that needs an API key has none saved."""
+
 
 DEFAULT_CONTEXT_LOCAL = 4096
 DEFAULT_CONTEXT_CLOUD = 32768
+
+
+class HeaderInfo(BaseModel):
+    name: str
+    has_value: bool
 
 
 class Connection(BaseModel):
@@ -41,7 +54,7 @@ class Connection(BaseModel):
     base_url: str
     is_local: bool
     has_key: bool
-    header_names: list[str]
+    headers: list[HeaderInfo]
     needs_notice: bool
     notice_acknowledged_at: str | None
     enabled: bool
@@ -75,20 +88,28 @@ def _locality(preset_id: str, base_url: str) -> bool:
     return is_local_host(httpx.URL(base_url).host)
 
 
-def _new_ref() -> str:
-    return "sec_" + pysecrets.token_hex(8)
-
-
-def _clean_headers(headers: dict[str, str] | None) -> dict[str, str]:
+def _clean_headers(headers: Any) -> dict[str, str]:
+    if headers is None:
+        return {}
+    if not isinstance(headers, dict):
+        raise InputError("Headers must be a list of names and values.")
     out: dict[str, str] = {}
-    for name, value in (headers or {}).items():
-        name, value = str(name).strip(), str(value)
+    for name, value in headers.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise InputError("Header names and values must be text.")
+        name = name.strip()
         if not name:
             continue
-        if not name.isascii() or any(c in name for c in ":\r\n ") or "\r" in value or "\n" in value:
-            raise InputError(f"'{name}' isn't a valid header.")
+        if not name.isascii() or any(c in name for c in ": \t\r\n"):
+            raise InputError("A header name can't contain spaces or ':'.")
+        if not value.isascii() or "\r" in value or "\n" in value:
+            raise InputError("Header values must be plain text (ASCII).")
         out[name] = value
     return out
+
+
+def _host(url: str) -> str:
+    return httpx.URL(url).host.lower()
 
 
 def _header_meta(raw: str) -> dict[str, Any]:
@@ -134,6 +155,7 @@ class ConnectionRegistry:
         )
 
     def _row_to_connection(self, r: Any) -> Connection:
+        meta = _header_meta(r["headers"])
         return Connection(
             id=r["id"],
             preset=r["preset"],
@@ -142,7 +164,7 @@ class ConnectionRegistry:
             base_url=r["base_url"],
             is_local=bool(r["is_local"]),
             has_key=r["secret_ref"] is not None,
-            header_names=_header_meta(r["headers"])["names"],
+            headers=[HeaderInfo(name=n, has_value=meta["ref"] is not None) for n in meta["names"]],
             needs_notice=not r["is_local"] and r["notice_acknowledged_at"] is None,
             notice_acknowledged_at=r["notice_acknowledged_at"],
             enabled=bool(r["enabled"]),
@@ -172,13 +194,18 @@ class ConnectionRegistry:
         """Header values are secrets. Returns the JSON for the `headers` column."""
         if not headers:
             return json.dumps({"names": [], "ref": None})
-        ref = self.secrets.put(json.dumps(headers), _new_ref())
+        ref = self.secrets.put(json.dumps(headers))
         return json.dumps({"names": sorted(headers), "ref": ref})
 
     def _drop(self, *refs: str | None) -> None:
+        """Best-effort cleanup: an orphaned secret is harmless and `forget_keys` clears it."""
         for ref in refs:
-            if ref:
+            if not ref:
+                continue
+            try:
                 self.secrets.delete(ref)
+            except (SecretError, KeyringError) as exc:
+                log.warning("couldn't remove an unused saved secret (%s)", type(exc).__name__)
 
     def create(
         self,
@@ -236,26 +263,48 @@ class ConnectionRegistry:
         self, connection_id: str, changes: dict[str, Any], expected_version: int
     ) -> Connection:
         row = self._row(connection_id)
-        allowed = {"name", "base_url", "api_key", "enabled", "headers"}
+        if row["version"] != expected_version:
+            raise VersionConflict("llm_connection", connection_id, expected_version, row["version"])
+        preset = PRESETS[row["preset"]]
+        allowed = {"name", "base_url", "api_key", "clear_api_key", "enabled", "headers"}
         unknown = set(changes) - allowed
         if unknown:
             raise InputError(f"Can't change: {', '.join(sorted(unknown))}")
         data: dict[str, Any] = {}
         if "name" in changes:
-            data["name"] = str(changes["name"]).strip() or row["name"]
+            name = changes["name"]
+            if not isinstance(name, str) or not name.strip():
+                raise InputError("The name can't be empty.")
+            data["name"] = name.strip()
         if "base_url" in changes:
-            data["base_url"] = normalise_base_url(str(changes["base_url"]), row["api_style"])
+            if not isinstance(changes["base_url"], str):
+                raise InputError("Enter the server's base URL.")
+            data["base_url"] = normalise_base_url(changes["base_url"], row["api_style"])
             data["is_local"] = int(_locality(row["preset"], data["base_url"]))
-            if not data["is_local"] and row["is_local"]:
+            if not data["is_local"] and (
+                row["is_local"] or _host(data["base_url"]) != _host(row["base_url"])
+            ):
                 data["notice_acknowledged_at"] = None
         if "enabled" in changes:
-            data["enabled"] = int(bool(changes["enabled"]))
+            if not isinstance(changes["enabled"], bool):
+                raise InputError("Enabled must be true or false.")
+            data["enabled"] = int(changes["enabled"])
+        raw_key = changes.get("api_key")
+        if raw_key is not None and not isinstance(raw_key, str):
+            raise InputError("The API key must be text.")
+        new_key = (raw_key or "").strip()  # blank means "leave the saved key alone"
+        if "clear_api_key" in changes and not isinstance(changes["clear_api_key"], bool):
+            raise InputError("clear_api_key must be true or false.")
+        clear_key = changes.get("clear_api_key") is True
+        if clear_key and new_key:
+            raise InputError("Either enter a new key or remove the saved one, not both.")
+        if clear_key and preset.key_required:
+            raise InputError(f"An API key is needed for {preset.label}.")
         old_refs: list[str | None] = []
         new_refs: list[str | None] = []
         try:
-            if "api_key" in changes:
-                key = str(changes["api_key"] or "").strip()
-                new_ref = self.secrets.put(key) if key else None
+            if new_key or clear_key:
+                new_ref = self.secrets.put(new_key) if new_key else None
                 new_refs.append(new_ref)
                 old_refs.append(row["secret_ref"])
                 data["secret_ref"] = new_ref
@@ -344,6 +393,10 @@ class ConnectionRegistry:
         timeout: float = 30.0,
     ) -> Provider:
         row = self._row(connection_id)
+        if PRESETS[row["preset"]].key_required and row["secret_ref"] is None:
+            raise ApiKeyMissing(
+                f"An API key is needed for {row['name']}. Re-enter it in Settings \u2192 AI."
+            )
         api_key = self.api_key(connection_id)
         headers = self._header_values(row)
         ctx = CallContext(
@@ -359,8 +412,24 @@ class ConnectionRegistry:
             row["api_style"], client, row["base_url"], api_key, headers, preset.max_tokens_param
         )
 
+    def _refresh_locality(self, row: Any) -> Any:
+        """Hosts can start or stop resolving to private addresses; recheck on a user-run test."""
+        if PRESETS[row["preset"]].kind == "cloud":
+            return row
+        now_local = int(_locality(row["preset"], row["base_url"]))
+        if now_local == row["is_local"]:
+            return row
+        data: dict[str, Any] = {"is_local": now_local}
+        if not now_local:
+            data["notice_acknowledged_at"] = None
+        with self.db.transaction() as conn:
+            update_versioned(
+                conn, "llm_connection", "id", row["id"], row["version"], data, now=to_iso(utcnow())
+            )
+        return self._row(row["id"])
+
     def test(self, connection_id: str) -> list[ModelInfo]:
-        row = self._row(connection_id)
+        row = self._refresh_locality(self._row(connection_id))
         local = bool(row["is_local"])
         provider = self.provider(connection_id, timeout=20.0)
         try:
@@ -377,13 +446,16 @@ class ConnectionRegistry:
                 ).fetchone()
                 entry = self.catalogue.lookup(pm.id)
                 pick = _Picker(pm, entry)
-                if pm.context_window:
-                    source = "provider"
+                if local:
+                    # A local server's real window is what it was started with, not the catalogue's.
+                    context = pm.context_window or DEFAULT_CONTEXT_LOCAL
+                    source = "provider" if pm.context_window else "default"
                 else:
-                    source = "catalogue" if entry and entry.context_window else "default"
-                context = pick(
-                    "context_window", DEFAULT_CONTEXT_LOCAL if local else DEFAULT_CONTEXT_CLOUD
-                )
+                    context = pick("context_window", DEFAULT_CONTEXT_CLOUD)
+                    if pm.context_window:
+                        source = "provider"
+                    else:
+                        source = "catalogue" if entry and entry.context_window else "default"
                 if existing is not None and existing["source"] == "user":
                     context, source = existing["context_window"], "user"
                 price_default = 0.0 if local else None

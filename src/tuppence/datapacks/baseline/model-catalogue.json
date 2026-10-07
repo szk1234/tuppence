@@ -41,19 +41,6 @@
    "price_out_usd_per_mtok": 0.0
   },
   {
-   "id": "apodex/apodex-1.1-mini:free",
-   "aliases": [
-    "apodex-1.1-mini:free"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 235929,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
    "id": "unbiased/pareto-26.10-preview",
    "aliases": [
     "pareto-26.10-preview"
@@ -104,19 +91,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 2.0,
    "price_out_usd_per_mtok": 10.0
-  },
-  {
-   "id": "anthropic/claude-sonnet-5.5:batch",
-   "aliases": [
-    "claude-sonnet-5.5:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 5.0
   },
   {
    "id": "typesafe/jev-router",
@@ -249,19 +223,6 @@
    "price_out_usd_per_mtok": 0.5
   },
   {
-   "id": "openai/gpt-6-luna-pro:batch",
-   "aliases": [
-    "gpt-6-luna-pro:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.05,
-   "price_out_usd_per_mtok": 0.25
-  },
-  {
    "id": "openai/gpt-6-luna",
    "aliases": [
     "gpt-6-luna"
@@ -273,19 +234,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.1,
    "price_out_usd_per_mtok": 0.5
-  },
-  {
-   "id": "openai/gpt-6-luna:batch",
-   "aliases": [
-    "gpt-6-luna:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.05,
-   "price_out_usd_per_mtok": 0.25
   },
   {
    "id": "openai/gpt-6-sol-pro",
@@ -301,19 +249,6 @@
    "price_out_usd_per_mtok": 10.0
   },
   {
-   "id": "openai/gpt-6-sol-pro:batch",
-   "aliases": [
-    "gpt-6-sol-pro:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 5.0
-  },
-  {
    "id": "openai/gpt-6-sol",
    "aliases": [
     "gpt-6-sol"
@@ -327,19 +262,6 @@
    "price_out_usd_per_mtok": 10.0
   },
   {
-   "id": "openai/gpt-6-sol:batch",
-   "aliases": [
-    "gpt-6-sol:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 5.0
-  },
-  {
    "id": "anthropic/claude-opus-5.5",
    "aliases": [
     "claude-opus-5.5"
@@ -351,19 +273,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 4.0,
    "price_out_usd_per_mtok": 20.0
-  },
-  {
-   "id": "anthropic/claude-opus-5.5:batch",
-   "aliases": [
-    "claude-opus-5.5:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.0,
-   "price_out_usd_per_mtok": 10.0
   },
   {
    "id": "nvidia/switchyard",
@@ -483,32 +392,6 @@
    "price_out_usd_per_mtok": 7.5
   },
   {
-   "id": "~deepseek/deepseek-pro-latest",
-   "aliases": [
-    "deepseek-pro-latest"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 384000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.4,
-   "price_out_usd_per_mtok": 4.3
-  },
-  {
-   "id": "~deepseek/deepseek-flash-latest",
-   "aliases": [
-    "deepseek-flash-latest"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 943718,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.05,
-   "price_out_usd_per_mtok": 1.2
-  },
-  {
    "id": "inference-net/schematron-v2-turbo",
    "aliases": [
     "schematron-v2-turbo"
@@ -533,58 +416,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.05,
    "price_out_usd_per_mtok": 0.23
-  },
-  {
-   "id": "~openai/gpt-astra-latest",
-   "aliases": [
-    "gpt-astra-latest"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 10.0,
-   "price_out_usd_per_mtok": 50.0
-  },
-  {
-   "id": "~openai/gpt-sol-latest",
-   "aliases": [
-    "gpt-sol-latest"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.0,
-   "price_out_usd_per_mtok": 10.0
-  },
-  {
-   "id": "~openai/gpt-terra-latest",
-   "aliases": [
-    "gpt-terra-latest"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.0,
-   "price_out_usd_per_mtok": 12.0
-  },
-  {
-   "id": "~openai/gpt-luna-latest",
-   "aliases": [
-    "gpt-luna-latest"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.1,
-   "price_out_usd_per_mtok": 0.5
   },
   {
    "id": "sakana/fugu-ultra-v2",
@@ -639,19 +470,6 @@
    "price_out_usd_per_mtok": 1.2
   },
   {
-   "id": "deepseek/deepseek-v4.1-flash:batch",
-   "aliases": [
-    "deepseek-v4.1-flash:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 131072,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.112,
-   "price_out_usd_per_mtok": 0.336
-  },
-  {
    "id": "inception/mercury-2.5",
    "aliases": [
     "mercury-2.5"
@@ -704,19 +522,6 @@
    "price_out_usd_per_mtok": 50.0
   },
   {
-   "id": "openai/gpt-6-astra:batch",
-   "aliases": [
-    "gpt-6-astra:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 5.0,
-   "price_out_usd_per_mtok": 25.0
-  },
-  {
    "id": "openai/gpt-6-astra-pro",
    "aliases": [
     "gpt-6-astra-pro"
@@ -728,32 +533,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 10.0,
    "price_out_usd_per_mtok": 50.0
-  },
-  {
-   "id": "openai/gpt-6-astra-pro:batch",
-   "aliases": [
-    "gpt-6-astra-pro:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 5.0,
-   "price_out_usd_per_mtok": 25.0
-  },
-  {
-   "id": "inclusionai/ling-3.0-flash-sante:free",
-   "aliases": [
-    "ling-3.0-flash-sante:free"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 32768,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
   },
   {
    "id": "qwen/qwen3.8-max-0902",
@@ -808,19 +587,6 @@
    "price_out_usd_per_mtok": 3.75
   },
   {
-   "id": "google/gemini-3.8-flash:batch",
-   "aliases": [
-    "gemini-3.8-flash:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.375,
-   "price_out_usd_per_mtok": 1.875
-  },
-  {
    "id": "anthropic/claude-fable-5.1",
    "aliases": [
     "claude-fable-5.1"
@@ -832,19 +598,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 10.0,
    "price_out_usd_per_mtok": 50.0
-  },
-  {
-   "id": "anthropic/claude-fable-5.1:batch",
-   "aliases": [
-    "claude-fable-5.1:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 5.0,
-   "price_out_usd_per_mtok": 25.0
   },
   {
    "id": "ibm-granite/granite-4.2-8b",
@@ -886,19 +639,6 @@
    "price_out_usd_per_mtok": 0.1232
   },
   {
-   "id": "~z-ai/glm-flash-latest",
-   "aliases": [
-    "glm-flash-latest"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 131072,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0278,
-   "price_out_usd_per_mtok": 0.5
-  },
-  {
    "id": "qwen/qwen3.8-flash",
    "aliases": [
     "qwen3.8-flash"
@@ -923,19 +663,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.15,
    "price_out_usd_per_mtok": 0.5
-  },
-  {
-   "id": "z-ai/glm-5.3-flash:batch",
-   "aliases": [
-    "glm-5.3-flash:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 131072,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.06,
-   "price_out_usd_per_mtok": 0.2
   },
   {
    "id": "meta/muse-spark-1.2-contributor",
@@ -990,19 +717,6 @@
    "price_out_usd_per_mtok": 0.295
   },
   {
-   "id": "~z-ai/glm-latest",
-   "aliases": [
-    "glm-latest"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 131072,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.063,
-   "price_out_usd_per_mtok": 6.3
-  },
-  {
    "id": "tencent/hy-mt2-7b",
    "aliases": [
     "hy-mt2-7b"
@@ -1029,19 +743,6 @@
    "price_out_usd_per_mtok": 7.0
   },
   {
-   "id": "z-ai/glm-5.3:batch",
-   "aliases": [
-    "glm-5.3:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 131072,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.45,
-   "price_out_usd_per_mtok": 2.0
-  },
-  {
    "id": "qwen/qwen3.8-27b",
    "aliases": [
     "qwen3.8-27b"
@@ -1055,19 +756,6 @@
    "price_out_usd_per_mtok": 2.55
   },
   {
-   "id": "dots-studio/dots-3-note-preview:free",
-   "aliases": [
-    "dots-3-note-preview:free"
-   ],
-   "context_window": 512000,
-   "max_output_tokens": 460800,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
    "id": "google/gemini-3.7-flash",
    "aliases": [
     "gemini-3.7-flash"
@@ -1079,19 +767,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.75,
    "price_out_usd_per_mtok": 3.75
-  },
-  {
-   "id": "google/gemini-3.7-flash:batch",
-   "aliases": [
-    "gemini-3.7-flash:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.375,
-   "price_out_usd_per_mtok": 1.875
   },
   {
    "id": "bytedance-seed/seed-2-1-turbo",
@@ -1159,19 +834,6 @@
    "price_out_usd_per_mtok": 6.0
   },
   {
-   "id": "liquid/lfm-2.5-2.6b:free",
-   "aliases": [
-    "lfm-2.5-2.6b:free"
-   ],
-   "context_window": 65536,
-   "max_output_tokens": 8192,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
    "id": "nvidia/nemotron-3.5-lightning",
    "aliases": [
     "nemotron-3.5-lightning"
@@ -1183,19 +845,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.06,
    "price_out_usd_per_mtok": 0.16
-  },
-  {
-   "id": "nvidia/nemotron-3.5-lightning:free",
-   "aliases": [
-    "nemotron-3.5-lightning:free"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
   },
   {
    "id": "sakana/sakana-namazu",
@@ -1250,19 +899,6 @@
    "price_out_usd_per_mtok": 4.25
   },
   {
-   "id": "~deepseek/deepseek-v4-flash-latest",
-   "aliases": [
-    "deepseek-v4-flash-latest"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 943718,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.018,
-   "price_out_usd_per_mtok": 1.28
-  },
-  {
    "id": "deepseek/deepseek-v4-flash-0731",
    "aliases": [
     "deepseek-v4-flash-0731"
@@ -1287,19 +923,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.45,
    "price_out_usd_per_mtok": 1.2
-  },
-  {
-   "id": "thinkingmachines/inkling-small:free",
-   "aliases": [
-    "inkling-small:free"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 262144,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
   },
   {
    "id": "qwen/qwen3.7-flash",
@@ -1328,19 +951,6 @@
    "price_out_usd_per_mtok": 25.0
   },
   {
-   "id": "anthropic/claude-opus-5:batch",
-   "aliases": [
-    "claude-opus-5:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.5,
-   "price_out_usd_per_mtok": 12.5
-  },
-  {
    "id": "inclusionai/ling-3.0-flash",
    "aliases": [
     "ling-3.0-flash"
@@ -1367,19 +977,6 @@
    "price_out_usd_per_mtok": 0.18
   },
   {
-   "id": "poolside/laguna-s-2.1:free",
-   "aliases": [
-    "laguna-s-2.1:free"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 32768,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
    "id": "google/gemini-3.6-flash",
    "aliases": [
     "gemini-3.6-flash"
@@ -1393,19 +990,6 @@
    "price_out_usd_per_mtok": 3.75
   },
   {
-   "id": "google/gemini-3.6-flash:batch",
-   "aliases": [
-    "gemini-3.6-flash:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.375,
-   "price_out_usd_per_mtok": 1.875
-  },
-  {
    "id": "google/gemini-3.5-flash-lite",
    "aliases": [
     "gemini-3.5-flash-lite"
@@ -1417,19 +1001,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.3,
    "price_out_usd_per_mtok": 2.5
-  },
-  {
-   "id": "google/gemini-3.5-flash-lite:batch",
-   "aliases": [
-    "gemini-3.5-flash-lite:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.15,
-   "price_out_usd_per_mtok": 1.25
   },
   {
    "id": "meituan/longcat-2.0",
@@ -1458,32 +1029,6 @@
    "price_out_usd_per_mtok": 4.05
   },
   {
-   "id": "thinkingmachines/inkling:free",
-   "aliases": [
-    "inkling:free"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 262144,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
-   "id": "openrouter/auto-beta",
-   "aliases": [
-    "auto-beta"
-   ],
-   "context_window": 2000000,
-   "max_output_tokens": null,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": null,
-   "price_out_usd_per_mtok": null
-  },
-  {
    "id": "moonshotai/kimi-k3",
    "aliases": [
     "kimi-k3"
@@ -1495,19 +1040,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.62,
    "price_out_usd_per_mtok": 15.0
-  },
-  {
-   "id": "moonshotai/kimi-k3:batch",
-   "aliases": [
-    "kimi-k3:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 16384,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.28,
-   "price_out_usd_per_mtok": 11.4
   },
   {
    "id": "meta/muse-spark-1.1",
@@ -1536,19 +1068,6 @@
    "price_out_usd_per_mtok": 1.2
   },
   {
-   "id": "openai/gpt-5.6-luna-pro:batch",
-   "aliases": [
-    "gpt-5.6-luna-pro:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.1,
-   "price_out_usd_per_mtok": 0.6
-  },
-  {
    "id": "openai/gpt-5.6-luna",
    "aliases": [
     "gpt-5.6-luna"
@@ -1560,19 +1079,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.2,
    "price_out_usd_per_mtok": 1.2
-  },
-  {
-   "id": "openai/gpt-5.6-luna:batch",
-   "aliases": [
-    "gpt-5.6-luna:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.1,
-   "price_out_usd_per_mtok": 0.6
   },
   {
    "id": "openai/gpt-5.6-terra-pro",
@@ -1588,19 +1094,6 @@
    "price_out_usd_per_mtok": 12.0
   },
   {
-   "id": "openai/gpt-5.6-terra-pro:batch",
-   "aliases": [
-    "gpt-5.6-terra-pro:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 6.0
-  },
-  {
    "id": "openai/gpt-5.6-terra",
    "aliases": [
     "gpt-5.6-terra"
@@ -1612,19 +1105,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 2.0,
    "price_out_usd_per_mtok": 12.0
-  },
-  {
-   "id": "openai/gpt-5.6-terra:batch",
-   "aliases": [
-    "gpt-5.6-terra:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 6.0
   },
   {
    "id": "openai/gpt-5.6-sol-pro",
@@ -1640,19 +1120,6 @@
    "price_out_usd_per_mtok": 10.0
   },
   {
-   "id": "openai/gpt-5.6-sol-pro:batch",
-   "aliases": [
-    "gpt-5.6-sol-pro:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 5.0
-  },
-  {
    "id": "openai/gpt-5.6-sol",
    "aliases": [
     "gpt-5.6-sol"
@@ -1666,35 +1133,9 @@
    "price_out_usd_per_mtok": 10.0
   },
   {
-   "id": "openai/gpt-5.6-sol:batch",
-   "aliases": [
-    "gpt-5.6-sol:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 5.0
-  },
-  {
    "id": "x-ai/grok-4.5",
    "aliases": [
     "grok-4.5"
-   ],
-   "context_window": 500000,
-   "max_output_tokens": 450000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.0,
-   "price_out_usd_per_mtok": 6.0
-  },
-  {
-   "id": "~x-ai/grok-latest",
-   "aliases": [
-    "grok-latest"
    ],
    "context_window": 500000,
    "max_output_tokens": 450000,
@@ -1757,19 +1198,6 @@
    "price_out_usd_per_mtok": 0.12
   },
   {
-   "id": "poolside/laguna-xs-2.1:free",
-   "aliases": [
-    "laguna-xs-2.1:free"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 32768,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
    "id": "anthropic/claude-sonnet-5",
    "aliases": [
     "claude-sonnet-5"
@@ -1781,19 +1209,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 2.0,
    "price_out_usd_per_mtok": 10.0
-  },
-  {
-   "id": "anthropic/claude-sonnet-5:batch",
-   "aliases": [
-    "claude-sonnet-5:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 5.0
   },
   {
    "id": "google/gemini-3.1-flash-lite-image",
@@ -1848,19 +1263,6 @@
    "price_out_usd_per_mtok": 12.0
   },
   {
-   "id": "cohere/north-mini-code:free",
-   "aliases": [
-    "north-mini-code:free"
-   ],
-   "context_window": 256000,
-   "max_output_tokens": 64000,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
    "id": "z-ai/glm-5.2",
    "aliases": [
     "glm-5.2"
@@ -1872,19 +1274,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.171,
    "price_out_usd_per_mtok": 7.2
-  },
-  {
-   "id": "openrouter/fusion",
-   "aliases": [
-    "fusion"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": null,
-   "supports_tools": false,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": null,
-   "price_out_usd_per_mtok": null
   },
   {
    "id": "moonshotai/kimi-k2.7-code",
@@ -1900,19 +1289,6 @@
    "price_out_usd_per_mtok": 3.35
   },
   {
-   "id": "~anthropic/claude-fable-latest",
-   "aliases": [
-    "claude-fable-latest"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 10.0,
-   "price_out_usd_per_mtok": 50.0
-  },
-  {
    "id": "anthropic/claude-fable-5",
    "aliases": [
     "claude-fable-5"
@@ -1924,19 +1300,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 10.0,
    "price_out_usd_per_mtok": 50.0
-  },
-  {
-   "id": "anthropic/claude-fable-5:batch",
-   "aliases": [
-    "claude-fable-5:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 5.0,
-   "price_out_usd_per_mtok": 25.0
   },
   {
    "id": "nvidia/nemotron-3.5-content-safety",
@@ -1952,19 +1315,6 @@
    "price_out_usd_per_mtok": 0.2
   },
   {
-   "id": "nvidia/nemotron-3.5-content-safety:free",
-   "aliases": [
-    "nemotron-3.5-content-safety:free"
-   ],
-   "context_window": 128000,
-   "max_output_tokens": 8192,
-   "supports_tools": false,
-   "supports_json_schema": false,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
    "id": "nvidia/nemotron-3-ultra-550b-a55b",
    "aliases": [
     "nemotron-3-ultra-550b-a55b"
@@ -1976,19 +1326,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.5,
    "price_out_usd_per_mtok": 2.2
-  },
-  {
-   "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
-   "aliases": [
-    "nemotron-3-ultra-550b-a55b:free"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
   },
   {
    "id": "qwen/qwen3.7-plus",
@@ -2043,19 +1380,6 @@
    "price_out_usd_per_mtok": 25.0
   },
   {
-   "id": "anthropic/claude-opus-4.8:batch",
-   "aliases": [
-    "claude-opus-4.8:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.5,
-   "price_out_usd_per_mtok": 12.5
-  },
-  {
    "id": "qwen/qwen3.7-max",
    "aliases": [
     "qwen3.7-max"
@@ -2095,19 +1419,6 @@
    "price_out_usd_per_mtok": 9.0
   },
   {
-   "id": "google/gemini-3.5-flash:batch",
-   "aliases": [
-    "gemini-3.5-flash:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.75,
-   "price_out_usd_per_mtok": 4.5
-  },
-  {
    "id": "perceptron/perceptron-mk1",
    "aliases": [
     "perceptron-mk1"
@@ -2132,19 +1443,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.25,
    "price_out_usd_per_mtok": 1.5
-  },
-  {
-   "id": "google/gemini-3.1-flash-lite:batch",
-   "aliases": [
-    "gemini-3.1-flash-lite:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.125,
-   "price_out_usd_per_mtok": 0.75
   },
   {
    "id": "openai/gpt-chat-latest",
@@ -2173,19 +1471,6 @@
    "price_out_usd_per_mtok": 2.5
   },
   {
-   "id": "x-ai/grok-4.3:batch",
-   "aliases": [
-    "grok-4.3:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 900000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 2.0
-  },
-  {
    "id": "mistralai/mistral-medium-3-5",
    "aliases": [
     "mistral-medium-3-5"
@@ -2197,110 +1482,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 1.5,
    "price_out_usd_per_mtok": 7.5
-  },
-  {
-   "id": "mistralai/mistral-medium-3-5:batch",
-   "aliases": [
-    "mistral-medium-3-5:batch"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 209715,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.75,
-   "price_out_usd_per_mtok": 3.75
-  },
-  {
-   "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-   "aliases": [
-    "nemotron-3-nano-omni-30b-a3b-reasoning:free"
-   ],
-   "context_window": 256000,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": false,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
-   "id": "~anthropic/claude-haiku-latest",
-   "aliases": [
-    "claude-haiku-latest"
-   ],
-   "context_window": 200000,
-   "max_output_tokens": 64000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 5.0
-  },
-  {
-   "id": "~openai/gpt-mini-latest",
-   "aliases": [
-    "gpt-mini-latest"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.75,
-   "price_out_usd_per_mtok": 4.5
-  },
-  {
-   "id": "~google/gemini-pro-latest",
-   "aliases": [
-    "gemini-pro-latest"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.0,
-   "price_out_usd_per_mtok": 12.0
-  },
-  {
-   "id": "~moonshotai/kimi-latest",
-   "aliases": [
-    "kimi-latest"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 943718,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.61,
-   "price_out_usd_per_mtok": 13.0
-  },
-  {
-   "id": "~google/gemini-flash-latest",
-   "aliases": [
-    "gemini-flash-latest"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.75,
-   "price_out_usd_per_mtok": 3.75
-  },
-  {
-   "id": "~anthropic/claude-sonnet-latest",
-   "aliases": [
-    "claude-sonnet-latest"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.0,
-   "price_out_usd_per_mtok": 10.0
   },
   {
    "id": "qwen/qwen3.5-plus-20260420",
@@ -2381,19 +1562,6 @@
    "price_out_usd_per_mtok": 180.0
   },
   {
-   "id": "openai/gpt-5.5-pro:batch",
-   "aliases": [
-    "gpt-5.5-pro:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 15.0,
-   "price_out_usd_per_mtok": 90.0
-  },
-  {
    "id": "openai/gpt-5.5",
    "aliases": [
     "gpt-5.5"
@@ -2405,19 +1573,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 5.0,
    "price_out_usd_per_mtok": 30.0
-  },
-  {
-   "id": "openai/gpt-5.5:batch",
-   "aliases": [
-    "gpt-5.5:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.5,
-   "price_out_usd_per_mtok": 15.0
   },
   {
    "id": "deepseek/deepseek-v4-pro",
@@ -2498,32 +1653,6 @@
    "price_out_usd_per_mtok": 15.0
   },
   {
-   "id": "~anthropic/claude-opus-latest",
-   "aliases": [
-    "claude-opus-latest"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 4.0,
-   "price_out_usd_per_mtok": 20.0
-  },
-  {
-   "id": "openrouter/pareto-code",
-   "aliases": [
-    "pareto-code"
-   ],
-   "context_window": 2000000,
-   "max_output_tokens": null,
-   "supports_tools": false,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": null,
-   "price_out_usd_per_mtok": null
-  },
-  {
    "id": "moonshotai/kimi-k2.6",
    "aliases": [
     "kimi-k2.6"
@@ -2548,19 +1677,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 5.0,
    "price_out_usd_per_mtok": 25.0
-  },
-  {
-   "id": "anthropic/claude-opus-4.7:batch",
-   "aliases": [
-    "claude-opus-4.7:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.5,
-   "price_out_usd_per_mtok": 12.5
   },
   {
    "id": "z-ai/glm-5.1",
@@ -2589,19 +1705,6 @@
    "price_out_usd_per_mtok": 0.3
   },
   {
-   "id": "google/gemma-4-26b-a4b-it:free",
-   "aliases": [
-    "gemma-4-26b-a4b-it:free"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 32768,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
-  },
-  {
    "id": "google/gemma-4-31b-it",
    "aliases": [
     "gemma-4-31b-it"
@@ -2613,19 +1716,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.09,
    "price_out_usd_per_mtok": 0.34
-  },
-  {
-   "id": "google/gemma-4-31b-it:free",
-   "aliases": [
-    "gemma-4-31b-it:free"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 32768,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
   },
   {
    "id": "qwen/qwen3.6-plus",
@@ -2758,19 +1848,6 @@
    "price_out_usd_per_mtok": 1.25
   },
   {
-   "id": "openai/gpt-5.4-nano:batch",
-   "aliases": [
-    "gpt-5.4-nano:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.1,
-   "price_out_usd_per_mtok": 0.625
-  },
-  {
    "id": "openai/gpt-5.4-mini",
    "aliases": [
     "gpt-5.4-mini"
@@ -2784,19 +1861,6 @@
    "price_out_usd_per_mtok": 4.5
   },
   {
-   "id": "openai/gpt-5.4-mini:batch",
-   "aliases": [
-    "gpt-5.4-mini:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.375,
-   "price_out_usd_per_mtok": 2.25
-  },
-  {
    "id": "mistralai/mistral-small-2603",
    "aliases": [
     "mistral-small-2603"
@@ -2808,19 +1872,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.15,
    "price_out_usd_per_mtok": 0.6
-  },
-  {
-   "id": "mistralai/mistral-small-2603:batch",
-   "aliases": [
-    "mistral-small-2603:batch"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 209715,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.075,
-   "price_out_usd_per_mtok": 0.3
   },
   {
    "id": "z-ai/glm-5-turbo",
@@ -2847,19 +1898,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.08,
    "price_out_usd_per_mtok": 0.45
-  },
-  {
-   "id": "nvidia/nemotron-3-super-120b-a12b:free",
-   "aliases": [
-    "nemotron-3-super-120b-a12b:free"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 235929,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
   },
   {
    "id": "bytedance-seed/seed-2.0-lite",
@@ -2901,19 +1939,6 @@
    "price_out_usd_per_mtok": 180.0
   },
   {
-   "id": "openai/gpt-5.4-pro:batch",
-   "aliases": [
-    "gpt-5.4-pro:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 15.0,
-   "price_out_usd_per_mtok": 90.0
-  },
-  {
    "id": "openai/gpt-5.4",
    "aliases": [
     "gpt-5.4"
@@ -2925,19 +1950,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 2.5,
    "price_out_usd_per_mtok": 15.0
-  },
-  {
-   "id": "openai/gpt-5.4:batch",
-   "aliases": [
-    "gpt-5.4:batch"
-   ],
-   "context_window": 1050000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.25,
-   "price_out_usd_per_mtok": 7.5
   },
   {
    "id": "inception/mercury-2",
@@ -3096,19 +2108,6 @@
    "price_out_usd_per_mtok": 12.0
   },
   {
-   "id": "google/gemini-3.1-pro-preview:batch",
-   "aliases": [
-    "gemini-3.1-pro-preview:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 6.0
-  },
-  {
    "id": "anthropic/claude-sonnet-4.6",
    "aliases": [
     "claude-sonnet-4.6"
@@ -3120,19 +2119,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 3.0,
    "price_out_usd_per_mtok": 15.0
-  },
-  {
-   "id": "anthropic/claude-sonnet-4.6:batch",
-   "aliases": [
-    "claude-sonnet-4.6:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.5,
-   "price_out_usd_per_mtok": 7.5
   },
   {
    "id": "qwen/qwen3.5-plus-02-15",
@@ -3213,19 +2199,6 @@
    "price_out_usd_per_mtok": 25.0
   },
   {
-   "id": "anthropic/claude-opus-4.6:batch",
-   "aliases": [
-    "claude-opus-4.6:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.5,
-   "price_out_usd_per_mtok": 12.5
-  },
-  {
    "id": "qwen/qwen3-coder-next",
    "aliases": [
     "qwen3-coder-next"
@@ -3237,19 +2210,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.12,
    "price_out_usd_per_mtok": 0.8
-  },
-  {
-   "id": "openrouter/free",
-   "aliases": [
-    "free"
-   ],
-   "context_window": 200000,
-   "max_output_tokens": null,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.0,
-   "price_out_usd_per_mtok": 0.0
   },
   {
    "id": "stepfun/step-3.5-flash",
@@ -3434,19 +2394,6 @@
    "price_out_usd_per_mtok": 3.0
   },
   {
-   "id": "google/gemini-3-flash-preview:batch",
-   "aliases": [
-    "gemini-3-flash-preview:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.25,
-   "price_out_usd_per_mtok": 1.5
-  },
-  {
    "id": "nvidia/nemotron-3-nano-30b-a3b",
    "aliases": [
     "nemotron-3-nano-30b-a3b"
@@ -3486,19 +2433,6 @@
    "price_out_usd_per_mtok": 168.0
   },
   {
-   "id": "openai/gpt-5.2-pro:batch",
-   "aliases": [
-    "gpt-5.2-pro:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 10.5,
-   "price_out_usd_per_mtok": 84.0
-  },
-  {
    "id": "openai/gpt-5.2",
    "aliases": [
     "gpt-5.2"
@@ -3510,19 +2444,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 1.75,
    "price_out_usd_per_mtok": 14.0
-  },
-  {
-   "id": "openai/gpt-5.2:batch",
-   "aliases": [
-    "gpt-5.2:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.875,
-   "price_out_usd_per_mtok": 7.0
   },
   {
    "id": "mistralai/devstral-2512",
@@ -3562,19 +2483,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.3,
    "price_out_usd_per_mtok": 0.9
-  },
-  {
-   "id": "openrouter/bodybuilder",
-   "aliases": [
-    "bodybuilder"
-   ],
-   "context_window": 128000,
-   "max_output_tokens": null,
-   "supports_tools": false,
-   "supports_json_schema": false,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": null,
-   "price_out_usd_per_mtok": null
   },
   {
    "id": "openai/gpt-5.1-codex-max",
@@ -3629,19 +2537,6 @@
    "price_out_usd_per_mtok": 0.15
   },
   {
-   "id": "mistralai/ministral-8b-2512:batch",
-   "aliases": [
-    "ministral-8b-2512:batch"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 209715,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.075,
-   "price_out_usd_per_mtok": 0.075
-  },
-  {
    "id": "mistralai/ministral-3b-2512",
    "aliases": [
     "ministral-3b-2512"
@@ -3666,19 +2561,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.5,
    "price_out_usd_per_mtok": 1.5
-  },
-  {
-   "id": "mistralai/mistral-large-2512:batch",
-   "aliases": [
-    "mistral-large-2512:batch"
-   ],
-   "context_window": 262144,
-   "max_output_tokens": 209715,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.25,
-   "price_out_usd_per_mtok": 0.75
   },
   {
    "id": "deepseek/deepseek-v3.2",
@@ -3707,19 +2589,6 @@
    "price_out_usd_per_mtok": 25.0
   },
   {
-   "id": "anthropic/claude-opus-4.5:batch",
-   "aliases": [
-    "claude-opus-4.5:batch"
-   ],
-   "context_window": 200000,
-   "max_output_tokens": 64000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 2.5,
-   "price_out_usd_per_mtok": 12.5
-  },
-  {
    "id": "google/gemini-3-pro-image-preview",
    "aliases": [
     "gemini-3-pro-image-preview"
@@ -3744,19 +2613,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 1.25,
    "price_out_usd_per_mtok": 10.0
-  },
-  {
-   "id": "openai/gpt-5.1:batch",
-   "aliases": [
-    "gpt-5.1:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.625,
-   "price_out_usd_per_mtok": 5.0
   },
   {
    "id": "openai/gpt-5.1-codex",
@@ -3915,19 +2771,6 @@
    "price_out_usd_per_mtok": 5.0
   },
   {
-   "id": "anthropic/claude-haiku-4.5:batch",
-   "aliases": [
-    "claude-haiku-4.5:batch"
-   ],
-   "context_window": 200000,
-   "max_output_tokens": 64000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.5,
-   "price_out_usd_per_mtok": 2.5
-  },
-  {
    "id": "qwen/qwen3-vl-8b-thinking",
    "aliases": [
     "qwen3-vl-8b-thinking"
@@ -4019,19 +2862,6 @@
    "price_out_usd_per_mtok": 120.0
   },
   {
-   "id": "openai/gpt-5-pro:batch",
-   "aliases": [
-    "gpt-5-pro:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 7.5,
-   "price_out_usd_per_mtok": 60.0
-  },
-  {
    "id": "z-ai/glm-4.6",
    "aliases": [
     "glm-4.6"
@@ -4056,19 +2886,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 3.0,
    "price_out_usd_per_mtok": 15.0
-  },
-  {
-   "id": "anthropic/claude-sonnet-4.5:batch",
-   "aliases": [
-    "claude-sonnet-4.5:batch"
-   ],
-   "context_window": 1000000,
-   "max_output_tokens": 64000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.5,
-   "price_out_usd_per_mtok": 7.5
   },
   {
    "id": "deepseek/deepseek-v3.2-exp",
@@ -4292,19 +3109,6 @@
    "price_out_usd_per_mtok": 2.0
   },
   {
-   "id": "mistralai/mistral-medium-3.1:batch",
-   "aliases": [
-    "mistral-medium-3.1:batch"
-   ],
-   "context_window": 131072,
-   "max_output_tokens": 104857,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.2,
-   "price_out_usd_per_mtok": 1.0
-  },
-  {
    "id": "z-ai/glm-4.5v",
    "aliases": [
     "glm-4.5v"
@@ -4331,19 +3135,6 @@
    "price_out_usd_per_mtok": 10.0
   },
   {
-   "id": "openai/gpt-5:batch",
-   "aliases": [
-    "gpt-5:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.625,
-   "price_out_usd_per_mtok": 5.0
-  },
-  {
    "id": "openai/gpt-5-mini",
    "aliases": [
     "gpt-5-mini"
@@ -4355,19 +3146,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.25,
    "price_out_usd_per_mtok": 2.0
-  },
-  {
-   "id": "openai/gpt-5-mini:batch",
-   "aliases": [
-    "gpt-5-mini:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.125,
-   "price_out_usd_per_mtok": 1.0
   },
   {
    "id": "openai/gpt-5-nano",
@@ -4383,19 +3161,6 @@
    "price_out_usd_per_mtok": 0.4
   },
   {
-   "id": "openai/gpt-5-nano:batch",
-   "aliases": [
-    "gpt-5-nano:batch"
-   ],
-   "context_window": 400000,
-   "max_output_tokens": 128000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.025,
-   "price_out_usd_per_mtok": 0.2
-  },
-  {
    "id": "openai/gpt-oss-120b",
    "aliases": [
     "gpt-oss-120b"
@@ -4407,19 +3172,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.037,
    "price_out_usd_per_mtok": 0.17
-  },
-  {
-   "id": "openai/gpt-oss-120b:batch",
-   "aliases": [
-    "gpt-oss-120b:batch"
-   ],
-   "context_window": 131072,
-   "max_output_tokens": 117964,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.0296,
-   "price_out_usd_per_mtok": 0.136
   },
   {
    "id": "openai/gpt-oss-20b",
@@ -4435,19 +3187,6 @@
    "price_out_usd_per_mtok": 0.09
   },
   {
-   "id": "openai/gpt-oss-20b:batch",
-   "aliases": [
-    "gpt-oss-20b:batch"
-   ],
-   "context_window": 131072,
-   "max_output_tokens": 117964,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.024,
-   "price_out_usd_per_mtok": 0.112
-  },
-  {
    "id": "anthropic/claude-opus-4.1",
    "aliases": [
     "claude-opus-4.1"
@@ -4461,19 +3200,6 @@
    "price_out_usd_per_mtok": 75.0
   },
   {
-   "id": "anthropic/claude-opus-4.1:batch",
-   "aliases": [
-    "claude-opus-4.1:batch"
-   ],
-   "context_window": 200000,
-   "max_output_tokens": 32000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 7.5,
-   "price_out_usd_per_mtok": 37.5
-  },
-  {
    "id": "mistralai/codestral-2508",
    "aliases": [
     "codestral-2508"
@@ -4485,19 +3211,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.3,
    "price_out_usd_per_mtok": 0.9
-  },
-  {
-   "id": "mistralai/codestral-2508:batch",
-   "aliases": [
-    "codestral-2508:batch"
-   ],
-   "context_window": 256000,
-   "max_output_tokens": 204800,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.15,
-   "price_out_usd_per_mtok": 0.45
   },
   {
    "id": "qwen/qwen3-coder-30b-a3b-instruct",
@@ -4602,19 +3315,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.1,
    "price_out_usd_per_mtok": 0.4
-  },
-  {
-   "id": "google/gemini-2.5-flash-lite:batch",
-   "aliases": [
-    "gemini-2.5-flash-lite:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65535,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.05,
-   "price_out_usd_per_mtok": 0.2
   },
   {
    "id": "qwen/qwen3-235b-a22b-2507",
@@ -4747,19 +3447,6 @@
    "price_out_usd_per_mtok": 2.5
   },
   {
-   "id": "google/gemini-2.5-flash:batch",
-   "aliases": [
-    "gemini-2.5-flash:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65535,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.15,
-   "price_out_usd_per_mtok": 1.25
-  },
-  {
    "id": "google/gemini-2.5-pro",
    "aliases": [
     "gemini-2.5-pro"
@@ -4771,19 +3458,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 1.25,
    "price_out_usd_per_mtok": 10.0
-  },
-  {
-   "id": "google/gemini-2.5-pro:batch",
-   "aliases": [
-    "gemini-2.5-pro:batch"
-   ],
-   "context_window": 1048576,
-   "max_output_tokens": 65536,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.625,
-   "price_out_usd_per_mtok": 5.0
   },
   {
    "id": "openai/o3-pro",
@@ -4955,19 +3629,6 @@
    "price_out_usd_per_mtok": 8.0
   },
   {
-   "id": "openai/o3:batch",
-   "aliases": [
-    "o3:batch"
-   ],
-   "context_window": 200000,
-   "max_output_tokens": 100000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 4.0
-  },
-  {
    "id": "openai/o4-mini",
    "aliases": [
     "o4-mini"
@@ -4979,19 +3640,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 1.1,
    "price_out_usd_per_mtok": 4.4
-  },
-  {
-   "id": "openai/o4-mini:batch",
-   "aliases": [
-    "o4-mini:batch"
-   ],
-   "context_window": 200000,
-   "max_output_tokens": 100000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.55,
-   "price_out_usd_per_mtok": 2.2
   },
   {
    "id": "openai/gpt-4.1",
@@ -5007,19 +3655,6 @@
    "price_out_usd_per_mtok": 8.0
   },
   {
-   "id": "openai/gpt-4.1:batch",
-   "aliases": [
-    "gpt-4.1:batch"
-   ],
-   "context_window": 1047576,
-   "max_output_tokens": 32768,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.0,
-   "price_out_usd_per_mtok": 4.0
-  },
-  {
    "id": "openai/gpt-4.1-mini",
    "aliases": [
     "gpt-4.1-mini"
@@ -5033,19 +3668,6 @@
    "price_out_usd_per_mtok": 1.6
   },
   {
-   "id": "openai/gpt-4.1-mini:batch",
-   "aliases": [
-    "gpt-4.1-mini:batch"
-   ],
-   "context_window": 1047576,
-   "max_output_tokens": 32768,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.2,
-   "price_out_usd_per_mtok": 0.8
-  },
-  {
    "id": "openai/gpt-4.1-nano",
    "aliases": [
     "gpt-4.1-nano"
@@ -5057,19 +3679,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 0.1,
    "price_out_usd_per_mtok": 0.4
-  },
-  {
-   "id": "openai/gpt-4.1-nano:batch",
-   "aliases": [
-    "gpt-4.1-nano:batch"
-   ],
-   "context_window": 1047576,
-   "max_output_tokens": 32768,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.05,
-   "price_out_usd_per_mtok": 0.2
   },
   {
    "id": "meta-llama/llama-4-maverick",
@@ -5330,19 +3939,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 1.1,
    "price_out_usd_per_mtok": 4.4
-  },
-  {
-   "id": "openai/o3-mini:batch",
-   "aliases": [
-    "o3-mini:batch"
-   ],
-   "context_window": 200000,
-   "max_output_tokens": 100000,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.55,
-   "price_out_usd_per_mtok": 2.2
   },
   {
    "id": "mistralai/mistral-small-24b-instruct-2501",
@@ -5787,19 +4383,6 @@
    "price_out_usd_per_mtok": 0.6
   },
   {
-   "id": "openai/gpt-4o-mini:batch",
-   "aliases": [
-    "gpt-4o-mini:batch"
-   ],
-   "context_window": 128000,
-   "max_output_tokens": 16384,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 0.075,
-   "price_out_usd_per_mtok": 0.3
-  },
-  {
    "id": "google/gemma-2-27b-it",
    "aliases": [
     "gemma-2-27b-it"
@@ -5837,19 +4420,6 @@
    "supports_vision": true,
    "price_in_usd_per_mtok": 5.0,
    "price_out_usd_per_mtok": 15.0
-  },
-  {
-   "id": "openai/gpt-4o:batch",
-   "aliases": [
-    "gpt-4o:batch"
-   ],
-   "context_window": 128000,
-   "max_output_tokens": 16384,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 1.25,
-   "price_out_usd_per_mtok": 5.0
   },
   {
    "id": "mistralai/mixtral-8x22b-instruct",
@@ -5891,19 +4461,6 @@
    "price_out_usd_per_mtok": 30.0
   },
   {
-   "id": "openai/gpt-4-turbo:batch",
-   "aliases": [
-    "gpt-4-turbo:batch"
-   ],
-   "context_window": 128000,
-   "max_output_tokens": 4096,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": 5.0,
-   "price_out_usd_per_mtok": 15.0
-  },
-  {
    "id": "mistralai/mistral-large",
    "aliases": [
     "mistral-large"
@@ -5928,19 +4485,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 1.0,
    "price_out_usd_per_mtok": 2.0
-  },
-  {
-   "id": "openrouter/auto",
-   "aliases": [
-    "auto"
-   ],
-   "context_window": 2000000,
-   "max_output_tokens": null,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": true,
-   "price_in_usd_per_mtok": null,
-   "price_out_usd_per_mtok": null
   },
   {
    "id": "openai/gpt-3.5-turbo-instruct",
@@ -6019,19 +4563,6 @@
    "supports_vision": false,
    "price_in_usd_per_mtok": 0.5,
    "price_out_usd_per_mtok": 1.5
-  },
-  {
-   "id": "openai/gpt-3.5-turbo:batch",
-   "aliases": [
-    "gpt-3.5-turbo:batch"
-   ],
-   "context_window": 16385,
-   "max_output_tokens": 4096,
-   "supports_tools": true,
-   "supports_json_schema": true,
-   "supports_vision": false,
-   "price_in_usd_per_mtok": 0.25,
-   "price_out_usd_per_mtok": 0.75
   },
   {
    "id": "openai/gpt-4",

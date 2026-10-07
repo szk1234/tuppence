@@ -46,7 +46,15 @@ def main() -> int:
     with urllib.request.urlopen(url, timeout=30) as r:  # noqa: S310
         data = json.load(r)["data"]
     entries: list[dict[str, Any]] = []
+    ids = {m["id"] for m in data}
     for m in data:
+        mid = m["id"]
+        # Routers and meta entries have no fixed model behind them.
+        if mid.startswith(("openrouter/", "~")):
+            continue
+        # Tier variants (":free", ":beta", ...) must never stand in for the paid model.
+        if ":" in mid and (mid.endswith(":free") or mid.split(":", 1)[0] in ids):
+            continue
         params = set(m.get("supported_parameters") or [])
         pricing = m.get("pricing") or {}
         model_part = m["id"].split("/", 1)[-1]

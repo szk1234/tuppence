@@ -16,8 +16,19 @@ def test_lookup_exact_alias_and_prefix():
     )
     assert cat.lookup("model-a").context_window == 1000
     assert cat.lookup("vendor/model-a-long").context_window == 2000
-    assert cat.lookup("model-a-long-2026-preview").context_window == 2000  # longest prefix
+    assert cat.lookup("model-a-long-2026-01-15").context_window == 2000  # longest prefix
+    assert cat.lookup("model-a-0613").context_window == 1000
+    assert cat.lookup("model-a-latest").context_window == 1000
     assert cat.lookup("unrelated") is None
+
+
+def test_specialised_variants_do_not_inherit_base_figures():
+    cat = ModelCatalogue(
+        [CatalogueEntry(id="o3", context_window=200000, price_in_usd_per_mtok=2.0)]
+    )
+    assert cat.lookup("o3-deep-research") is None
+    assert cat.lookup("o3:8b") is None
+    assert cat.lookup("o3-2025-04-16").price_in_usd_per_mtok == 2.0
 
 
 def test_later_entries_win():
@@ -37,3 +48,19 @@ def test_baseline_loads_and_has_anthropic():
     assert e.context_window == 1_000_000
     assert e.price_in_usd_per_mtok == 2.0
     assert all((x.price_in_usd_per_mtok or 0) >= 0 for x in cat.by_key.values())
+
+
+def test_baseline_free_variants_never_replace_paid_entries():
+    cat = load_baseline()
+    assert not any(
+        e.id.endswith(":free") or e.id.startswith(("openrouter/", "~")) for e in cat.by_key.values()
+    )
+    # Paid model keeps its own price and window (these had :free twins on OpenRouter).
+    for model_id in ("gemma-4-31b-it", "inkling"):
+        e = cat.lookup(model_id)
+        assert e is not None and (e.price_in_usd_per_mtok or 0) > 0
+    assert cat.lookup("inkling").context_window == 524_288
+    assert cat.lookup("auto") is None
+    assert (
+        cat.lookup("o3-deep-research") is None or cat.lookup("o3-deep-research").id != "openai/o3"
+    )

@@ -78,6 +78,10 @@ def normalise_base_url(url: str, api_style: str) -> str:
     parts = urlsplit(raw)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise InputError("The base URL must start with http:// or https://")
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise InputError("Put credentials in the API key or header fields, not the address.")
+    if parts.query:
+        raise InputError("Addresses with ?query parts aren't supported yet.")
     path = parts.path.rstrip("/")
     if api_style == "openai" and path == "":
         path = "/v1"

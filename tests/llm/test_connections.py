@@ -5,9 +5,14 @@ from tuppence.core.db import Database
 from tuppence.core.errors import InputError
 from tuppence.core.migrate import migrate
 from tuppence.core.records import VersionConflict
-from tuppence.core.secrets import EncryptedDbStore, SecretUnreadable, load_or_create_key
+from tuppence.core.secrets import (
+    EncryptedDbStore,
+    SecretError,
+    SecretUnreadable,
+    load_or_create_key,
+)
 from tuppence.llm.catalogue import CatalogueEntry, ModelCatalogue
-from tuppence.llm.connections import ConnectionRegistry, detect_local
+from tuppence.llm.connections import ApiKeyMissing, ConnectionRegistry, detect_local
 from tuppence.net.client import CallContext
 
 
@@ -83,8 +88,9 @@ def test_test_connection_stores_enriched_models(reg):
     assert models["small-1"].context_window == 4096 and models["small-1"].source == "default"
     assert models["small-1"].price_in_usd_per_mtok == 0.0
     known = models["vendor/known"]
-    assert known.context_window == 64000 and known.supports_json_schema
-    assert known.source == "catalogue"
+    assert known.supports_json_schema
+    # A local server's window comes from the server or the user, never the catalogue.
+    assert known.context_window == 4096 and known.source == "default"
     assert {m.model_id for m in reg.models(c.id)} == {"small-1", "vendor/known"}
 
 
@@ -135,7 +141,7 @@ def test_stale_update_does_not_rotate_the_key(reg):
 
 def test_header_values_are_secret_and_sent(reg, seen):
     c = reg.create("custom", base_url="http://10.0.0.5:8000/v1", headers={"X-Org": "hush-value"})
-    assert c.header_names == ["X-Org"]
+    assert [(h.name, h.has_value) for h in c.headers] == [("X-Org", True)]
     assert "hush-value" not in c.model_dump_json()
     with reg.db.connection() as conn:
         row = conn.execute("SELECT headers FROM llm_connection").fetchone()
@@ -143,7 +149,7 @@ def test_header_values_are_secret_and_sent(reg, seen):
     reg.test(c.id)
     assert seen[-1].headers["x-org"] == "hush-value"
     c = reg.update(c.id, {"headers": {}}, expected_version=c.version)
-    assert c.header_names == []
+    assert c.headers == []
     with reg.db.connection() as conn:
         assert conn.execute("SELECT count(*) FROM secret").fetchone()[0] == 0
 
@@ -153,7 +159,7 @@ def test_forget_keys_clears_has_key(reg):
     reg.forget_keys()
     got = reg.get(c.id)
     assert not got.has_key
-    assert got.header_names == ["X-A"]
+    assert [(h.name, h.has_value) for h in got.headers] == [("X-A", False)]
 
 
 def test_missing_secret_is_a_clear_error(reg):
@@ -175,3 +181,120 @@ def test_detect_local_reports_responding_servers():
 
     found = detect_local(factory)
     assert [(d.preset, d.model_count) for d in found] == [("ollama", 1)]
+
+
+def test_cloud_catalogue_window_and_blank_key_edit(reg):
+    c = reg.create("openai", api_key="k")
+    models = {m.model_id: m for m in reg.test(c.id)}
+    assert models["vendor/known"].context_window == 64000
+    assert models["vendor/known"].source == "catalogue"
+    c = reg.update(c.id, {"api_key": "", "name": "Renamed"}, expected_version=c.version)
+    assert reg.api_key(c.id) == "k" and c.has_key
+    c = reg.update(c.id, {"api_key": None}, expected_version=c.version)
+    assert reg.api_key(c.id) == "k"
+    with pytest.raises(InputError):
+        reg.update(c.id, {"clear_api_key": True}, expected_version=c.version)
+
+
+def test_clear_key_allowed_for_optional_key_presets(reg):
+    c = reg.create("custom", base_url="http://10.0.0.5/v1", api_key="k")
+    c = reg.update(c.id, {"clear_api_key": True}, expected_version=c.version)
+    assert not c.has_key and reg.api_key(c.id) is None
+    with pytest.raises(InputError):
+        reg.update(c.id, {"api_key": "x", "clear_api_key": True}, expected_version=c.version)
+
+
+def test_keyless_cloud_connection_fails_before_any_request(reg, seen):
+    c = reg.create("openai", api_key="k")
+    reg.forget_keys()
+    with pytest.raises(ApiKeyMissing) as exc:
+        reg.test(c.id)
+    assert "An API key is needed for OpenAI" in str(exc.value)
+    assert seen == []
+
+
+def test_header_validation_never_echoes_input(reg):
+    pasted = "Authorization: Bearer sk-PASTED-SECRET"
+    with pytest.raises(InputError) as exc:
+        reg.create("custom", base_url="http://10.0.0.5/v1", headers={pasted: "v"})
+    assert "sk-PASTED" not in str(exc.value) and "Authorization" not in str(exc.value)
+    with pytest.raises(InputError, match="ASCII"):
+        reg.create("custom", base_url="http://10.0.0.5/v1", headers={"X-A": "caf\u00e9"})
+
+
+@pytest.mark.parametrize("headers", ["x", ["a"], {"A": 1}, {1: "a"}])
+def test_bad_headers_are_input_errors(reg, headers):
+    c = reg.create("custom", base_url="http://10.0.0.5/v1")
+    with pytest.raises(InputError):
+        reg.update(c.id, {"headers": headers}, expected_version=c.version)
+
+
+@pytest.mark.parametrize(
+    "changes", [{"name": None}, {"name": "  "}, {"name": 5}, {"enabled": "false"}, {"enabled": 1}]
+)
+def test_bad_changes_are_input_errors(reg, changes):
+    c = reg.create("ollama")
+    with pytest.raises(InputError):
+        reg.update(c.id, changes, expected_version=c.version)
+    assert reg.get(c.id).name == "Ollama" and reg.get(c.id).enabled
+
+
+def test_base_url_credentials_and_query_rejected(reg):
+    with pytest.raises(InputError, match="credentials"):
+        reg.create("custom", base_url="https://user:pw@proxy.example.com/v1")
+    with pytest.raises(InputError, match="query"):
+        reg.create("custom", base_url="https://x.example.com/v1?api-version=1", api_key="k")
+
+
+def test_notice_resets_when_host_changes_to_non_local(reg):
+    c = reg.create("custom", base_url="https://8.8.8.8/v1", api_key="k")
+    c = reg.acknowledge_notice(c.id)
+    assert not c.needs_notice
+    c = reg.update(c.id, {"base_url": "https://8.8.4.4/v1"}, expected_version=c.version)
+    assert c.needs_notice  # cloud -> other cloud host
+    c = reg.acknowledge_notice(c.id)
+    c = reg.update(c.id, {"base_url": "https://8.8.4.4/v2"}, expected_version=c.version)
+    assert not c.needs_notice  # same host
+    c = reg.update(c.id, {"base_url": "http://10.0.0.9/v1"}, expected_version=c.version)
+    assert c.is_local and not c.needs_notice  # cloud -> local
+    c = reg.update(c.id, {"base_url": "https://8.8.8.8/v1"}, expected_version=c.version)
+    assert c.needs_notice  # local -> cloud
+
+
+def test_test_recomputes_locality(reg):
+    c = reg.create("custom", base_url="http://10.0.0.5/v1")
+    with reg.db.transaction() as conn:
+        conn.execute("UPDATE llm_connection SET is_local = 0")
+    reg.test(c.id)
+    assert reg.get(c.id).is_local
+
+
+def test_delete_removes_key_and_header_secrets(reg):
+    c = reg.create("custom", base_url="http://10.0.0.5/v1", api_key="k", headers={"X-A": "1"})
+    with reg.db.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM secret").fetchone()[0] == 2
+    reg.delete(c.id)
+    with reg.db.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM secret").fetchone()[0] == 0
+
+
+def test_stale_version_conflicts_before_touching_secrets(reg):
+    c = reg.create("openai", api_key="old")
+    reg.update(c.id, {"name": "A"}, expected_version=1)
+    with pytest.raises(VersionConflict):
+        reg.update(c.id, {"api_key": "new"}, expected_version=1)
+    with reg.db.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM secret").fetchone()[0] == 1
+
+
+def test_secret_cleanup_failure_after_commit_is_not_an_error(reg, monkeypatch):
+    c = reg.create("openai", api_key="old")
+
+    def boom(ref):
+        raise SecretError("keychain locked")
+
+    monkeypatch.setattr(reg.secrets, "delete", boom)
+    c = reg.update(c.id, {"api_key": "new"}, expected_version=c.version)
+    assert reg.api_key(c.id) == "new"
+    reg.delete(c.id)
+    assert reg.list() == []

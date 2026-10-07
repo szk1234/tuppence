@@ -71,3 +71,14 @@ def test_composite_key_update(tmp_path):
     with d.connection() as conn:
         rows = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT b, name, version FROM m")}
     assert rows == {"y/z": ("new", 2), "w": ("other", 1)}
+
+
+def test_tuple_key_columns_need_a_tuple_key(tmp_path):
+    d = Database(tmp_path / "k.db")
+    with d.transaction() as conn:
+        conn.execute(
+            "CREATE TABLE m (a TEXT, b TEXT, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT)"
+        )
+        conn.execute("INSERT INTO m (a, b) VALUES ('x', 'y')")
+    with pytest.raises(TypeError), d.transaction() as conn:
+        update_versioned(conn, "m", ("a", "b"), "xy", 1, {"a": "q"}, now="t")

@@ -43,7 +43,12 @@ def update_versioned(
     """
     _check(table)
     cols = (key_col,) if isinstance(key_col, str) else tuple(key_col)
-    vals = (key,) if isinstance(key_col, str) else tuple(key)  # type: ignore[call-overload]
+    if isinstance(key_col, str):
+        vals: tuple[object, ...] = (key,)
+    elif isinstance(key, tuple):
+        vals = key
+    else:
+        raise TypeError("a tuple of key columns needs a tuple of key values")
     if not cols or len(cols) != len(vals):
         raise ValueError("key columns and key values must match")
     where = " AND ".join(f"{_check(c)} = ?" for c in cols)

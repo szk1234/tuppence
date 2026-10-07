@@ -9,6 +9,9 @@ from importlib import resources
 from pydantic import BaseModel, Field
 
 _DATE = re.compile(r"-\d{8}$")
+# After a catalogue id, only a date, "latest" or a build number marks the same model; anything
+# else ("-deep-research", "-realtime-preview") is a different product with its own figures.
+_VARIANT_OK = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2}|latest|\d{4})")
 _SUFFIX = re.compile(r":(free|beta|latest|extended|thinking)$")
 
 
@@ -45,7 +48,7 @@ class ModelCatalogue:
         if key in self.by_key:
             return self.by_key[key]
         for candidate in self.keys_by_length:  # longest first
-            if key.startswith((candidate + "-", candidate + ":")):
+            if key.startswith(candidate) and _VARIANT_OK.fullmatch(key[len(candidate) :]):
                 return self.by_key[candidate]
         return None
 
