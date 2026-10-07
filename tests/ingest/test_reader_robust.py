@@ -83,3 +83,35 @@ def test_an_empty_screenshot_read_needs_review(ingest_env, fixtures):
         limits=ReaderLimits(),
     )
     assert out.parsed.rows == [] and any("No transactions were read" in e for e in out.errors)
+
+
+def test_model_strings_are_cleaned_and_capped_wherever_they_are_kept(ingest_env):
+    # M8: the whole-file check after the read quoted the model's text in full.
+    from ingest.helpers import parse_pages
+    from ingest.replies import reply, row
+
+    services, scripted = ingest_env
+    nasty = "Paid\x1b[31m out " + "x" * 5000
+    rows = [
+        {**row("D2", "1.00", sign_from=nasty), "raw_desc": "\x07" + "y" * 3000},
+        {**row("D3", "\x07" + "9" * 3000), "merchant": "\x1b" * 400, "bank_type": "z" * 999},
+    ]
+    skipped = [{"ref": "D1", "reason": "\x00" + "r" * 900}]
+    scripted.replies = [{"content": reply(rows, skipped)}] * 3
+    page = [
+        "Statement period 01/10/2026 to 31/10/2026",
+        "Date Description Paid out Paid in Balance",
+        "01/10/2026 SHOP 1.00 99.00",
+        "02/10/2026 CAFE 2.00 97.00",
+    ]
+    out, _ = parse_pages(services, [page])
+    assert out.errors
+
+    def clean(text):
+        return text is None or (len(text) <= 200 and not any(ord(c) < 32 for c in text))
+
+    assert all(clean(e) for e in out.errors)
+    for r in out.parsed.rows:
+        fields = (r.amount_text, r.sign_from, r.raw_description, r.merchant, r.bank_type)
+        assert all(clean(f) for f in fields)
+    assert all(clean(s.reason) for s in out.parsed.skipped)

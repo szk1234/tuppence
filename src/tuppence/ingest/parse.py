@@ -25,7 +25,7 @@ from tuppence.ingest.importers.qif import QifError, parse_qif
 from tuppence.ingest.mapping import propose_layout
 from tuppence.ingest.models import AccountKind, CheckLevel, Document, ParsedStatement
 from tuppence.ingest.prompts import load_prompt
-from tuppence.ingest.reader import StructuredLLM, read_document
+from tuppence.ingest.reader import StructuredLLM, read_document, tidy
 from tuppence.ingest.registry import CsvLayout, LayoutRegistry
 from tuppence.ingest.textnum import decode_text
 from tuppence.ingest.textprep import has_amount
@@ -275,7 +275,8 @@ def parse_document(
         errors.append("This statement couldn't be read reliably, so it needs a look.")
     return ParseOutcome(
         parsed=parsed,
-        errors=list(dict.fromkeys(errors)),
+        # The whole-file check quotes the model's text: clean and cap it like every error.
+        errors=list(dict.fromkeys(tidy(e) for e in errors)),
         level=level,
         info={
             "importer": "ai-read",

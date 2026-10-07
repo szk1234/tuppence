@@ -235,13 +235,14 @@ def _pence(value: float | None) -> int | None:
 
 
 def to_parsed(out: ReadOut, *, perspective: Perspective) -> tuple[ParsedStatement, list[str]]:
-    """Typed rows from the model's JSON, plus errors for values that don't convert."""
+    """Typed rows from the model's JSON, plus errors for values that don't convert. Every
+    string the model wrote is kept without control characters and capped at 200."""
     errors: list[str] = []
     start, end = _iso(out.statement.period_start), _iso(out.statement.period_end)
     if out.statement.period_start and start is None:
-        errors.append(f"statement period_start {out.statement.period_start} not ISO")
+        errors.append(f"statement period_start {tidy(out.statement.period_start, 40)} not ISO")
     if out.statement.period_end and end is None:
-        errors.append(f"statement period_end {out.statement.period_end} not ISO")
+        errors.append(f"statement period_end {tidy(out.statement.period_end, 40)} not ISO")
     currency = (out.statement.currency or "GBP").strip().upper()
     if currency != "GBP":
         errors.append(f"statement currency is {tidy(currency, 8)}, not GBP")
@@ -253,28 +254,32 @@ def to_parsed(out: ReadOut, *, perspective: Perspective) -> tuple[ParsedStatemen
         opening_balance_pence=_pence(out.statement.opening_balance),
         closing_balance_pence=_pence(out.statement.closing_balance),
         currency="GBP",
-        skipped=[SkippedLine(ref=s.ref, reason=s.reason) for s in out.skipped],
+        skipped=[SkippedLine(ref=tidy(s.ref, 60), reason=tidy(s.reason)) for s in out.skipped],
     )
     for row in out.transactions:
         day = _iso(row.date)
         if day is None:
-            errors.append(f"{row.ref}: date {row.date} not ISO")
+            errors.append(f"{tidy(row.ref, 60)}: date {tidy(row.date, 40)} not ISO")
             continue
         parsed.rows.append(
             ParsedRow(
-                ref=row.ref,
+                ref=tidy(row.ref, 60),
                 date=day,
                 amount_pence=to_pence(Decimal(str(row.amount))),
-                amount_text=row.amount_text,
-                sign_from=row.sign_from,
-                raw_description=row.raw_desc,
-                merchant=row.merchant,
-                bank_category=row.bank_category,
-                bank_type=row.bank_type,
+                amount_text=tidy(row.amount_text),
+                sign_from=_tidy(row.sign_from),
+                raw_description=tidy(row.raw_desc),
+                merchant=_tidy(row.merchant),
+                bank_category=_tidy(row.bank_category),
+                bank_type=_tidy(row.bank_type),
                 balance_after_pence=_pence(row.running_balance),
             )
         )
     return parsed, errors
+
+
+def _tidy(text: str | None) -> str | None:
+    return None if text is None else tidy(text)
 
 
 def context_block(*, today: dt.date, account: str, facts: HeaderFacts, level: CheckLevel) -> str:
