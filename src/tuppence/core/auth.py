@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import secrets
+import threading
 from datetime import timedelta
 from typing import Literal
 
@@ -16,7 +17,14 @@ from tuppence.core.clock import from_iso, to_iso, utcnow
 from tuppence.core.db import Database
 
 _hasher = PasswordHasher()
+# Each argon2 call allocates ~64 MiB; cap concurrency so a burst of logins can't exhaust memory.
+_hash_slots = threading.BoundedSemaphore(2)
 MIN_PASSWORD = 10
+MAX_USERNAME = 64
+
+
+class SetupComplete(RuntimeError):
+    pass
 
 
 class WeakPassword(ValueError):
@@ -24,17 +32,21 @@ class WeakPassword(ValueError):
 
 
 def hash_password(password: str) -> str:
-    return _hasher.hash(password)
+    with _hash_slots:
+        return _hasher.hash(password)
 
 
 def verify_password(stored: str, password: str) -> bool:
     try:
-        return _hasher.verify(stored, password)
+        with _hash_slots:
+            return _hasher.verify(stored, password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
 
 
 def validate_new_password(username: str, password: str) -> None:
+    if not 1 <= len(username.strip()) <= MAX_USERNAME:
+        raise WeakPassword(f"Choose a username between 1 and {MAX_USERNAME} characters.")
     if len(password) < MIN_PASSWORD:
         raise WeakPassword(f"Use at least {MIN_PASSWORD} characters for your password.")
     if password.strip().lower() == username.strip().lower():
@@ -72,6 +84,22 @@ class Users:
             user_id = int(cur.lastrowid or 0)
         return User(id=user_id, username=username, is_admin=is_admin)
 
+    def create_first_admin(self, username: str, password: str) -> User:
+        username = username.strip()
+        validate_new_password(username, password)
+        password_hash = hash_password(password)  # slow: do it before taking the write lock
+        now = to_iso(utcnow())
+        with self.db.transaction() as conn:
+            if int(conn.execute("SELECT count(*) FROM app_user").fetchone()[0]) > 0:
+                raise SetupComplete
+            cur = conn.execute(
+                "INSERT INTO app_user (username, password_hash, is_admin, created_at, updated_at)"
+                " VALUES (?, ?, 1, ?, ?)",
+                [username, password_hash, now, now],
+            )
+            user_id = int(cur.lastrowid or 0)
+        return User(id=user_id, username=username, is_admin=True)
+
     def authenticate(self, username: str, password: str) -> User | None:
         with self.db.connection() as conn:
             row = conn.execute(
@@ -79,7 +107,7 @@ class Users:
                 [username.strip()],
             ).fetchone()
         if row is None:
-            _hasher.hash(password)  # keep timing similar for unknown users
+            hash_password(password)  # keep timing similar for unknown users
             return None
         if not verify_password(row["password_hash"], password):
             return None
@@ -100,6 +128,7 @@ class Session(BaseModel):
     user_id: int | None
     csrf_token: str
     expires_at: str
+    renewed: bool = False
 
 
 class Sessions:
@@ -128,16 +157,20 @@ class Sessions:
             return None
         key = _token_hash(token)
         now = utcnow()
-        with self.db.transaction() as conn:
+        with self.db.connection() as conn:  # read-only fast path: no write lock per request
             row = conn.execute("SELECT * FROM session WHERE token_hash = ?", [key]).fetchone()
-            if row is None:
-                return None
-            if from_iso(row["expires_at"]) <= now:
+        if row is None:
+            return None
+        expired = from_iso(row["expires_at"]) <= now
+        stale = now - from_iso(row["last_seen_at"]) > timedelta(hours=1)
+        expires = row["expires_at"]
+        if expired:
+            with self.db.transaction() as conn:
                 conn.execute("DELETE FROM session WHERE token_hash = ?", [key])
-                return None
-            expires = row["expires_at"]
-            if now - from_iso(row["last_seen_at"]) > timedelta(hours=1):
-                expires = to_iso(now + self.ttl)
+            return None
+        if stale:
+            expires = to_iso(now + self.ttl)
+            with self.db.transaction() as conn:
                 conn.execute(
                     "UPDATE session SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?",
                     [to_iso(now), expires, key],
@@ -147,6 +180,7 @@ class Sessions:
             user_id=row["user_id"],
             csrf_token=row["csrf_token"],
             expires_at=expires,
+            renewed=stale,
         )
 
     def delete(self, token: str | None) -> None:
@@ -174,6 +208,31 @@ class LoginLimiter:
             return None
         remaining = (from_iso(row["locked_until"]) - utcnow()).total_seconds()
         return math.ceil(remaining) if remaining > 0 else None
+
+    def begin_attempt(self, key: str) -> int | None:
+        """Charge an attempt up front, atomically. Returns seconds to wait if locked, else None."""
+        now = utcnow()
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT failures, locked_until FROM login_attempt WHERE key = ?", [key]
+            ).fetchone()
+            failures = 0
+            if row is not None:
+                if row["locked_until"]:
+                    remaining = (from_iso(row["locked_until"]) - now).total_seconds()
+                    if remaining > 0:
+                        return math.ceil(remaining)
+                else:
+                    failures = int(row["failures"])
+            failures += 1
+            locked = to_iso(now + self.lockout) if failures >= self.max_failures else None
+            conn.execute(
+                "INSERT INTO login_attempt (key, failures, locked_until) VALUES (?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET failures = excluded.failures,"
+                " locked_until = excluded.locked_until",
+                [key, failures, locked],
+            )
+        return None
 
     def record_failure(self, key: str) -> None:
         now = utcnow()

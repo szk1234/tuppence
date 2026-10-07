@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -130,3 +131,124 @@ def test_old_launch_sessions_purged_on_restart(make_app):
     c2 = TestClient(make_app("desktop", launch_token="B" * 43))
     c2.cookies.set("tuppence_session", cookie)
     assert c2.get("/api/settings").status_code == 401
+
+
+def test_setup_race_over_http_makes_one_admin(make_app):
+    import threading
+
+    app = make_app("server")
+    barrier = threading.Barrier(8)
+    codes = []
+
+    def go(i):
+        c = TestClient(app)
+        barrier.wait()
+        r = c.post(
+            "/api/auth/setup", json={"username": f"a{i}", "password": "correct-horse-battery"}
+        )
+        codes.append(r.status_code)
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sorted(codes) == [200] + [409] * 7
+    assert app.state.services.users.count() == 1
+
+
+def test_concurrent_wrong_guesses_are_throttled(make_app):
+    import threading
+
+    app = make_app("server")
+    TestClient(app).post(
+        "/api/auth/setup", json={"username": "alex", "password": "correct-horse-battery"}
+    )
+    barrier = threading.Barrier(30)
+    codes = []
+
+    def go():
+        c = TestClient(app)
+        barrier.wait()
+        codes.append(
+            c.post(
+                "/api/auth/login", json={"username": "alex", "password": "nope-nope-nope"}
+            ).status_code
+        )
+
+    threads = [threading.Thread(target=go) for _ in range(30)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert codes.count(401) <= 5 and codes.count(429) >= 25
+
+
+def test_launch_session_rejected_in_server_mode(tmp_path, make_app):
+    local = make_app("local", launch_token="L" * 43)
+    c = TestClient(local, follow_redirects=False)
+    c.get("/auth/launch", params={"token": "L" * 43})
+    cookie = c.cookies.get("tuppence_session")
+    # Same data dir, now started in server mode: startup purges, and the guard rejects regardless.
+    server = TestClient(make_app("server"))
+    server.cookies.set("tuppence_session", cookie)
+    assert server.get("/api/settings").status_code == 401
+    # Even if a launch row is injected after startup, server mode refuses it.
+    token, _ = server.app.state.services.sessions.create("launch")
+    server.cookies.set("tuppence_session", token)
+    assert server.get("/api/settings").status_code == 401
+
+
+@pytest.mark.parametrize("name", ["", "   ", "x" * 65])
+def test_setup_rejects_bad_username_with_422(make_app, name):
+    c = TestClient(make_app("server"))
+    r = c.post("/api/auth/setup", json={"username": name, "password": "correct-horse-battery"})
+    assert r.status_code == 422 and "between 1 and 64" in r.json()["detail"]
+
+
+def test_session_cookie_slides_when_renewed(make_app):
+    c = TestClient(make_app("server"))
+    c.post("/api/auth/setup", json={"username": "alex", "password": "correct-horse-battery"})
+    assert "set-cookie" not in c.get("/api/settings").headers
+    with c.app.state.services.db.transaction() as conn:
+        conn.execute("UPDATE session SET last_seen_at = '2020-01-01T00:00:00Z'")
+    r = c.get("/api/settings")
+    sc = r.headers["set-cookie"].lower()
+    assert "tuppence_session=" in sc and "max-age=2592000" in sc and "httponly" in sc
+
+
+def test_logout_deletes_session_server_side(make_app):
+    c = TestClient(make_app("server"))
+    c.post("/api/auth/setup", json={"username": "alex", "password": "correct-horse-battery"})
+    old = c.cookies.get("tuppence_session")
+    csrf = c.get("/api/auth/session").json()["csrf_token"]
+    assert c.post("/api/auth/logout", headers={"X-CSRF-Token": csrf}).status_code == 204
+    c.cookies.set("tuppence_session", old)
+    assert c.get("/api/settings").status_code == 401
+
+
+def test_secure_cookie_flag(make_app):
+    c = TestClient(make_app("server", secure_cookies=True), base_url="https://testserver")
+    r = c.post("/api/auth/setup", json={"username": "alex", "password": "correct-horse-battery"})
+    assert "secure" in r.headers["set-cookie"].lower().split("; ")
+
+
+@pytest.mark.parametrize("mode", ["local", "desktop"])
+def test_setup_and_login_absent_outside_server_mode(make_app, mode):
+    c = TestClient(make_app(mode))
+    body = {"username": "alex", "password": "correct-horse-battery"}
+    assert c.post("/api/auth/setup", json=body).status_code == 404
+    assert c.post("/api/auth/login", json=body).status_code == 404
+
+
+def test_cross_origin_login_rejected_but_same_origin_ok(make_app):
+    c = TestClient(make_app("server"))
+    c.post("/api/auth/setup", json={"username": "alex", "password": "correct-horse-battery"})
+    r = c.post(
+        "/api/auth/login",
+        json={"username": "alex", "password": "correct-horse-battery"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403
+    ok = c.post(
+        "/api/auth/login",
+        json={"username": "alex", "password": "correct-horse-battery"},
+        headers={"Origin": "http://testserver"},
+    )
+    assert ok.status_code == 200

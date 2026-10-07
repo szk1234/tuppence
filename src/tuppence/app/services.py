@@ -49,6 +49,6 @@ def build_services(runtime: RuntimeSettings) -> Services:
         sessions=Sessions(db),
         limiter=LoginLimiter(db),
     )
-    if runtime.mode in ("local", "desktop"):
-        services.sessions.purge_kind("launch")  # links and cookies from earlier launches die
+    # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
+    services.sessions.purge_kind("launch")
     return services

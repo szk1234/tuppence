@@ -9,14 +9,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
-from tuppence.app.deps import SESSION_COOKIE, check_same_origin, get_services, require_session
+from tuppence.app.deps import (
+    SESSION_COOKIE,
+    check_same_origin,
+    get_services,
+    require_session,
+    set_session_cookie,
+)
 from tuppence.app.services import Services
-from tuppence.core.auth import WeakPassword
+from tuppence.core.auth import SetupComplete, WeakPassword
 
 Svc = Annotated[Services, Depends(get_services)]
 
 router = APIRouter(tags=["auth"])
-MAX_AGE = 30 * 24 * 3600
 
 EXPIRED_HTML = (
     '<!doctype html><html lang="en-GB"><meta charset="utf-8"><title>Tuppence</title>'
@@ -42,18 +47,6 @@ class SessionInfo(BaseModel):
     needs_setup: bool
     user: SessionUser | None
     csrf_token: str | None
-
-
-def _set_cookie(response: Response, token: str, services: Services) -> None:
-    response.set_cookie(
-        SESSION_COOKIE,
-        token,
-        max_age=MAX_AGE,
-        httponly=True,
-        samesite="strict",
-        secure=services.runtime.secure_cookies,
-        path="/",
-    )
 
 
 def _info(services: Services, token: str | None) -> SessionInfo:
@@ -85,7 +78,7 @@ def launch(token: str, services: Svc) -> Response:
         return HTMLResponse(EXPIRED_HTML, status_code=403)
     raw, _ = services.sessions.create("launch")
     response = RedirectResponse("/", status_code=303)
-    _set_cookie(response, raw, services)
+    set_session_cookie(response, raw, services)
     return response
 
 
@@ -97,7 +90,7 @@ def session_info(request: Request, services: Svc) -> SessionInfo:
 def _start_user_session(services: Services, user_id: int) -> JSONResponse:
     raw, _ = services.sessions.create("user", user_id)
     response = JSONResponse(_info(services, raw).model_dump())
-    _set_cookie(response, raw, services)
+    set_session_cookie(response, raw, services)
     return response
 
 
@@ -105,10 +98,10 @@ def _start_user_session(services: Services, user_id: int) -> JSONResponse:
 def setup(body: Credentials, services: Svc) -> JSONResponse:
     if services.runtime.mode != "server":
         raise HTTPException(status_code=404)
-    if services.users.count() > 0:
-        raise HTTPException(status_code=409, detail="Setup is already complete.")
     try:
-        user = services.users.create(body.username, body.password, is_admin=True)
+        user = services.users.create_first_admin(body.username, body.password)
+    except SetupComplete:
+        raise HTTPException(status_code=409, detail="Setup is already complete.") from None
     except WeakPassword as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return _start_user_session(services, user.id)
@@ -120,7 +113,7 @@ def login(body: Credentials, request: Request, services: Svc) -> JSONResponse:
         raise HTTPException(status_code=404)
     ip = request.client.host if request.client else "unknown"
     key = f"{ip}|{body.username.strip().lower()}"
-    wait = services.limiter.retry_after(key)
+    wait = services.limiter.begin_attempt(key)  # charged up front, so bursts can't bypass it
     if wait is not None:
         return JSONResponse(
             {"detail": f"Too many attempts. Try again in {wait} seconds."},
@@ -129,7 +122,6 @@ def login(body: Credentials, request: Request, services: Svc) -> JSONResponse:
         )
     user = services.users.authenticate(body.username, body.password)
     if user is None:
-        services.limiter.record_failure(key)
         raise HTTPException(status_code=401, detail="Wrong username or password.")
     services.limiter.reset(key)
     return _start_user_session(services, user.id)

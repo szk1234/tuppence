@@ -81,3 +81,60 @@ def test_login_limiter_locks_after_five_failures(db):
     assert wait is not None and 0 < wait <= 60
     limiter.reset(key)
     assert limiter.retry_after(key) is None
+
+
+def test_first_admin_race_creates_exactly_one(db):
+    import threading
+
+    from tuppence.core.auth import SetupComplete
+
+    users = Users(db)
+    barrier = threading.Barrier(8)
+    results = []
+
+    def go(i):
+        barrier.wait()
+        try:
+            users.create_first_admin(f"admin{i}", "correct-horse-battery")
+            results.append("ok")
+        except SetupComplete:
+            results.append("complete")
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert results.count("ok") == 1 and results.count("complete") == 7
+    assert users.count() == 1
+
+
+@pytest.mark.parametrize("name", ["", "   ", "x" * 65])
+def test_bad_usernames_rejected(name):
+    with pytest.raises(WeakPassword, match="between 1 and 64"):
+        validate_new_password(name, "a-much-longer-passphrase")
+
+
+def test_begin_attempt_charges_atomically(db):
+    import threading
+
+    limiter = LoginLimiter(db, max_failures=5, lockout_seconds=60)
+    barrier = threading.Barrier(30)
+    out = []
+
+    def go():
+        barrier.wait()
+        out.append(limiter.begin_attempt("k"))
+
+    threads = [threading.Thread(target=go) for _ in range(30)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert out.count(None) == 5 and len([x for x in out if x]) == 25
+
+
+def test_session_renewal_flag_and_no_write_on_fresh_read(db):
+    sessions = Sessions(db)
+    token, _ = sessions.create("launch")
+    assert sessions.get(token).renewed is False
+    with db.transaction() as conn:
+        conn.execute("UPDATE session SET last_seen_at = '2020-01-01T00:00:00Z'")
+    assert sessions.get(token).renewed is True
+    assert sessions.get(token).renewed is False
