@@ -9,3 +9,8 @@ build
 *.db*
 docs
 tests
+**/.env*
+.superpowers
+.pytest_cache
+.ruff_cache
+.githooks

@@ -15,3 +15,6 @@ src/tuppence/web_dist/
 *.db-shm
 /data/
 .DS_Store
+.superpowers/
+.env*
+!.env.example
