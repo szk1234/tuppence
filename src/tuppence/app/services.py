@@ -177,7 +177,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
         llm=llm,
         accounts=accounts,
         income=IncomeService(db, household, accounts),
-        debts=DebtService(db, household),
+        debts=DebtService(db, household, today=date.today),
         goals=GoalService(db),
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.

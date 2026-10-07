@@ -2,7 +2,9 @@
 
 Money is pounds strings at the API and integer pence in storage, including the money inside
 `details` (stored as `balloon_pence` / `total_payable_pence`). `details` is validated per kind;
-an unknown key is an InputError naming the key. `details` is replaced whole on edit.
+an unknown key is an InputError naming the key. On edit, `details` is shallow-merged into the
+stored details (a null value deletes a key). If the kind changes, keys that don't apply to the new
+kind are dropped and listed in the response's `details_removed`.
 
 `car_finance_redress_window` is True for broker-arranged car finance whose agreement started
 between 2007-04-06 and 2024-11-01 inclusive (spec §11.6); the FCA redress scheme uses it later."""
@@ -16,7 +18,7 @@ from collections.abc import Callable
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from tuppence.core.accounts import Apr
 from tuppence.core.clock import to_iso, utcnow
@@ -77,7 +79,7 @@ class DebtIn(BaseModel):
     lender: Lender
     person_id: str | None = None
     balance: str
-    balance_date: date = Field(default_factory=date.today)
+    balance_date: date | None = None  # the service fills it from its clock
     apr: Apr | None = None
     monthly_payment: str | None = None
     end_date: date | None = None
@@ -112,6 +114,7 @@ class Debt(BaseModel):
     student_loan_plan: Plan | None
     details: dict[str, Any]
     car_finance_redress_window: bool
+    details_removed: list[str] = []  # set on an edit that changed kind
     status: Literal["active", "settled"]
     version: int
 
@@ -272,7 +275,10 @@ class DebtService:
         }
 
     def create(self, data: DebtIn) -> Debt:
-        cols = self._columns(data.model_dump())
+        raw = data.model_dump()
+        if raw["balance_date"] is None:
+            raw["balance_date"] = self.today()
+        cols = self._columns(raw)
         debt_id = "d_" + secrets.token_hex(4)
         now = to_iso(utcnow())
         names = ", ".join(cols)
@@ -300,7 +306,20 @@ class DebtService:
         if current.status == "settled":
             raise InputError("This debt is settled. Add a new one instead.")
         state = self._state(current)
+        supplied = data.pop("details", None) or {}
         state.update(data)
+        removed: list[str] = []
+        merged = {**state["details"], **supplied}
+        merged = {k: v for k, v in merged.items() if v is not None}
+        if state["kind"] != current.kind:
+            allowed = _ALLOWED.get(state["kind"], ())
+            removed = [k for k in merged if k not in allowed and k not in supplied]
+            merged = {k: v for k, v in merged.items() if k not in removed}
+            if state["kind"] != "student_loan" and "student_loan_plan" not in data:
+                if state["student_loan_plan"] is not None:
+                    removed.append("student_loan_plan")
+                state["student_loan_plan"] = None
+        state["details"] = merged
         person_changed = "person_id" in data and data["person_id"] != current.person_id
         cols = self._columns(state, check_person=person_changed)
         old = self._columns(self._state(current), check_person=False)
@@ -313,12 +332,22 @@ class DebtService:
             update_versioned(
                 conn, "debt", "id", debt_id, expected_version, changed, now=to_iso(utcnow())
             )
-        return self.get(debt_id)
+        return self.get(debt_id).model_copy(update={"details_removed": removed})
 
-    def settle(self, debt_id: str, expected_version: int) -> Debt:
+    def _set_status(self, debt_id: str, status: str, expected_version: int) -> Debt:
+        current = self.get(debt_id)
+        if current.status == status:
+            word = "settled" if status == "settled" else "open"
+            raise InputError(f"This debt is already {word}.")
         with self.db.transaction() as conn:
             update_versioned(
-                conn, "debt", "id", debt_id, expected_version, {"status": "settled"},
+                conn, "debt", "id", debt_id, expected_version, {"status": status},
                 now=to_iso(utcnow()),
             )  # fmt: skip
         return self.get(debt_id)
+
+    def settle(self, debt_id: str, expected_version: int) -> Debt:
+        return self._set_status(debt_id, "settled", expected_version)
+
+    def reopen(self, debt_id: str, expected_version: int) -> Debt:
+        return self._set_status(debt_id, "active", expected_version)

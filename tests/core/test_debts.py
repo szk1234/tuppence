@@ -16,7 +16,7 @@ def env(tmp_path):
     migrate(db, tmp_path / "b")
     hh = HouseholdService(db)
     a = hh.create_person(PersonIn(display_name="Alex Example", role="adult"))
-    return DebtService(db, hh, today=lambda: date(2026, 10, 7)), hh, a
+    return DebtService(db, hh, today=lambda: date(2030, 1, 15)), hh, a
 
 
 def _debt(kind="personal_loan", **kw):
@@ -28,8 +28,10 @@ def test_basic_and_default_balance_date(env):
     svc, _, a = env
     d = svc.create(_debt(person_id=a.id, apr=7.9, monthly_payment="100"))
     assert d.balance == "1200.50" and d.monthly_payment == "100.00" and d.apr == 7.9
-    assert d.balance_date == date.today()
+    assert d.balance_date == date(2030, 1, 15)
     assert svc.total_balance_pence() == 120050
+    explicit = svc.create(_debt(balance_date=date(2026, 1, 2)))
+    assert explicit.balance_date == date(2026, 1, 2)
     with pytest.raises(InputError):
         svc.create(_debt(person_id="p_nobody"))
 
@@ -119,8 +121,35 @@ def test_settle_hides_and_blocks_edits(env):
     s = svc.settle(d.id, d.version)
     assert s.status == "settled" and svc.list() == [] and len(svc.list(include_settled=True)) == 1
     assert svc.total_balance_pence() == 0
+    with pytest.raises(InputError, match="already settled"):
+        svc.settle(d.id, s.version)
     with pytest.raises(InputError):
         svc.update(d.id, {"lender": "X"}, s.version)
+    r = svc.reopen(d.id, s.version)
+    assert r.status == "active" and len(svc.list()) == 1
+    with pytest.raises(InputError, match="already open"):
+        svc.reopen(d.id, r.version)
+
+
+def test_details_merge_on_edit(env):
+    svc, *_ = env
+    d = svc.create(
+        _debt(
+            "car_finance_pcp",
+            details={"agreement_start": "2019-03-01", "balloon": "5000", "annual_mileage": 8000},
+        )
+    )
+    assert d.car_finance_redress_window is False
+    u = svc.update(d.id, {"details": {"via_broker": True}}, d.version)
+    assert u.details["agreement_start"] == "2019-03-01" and u.details["balloon"] == "5000.00"
+    assert u.car_finance_redress_window is True
+    u2 = svc.update(d.id, {"details": {"balloon": None, "via_broker": False}}, u.version)
+    assert "balloon" not in u2.details and u2.car_finance_redress_window is False
+    # kind change drops keys that don't apply, and says so
+    m = svc.update(d.id, {"kind": "car_finance_hp"}, u2.version)
+    assert m.details_removed == ["annual_mileage"] and "annual_mileage" not in m.details
+    with pytest.raises(InputError, match="balloon"):
+        svc.update(d.id, {"kind": "mortgage", "details": {"balloon": "1"}}, m.version)
 
 
 def test_update_only_validates_changes(env):

@@ -40,6 +40,8 @@ _PLAIN = {
 
 def _input_error(exc: ValidationError) -> InputError:
     err = exc.errors()[0]
+    if err["type"] == "extra_forbidden":
+        return InputError(f"'{err['loc'][-1]}' isn't something you can set on a debt.")
     field = ".".join(str(p) for p in err["loc"])
     plain = _PLAIN.get(str(err["loc"][0])) if err["loc"] else None
     return InputError(plain or f"{field}: {err['msg']}")
@@ -72,3 +74,8 @@ def update_debt(debt_id: str, body: DebtUpdate, services: Svc) -> Debt:
 @router.post("/{debt_id}/settle")
 def settle_debt(debt_id: str, body: VersionOnly, services: Svc) -> Debt:
     return services.debts.settle(debt_id, body.expected_version)
+
+
+@router.post("/{debt_id}/reopen")
+def reopen_debt(debt_id: str, body: VersionOnly, services: Svc) -> Debt:
+    return services.debts.reopen(debt_id, body.expected_version)
