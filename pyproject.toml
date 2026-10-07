@@ -22,6 +22,8 @@ dependencies = [
   "pydantic>=2.13",
   "platformdirs>=4.12",
   "argon2-cffi>=25.1.0",
+  "keyring>=25.7.0",
+  "cryptography>=50.0.2",
 ]
 
 [project.optional-dependencies]

@@ -3,14 +3,14 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parent  # noqa: F821  (SPECPATH is injected by PyInstaller)
 WEB = ROOT / "src" / "tuppence" / "web_dist"
 if not (WEB / "index.html").is_file():
     raise SystemExit("Build the UI first: npm --prefix web ci && npm --prefix web run build")
 
-hidden = collect_submodules("uvicorn") + collect_submodules("tuppence")
+hidden = collect_submodules("uvicorn") + collect_submodules("tuppence") + collect_submodules("keyring")
 try:
     hidden += collect_submodules("webview")
 except Exception:  # pywebview not installed: window falls back to the browser
@@ -23,6 +23,8 @@ a = Analysis(  # noqa: F821
         (str(WEB), "tuppence/web_dist"),
         # Every non-Python file in the package: migrations (.sql), agent/preset TOMLs, future packs.
         *collect_data_files("tuppence"),
+        # keyring discovers its backends through entry points, which need the dist metadata.
+        *copy_metadata("keyring"),
     ],
     hiddenimports=hidden,
     excludes=["tkinter", "pytest"],

@@ -14,6 +14,7 @@ from tuppence.core.db import Database
 from tuppence.core.household import HouseholdService
 from tuppence.core.jobs import Job, JobQueue, Periodic, Worker
 from tuppence.core.migrate import migrate
+from tuppence.core.secrets import SecretStore, choose_secret_store
 from tuppence.core.settings_store import SettingsStore
 from tuppence.core.timeline import Timeline
 from tuppence.net.privacy_log import PrivacyLog
@@ -38,6 +39,7 @@ class Services:
     queue: JobQueue
     worker: Worker
     privacy_log: PrivacyLog
+    secrets: SecretStore
     periodic: list[Periodic] = field(default_factory=list)
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _launch_used: bool = field(default=False, repr=False)
@@ -101,6 +103,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
         queue=queue,
         worker=worker,
         privacy_log=PrivacyLog(db),
+        secrets=choose_secret_store(runtime.mode, db, paths.root),
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
     services.sessions.purge_kind("launch")
