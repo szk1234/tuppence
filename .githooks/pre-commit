@@ -1,4 +1,4 @@
 #!/bin/sh
-# Personal-data guard. Configure your private list with:
+# Personal-data guard over the staged content. Configure your private list with:
 #   git config tuppence.denylistFile /path/outside/repo/denylist.txt
-exec uv run --quiet python scripts/denylist_guard.py
+exec uv run --quiet python scripts/denylist_guard.py --staged

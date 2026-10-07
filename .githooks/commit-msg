@@ -1,0 +1,3 @@
+#!/bin/sh
+# Personal-data guard over the commit message.
+exec uv run --quiet python scripts/denylist_guard.py --message-file "$1"
