@@ -16,6 +16,7 @@ from tuppence.core.jobs import Job, JobQueue, Periodic, Worker
 from tuppence.core.migrate import migrate
 from tuppence.core.settings_store import SettingsStore
 from tuppence.core.timeline import Timeline
+from tuppence.net.privacy_log import PrivacyLog
 from tuppence.paths import DataPaths
 from tuppence.settings import RuntimeSettings
 
@@ -36,6 +37,7 @@ class Services:
     config: ConfigService
     queue: JobQueue
     worker: Worker
+    privacy_log: PrivacyLog
     periodic: list[Periodic] = field(default_factory=list)
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _launch_used: bool = field(default=False, repr=False)
@@ -98,6 +100,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
         config=ConfigService(db, settings_store, paths.config),
         queue=queue,
         worker=worker,
+        privacy_log=PrivacyLog(db),
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
     services.sessions.purge_kind("launch")
