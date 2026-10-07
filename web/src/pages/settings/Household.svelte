@@ -97,5 +97,5 @@
     <PersonForm disabled={!loaded} onsubmit={addPerson} />
   </div>
 
-  <HomeDetailsForm />
+  <HomeDetailsForm nation={household?.nation} />
 </section>

@@ -9,6 +9,13 @@ export const NATIONS: Record<string, string> = { england: 'England', wales: 'Wal
 export const TENURES: Record<string, string> = { renting: 'Renting', mortgage: 'Buying with a mortgage', owned: 'Own outright', living_with_family: 'Living with family' }
 export const COUNCIL_TAX_BANDS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
 
+/** Council tax bands by nation: England and Scotland A–H, Wales A–I, Northern Ireland has none (domestic rates). Unknown: A–I. */
+export function councilTaxBands(nation: string | null | undefined): string[] {
+  if (nation === 'northern_ireland') return []
+  if (nation === 'england' || nation === 'scotland') return COUNCIL_TAX_BANDS.slice(0, 8)
+  return COUNCIL_TAX_BANDS
+}
+
 export const PERSON_ATTRIBUTES: Record<string, AttrDef> = {
   employment_status: {
     label: 'Work status', kind: 'choice',

@@ -1,16 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import CloudNoticeModal from '../../components/CloudNoticeModal.svelte'
+  import ConnectionQuickAdd from '../../components/ConnectionQuickAdd.svelte'
   import Modal from '../../components/Modal.svelte'
   import Notice from '../../components/Notice.svelte'
   import { api, ApiError } from '../../lib/api'
+  import { blankHeader, type Connection, type HeaderRow, type Preset } from '../../lib/llm'
   import { session } from '../../lib/session.svelte'
 
-  type Preset = { id: string; label: string; api_style: string; base_url: string; kind: string; key_required: boolean }
-  type Connection = {
-    id: string; preset: string; name: string; api_style: string; base_url: string; is_local: boolean; has_key: boolean
-    headers: Array<{ name: string; has_value: boolean }>; needs_notice: boolean; notice_acknowledged_at: string | null
-    enabled: boolean; version: number
-  }
   type Model = {
     connection_id: string; model_id: string; display_name: string | null; context_window: number
     price_in_usd_per_mtok: number | null; price_out_usd_per_mtok: number | null; source: string
@@ -19,25 +16,14 @@
   type Ref = { connection_id: string; model_id: string }
   type TaskRoute = { chain: Ref[]; local_only: boolean; version: number }
   type Routing = { mode: string; mode_version: number; simple_model: Ref | null; simple_version: number; tasks: Record<string, TaskRoute> }
-  type Detected = { preset: string; base_url: string; model_count: number }
-  /** A custom header row in a form. `saved` rows already have a value stored (write-only: never shown). */
-  type HeaderRow = { name: string; value: string; saved: boolean; existing: boolean }
 
   let presets = $state<Preset[]>([])
   let connections = $state<Connection[]>([])
   let models = $state<Model[]>([])
   let routing = $state<Routing | null>(null)
-  let detected = $state<Detected[] | null>(null)
   let error = $state('')
   let saved = $state('')
   let busy = $state(false)
-
-  // add form
-  let presetId = $state('')
-  let newName = $state('')
-  let newUrl = $state('')
-  let newKey = $state('')
-  let newHeaders = $state<HeaderRow[]>([])
 
   // per-connection UI state
   let testResult = $state<Record<string, string>>({})
@@ -69,8 +55,6 @@
   let sending = $state(false)
 
   const canEdit = $derived(session.mode !== 'server' || session.user?.is_admin === true)
-  const preset = $derived(presets.find((p) => p.id === presetId))
-  const isLocalPreset = $derived(preset?.kind === 'local')
   const presetOf = (c: Connection) => presets.find((p) => p.id === c.preset)
   const keyOptional = (c: Connection) => presetOf(c)?.key_required !== true
   const nameOf = (id: string) => connections.find((c) => c.id === id)?.name ?? id
@@ -104,19 +88,10 @@
   }
   async function load() {
     presets = (await api<{ presets: Preset[] }>('/api/llm/presets')).presets
-    if (!presetId && presets.length) pickPreset(presets[0].id)
     connections = (await api<{ connections: Connection[] }>('/api/llm/connections')).connections
     await Promise.all([loadModels(), loadRouting()])
   }
   onMount(() => { load().catch(fail) })
-
-  function pickPreset(id: string) {
-    presetId = id
-    const p = presets.find((x) => x.id === id)
-    newUrl = p?.base_url ?? ''
-    newName = p?.label ?? ''
-    newKey = ''
-  }
 
   /** Run a call; if the server says the cloud notice is needed, show it, then retry once acknowledged. */
   async function guard(fn: () => Promise<void>, onError: (e: unknown) => void) {
@@ -129,31 +104,9 @@
     }
   }
 
-  async function detect() {
-    error = ''; busy = true
-    try { detected = (await api<{ servers: Detected[] }>('/api/llm/detect')).servers } catch (e) { fail(e) } finally { busy = false }
-  }
-
-  async function create(body: Record<string, unknown>) {
-    const c = await api<Connection>('/api/llm/connections', { method: 'POST', body })
+  function created(c: Connection) {
     connections = [...connections, c]
     saved = `${c.name} added. Press Test to fetch its models.`
-  }
-
-  async function addDetected(d: Detected) {
-    error = ''; saved = ''; busy = true
-    try { await create({ preset: d.preset, base_url: d.base_url }); detected = detected?.filter((x) => x !== d) ?? null } catch (e) { fail(e) } finally { busy = false }
-  }
-
-  const blankHeader = (): HeaderRow => ({ name: '', value: '', saved: false, existing: false })
-
-  async function addConnection(e: SubmitEvent) {
-    e.preventDefault(); error = ''; saved = ''; busy = true
-    const body: Record<string, unknown> = { preset: presetId, name: newName.trim() || undefined, base_url: newUrl.trim() || undefined }
-    if (newKey) body.api_key = newKey
-    const headers = Object.fromEntries(newHeaders.filter((h) => h.name.trim()).map((h) => [h.name.trim(), h.value]))
-    if (Object.keys(headers).length) body.headers = headers
-    try { await create(body); newKey = ''; newHeaders = [] } catch (err) { fail(err) } finally { busy = false }
   }
 
   async function test(c: Connection) {
@@ -378,39 +331,7 @@
     {/each}
 
     {#if canEdit}
-      <h3>Find local AI</h3>
-      <p class="hint">Looks for Ollama, LM Studio and similar servers running on this machine.</p>
-      <button type="button" onclick={detect} disabled={busy}>Find local AI</button>
-      {#if detected}
-        {#if detected.length === 0}<p>No local AI servers found.</p>{/if}
-        <ul class="people">
-          {#each detected as d (d.base_url)}
-            <li><span>{d.preset} at {d.base_url} ({d.model_count} {d.model_count === 1 ? 'model' : 'models'})</span>
-              <button type="button" onclick={() => addDetected(d)} disabled={busy} aria-label={`Add ${d.preset} at ${d.base_url}`}>Add</button></li>
-          {/each}
-        </ul>
-      {/if}
-
-      <h3>Add connection</h3>
-      <form onsubmit={addConnection}>
-        <fieldset class="bare" disabled={busy}>
-          <label for="ai-provider">Provider</label>
-          <select id="ai-provider" value={presetId} onchange={(e) => pickPreset((e.currentTarget as HTMLSelectElement).value)}>
-            {#each presets as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
-          </select>
-          <label for="ai-name">Name</label>
-          <input id="ai-name" bind:value={newName} />
-          <label for="ai-url">Base URL</label>
-          <input id="ai-url" bind:value={newUrl} />
-          <label for="ai-key">{isLocalPreset || !preset?.key_required ? 'API key (optional)' : 'API key'}</label>
-          <input id="ai-key" type="password" autocomplete="off" bind:value={newKey} />
-          <p class="hint">{#if isLocalPreset}Only if your server asks for one. {/if}Stored in your system keychain, or encrypted on this machine. Never shown again.</p>
-          <h4>Custom headers (optional)</h4>
-          {@render headerRows(newHeaders, 'new', (i) => { newHeaders = newHeaders.filter((_, j) => j !== i) })}
-          <button type="button" onclick={() => { newHeaders = [...newHeaders, blankHeader()] }}>Add header</button>
-          <div><button type="submit">Save connection</button></div>
-        </fieldset>
-      </form>
+      <ConnectionQuickAdd {presets} headers={headerRows} onstart={() => { error = ''; saved = '' }} oncreated={created} onerror={fail} />
       <p><button type="button" class="link" onclick={() => (confirmForget = true)}>Forget saved AI keys</button></p>
     {/if}
   </div>
@@ -519,13 +440,7 @@
   {/if}
 </section>
 
-<Modal open={noticeFor !== null} title={`Before you use ${noticeFor?.name ?? ''}`} onclose={cancelNotice}>
-  <p><strong>{noticeFor?.name} will see the statement text Tuppence sends to it.</strong> It's covered by {noticeFor?.name}'s own privacy terms. Every call is listed in Settings › Privacy.</p>
-  <div class="row">
-    <button type="button" onclick={acknowledge}>I understand</button>
-    <button type="button" onclick={cancelNotice}>Cancel</button>
-  </div>
-</Modal>
+<CloudNoticeModal connection={noticeFor} onconfirm={acknowledge} oncancel={cancelNotice} />
 
 <Modal open={confirmForget} title="Forget saved AI keys?" onclose={() => (confirmForget = false)}>
   <p>Tuppence will delete every saved AI key and header value, including any it keeps in this computer's keychain. Your connections stay, but cloud ones will need a key entering again.</p>

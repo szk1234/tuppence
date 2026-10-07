@@ -4,12 +4,14 @@
   import { todayISO } from '../../lib/dates'
   import { errorText, isConflict, parseOptionalInt } from '../../lib/form'
   import { parsePoundsInput } from '../../lib/money'
-  import { COUNCIL_TAX_BANDS, HOUSEHOLD_ID, TENURES } from '../../lib/profile'
+  import { councilTaxBands, HOUSEHOLD_ID, TENURES } from '../../lib/profile'
   import { valueOn, type TimelineEntry } from '../../lib/types'
   import Notice from '../Notice.svelte'
   import MoneyInput from './MoneyInput.svelte'
 
-  let { onsaved }: { onsaved?: () => void } = $props()
+  let { nation = null, onsaved }: { nation?: string | null; onsaved?: () => void } = $props()
+  const bands = $derived(councilTaxBands(nation))
+  const noCouncilTax = $derived(nation === 'northern_ireland')
   const uid = $props.id()
 
   let entries = $state<TimelineEntry[]>([])
@@ -49,7 +51,7 @@
     const beds = parseOptionalInt(bedrooms, 0, 20)
     if (!beds.ok) { error = 'Enter bedrooms as a whole number from 0 to 20.'; return }
     if (beds.value !== null) wanted.push(['bedrooms', beds.value])
-    if (band) wanted.push(['council_tax_band', band])
+    if (band && !noCouncilTax) wanted.push(['council_tax_band', band])
 
     saving = true
     try {
@@ -86,11 +88,15 @@
     <MoneyInput label="Monthly housing cost" bind:value={monthly} hint="Rent or mortgage payment." />
     <label for={`${uid}-beds`}>Bedrooms</label>
     <input id={`${uid}-beds`} inputmode="numeric" maxlength="2" bind:value={bedrooms} />
-    <label for={`${uid}-band`}>Council tax band</label>
-    <select id={`${uid}-band`} bind:value={band}>
-      <option value="">Not sure</option>
-      {#each COUNCIL_TAX_BANDS as b}<option value={b}>Band {b}</option>{/each}
-    </select>
+    {#if noCouncilTax}
+      <p class="hint">Northern Ireland uses domestic rates, so there is no council tax band to enter.</p>
+    {:else}
+      <label for={`${uid}-band`}>Council tax band</label>
+      <select id={`${uid}-band`} bind:value={band}>
+        <option value="">Not sure</option>
+        {#each bands as b}<option value={b}>Band {b}</option>{/each}
+      </select>
+    {/if}
     <label for={`${uid}-from`}>In place from</label>
     <input id={`${uid}-from`} type="date" bind:value={from} />
     <p class="hint">Moving home later? Add the new details with a new date and your history is kept.</p>
