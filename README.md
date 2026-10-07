@@ -54,3 +54,8 @@ How your data is handled: [PRIVACY.md](PRIVACY.md).
 
 [AGPL-3.0](LICENSE). If you run a modified Tuppence as a service for others,
 you must share your changes.
+
+UK bank holiday dates come from [GOV.UK](https://www.gov.uk/bank-holidays) and contain public
+sector information licensed under the
+[Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/).
+See [NOTICE](NOTICE) for the bundled third-party data.

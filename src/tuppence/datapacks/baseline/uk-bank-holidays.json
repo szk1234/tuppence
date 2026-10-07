@@ -1,6 +1,8 @@
 {
  "source": "https://www.gov.uk/bank-holidays.json",
- "fetched": "2026-10-07",
+ "licence": "Open Government Licence v3.0",
+ "licence_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+ "attribution": "Contains public sector information licensed under the Open Government Licence v3.0 (UK bank holidays from GOV.UK).",
  "divisions": {
   "england-and-wales": [
    "2019-01-01",

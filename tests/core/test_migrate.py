@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import date
 
 import pytest
 
@@ -126,3 +127,52 @@ def test_0007_database_with_data_upgrades_to_0008(tmp_path, monkeypatch):
         row = conn.execute("SELECT value, version FROM profile_entry").fetchone()
         assert (row["value"], row["version"]) == ('"england"', 1)
         assert conn.execute("SELECT count(*) FROM account").fetchone()[0] == 0
+
+
+def test_0008_backfills_household_timeline_from_the_household_row(tmp_path, monkeypatch):
+    """Rows written before the timeline became the source of truth (R14) get their history."""
+    db = Database(tmp_path / "t.db")
+    upto = [m for m in mig.available_migrations() if m[0] < "0008"]
+    monkeypatch.setattr(mig, "available_migrations", lambda: upto)
+    mig.migrate(db, tmp_path / "b")
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO household (id, nation, postcode_district, created_at, updated_at)"
+            " VALUES (1, 'wales', 'CF10', '2025-03-04T10:00:00Z', '2025-06-01T00:00:00Z')"
+        )
+        # The district already has history: it is left alone.
+        conn.execute(
+            "INSERT INTO profile_entry (subject_type, subject_id, attribute, value, valid_from,"
+            " created_at) VALUES ('household', '1', 'postcode_district', '\"CF11\"',"
+            " '2025-05-01', 'x')"
+        )
+    monkeypatch.undo()
+    assert mig.migrate(db, tmp_path / "b") == ["0008_finance_profile"]
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT attribute, value, valid_from, valid_to, source, version FROM profile_entry"
+            " ORDER BY attribute"
+        ).fetchall()
+    assert [tuple(r) for r in rows] == [
+        ("nation", '"wales"', "2025-03-04", None, "user", 1),
+        ("postcode_district", '"CF11"', "2025-05-01", None, "user", 1),
+    ]
+    from tuppence.core.timeline import Timeline
+
+    assert Timeline(db).value_as_of("household", "1", "nation", date(2025, 3, 4)) == "wales"
+
+
+def test_0008_backfill_skips_an_empty_household_row(tmp_path, monkeypatch):
+    db = Database(tmp_path / "t.db")
+    upto = [m for m in mig.available_migrations() if m[0] < "0008"]
+    monkeypatch.setattr(mig, "available_migrations", lambda: upto)
+    mig.migrate(db, tmp_path / "b")
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO household (id, created_at, updated_at) VALUES (1, '2025-03-04T10:00:00Z',"
+            " '2025-03-04T10:00:00Z')"
+        )
+    monkeypatch.undo()
+    mig.migrate(db, tmp_path / "b")
+    with db.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM profile_entry").fetchone()[0] == 0

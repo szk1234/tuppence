@@ -92,3 +92,25 @@ CREATE INDEX ix_income_source_person ON income_source (person_id);
 CREATE INDEX ix_income_source_account ON income_source (account_id);
 CREATE INDEX ix_debt_person ON debt (person_id);
 CREATE INDEX ix_debt_entry_debt ON debt_entry (debt_id, date);
+
+-- Household rows written before the timeline became the source of truth for nation and postcode
+-- district (ruling R14) get that history: an entry valid from the day the row was created, for
+-- each value the row holds with no timeline entry at all yet.
+INSERT INTO profile_entry (subject_type, subject_id, attribute, value, valid_from, source, created_at)
+SELECT 'household', '1', 'nation', json_quote(h.nation), substr(h.created_at, 1, 10), 'user',
+       strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+FROM household h
+WHERE h.id = 1 AND h.nation IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM profile_entry e
+    WHERE e.subject_type = 'household' AND e.subject_id = '1' AND e.attribute = 'nation'
+  );
+INSERT INTO profile_entry (subject_type, subject_id, attribute, value, valid_from, source, created_at)
+SELECT 'household', '1', 'postcode_district', json_quote(h.postcode_district),
+       substr(h.created_at, 1, 10), 'user', strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+FROM household h
+WHERE h.id = 1 AND h.postcode_district IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM profile_entry e
+    WHERE e.subject_type = 'household' AND e.subject_id = '1' AND e.attribute = 'postcode_district'
+  );

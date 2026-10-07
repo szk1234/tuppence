@@ -102,7 +102,19 @@ def test_describe():
 
 
 @pytest.mark.parametrize(
-    "bad", [{"type": "monthly_day", "day": 32}, {"type": "sometimes"}, {"type": "weekly"}]
+    "bad",
+    [
+        {"type": "monthly_day", "day": 32},
+        {"type": "sometimes"},
+        {"type": "weekly"},
+        {"type": "monthly_day", "day": True},
+        {"type": "monthly_day", "day": "25"},
+        {"type": "monthly_day", "day": 25.0},
+        {"type": "last_weekday", "weekday": False},
+        {"type": "monthly_day", "day": 25, "adjsut": "none"},
+        {"type": "last_working_day", "day": 25},
+        {"type": "weekly", "anchor": "2026-10-02", "every": 2},
+    ],
 )
 def test_bad_rules(bad):
     with pytest.raises(InputError):

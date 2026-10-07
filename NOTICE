@@ -1,0 +1,12 @@
+Tuppence is free software, licensed under the GNU Affero General Public License v3.0 only
+(see LICENSE).
+
+Third-party data bundled with Tuppence
+======================================
+
+UK bank holidays
+  File:     src/tuppence/datapacks/baseline/uk-bank-holidays.json
+  Source:   GOV.UK, https://www.gov.uk/bank-holidays.json
+  Licence:  Open Government Licence v3.0
+            https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/
+  Contains public sector information licensed under the Open Government Licence v3.0.

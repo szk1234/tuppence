@@ -7,30 +7,37 @@ from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, TypeAdapter, ValidationError
 
 from tuppence.core import calendar as cal
 from tuppence.core.errors import InputError
 
 
-class Interval(BaseModel):
+class _Rule(BaseModel):
+    """Rules are strict: an unknown key is refused (a typo would otherwise be ignored), and
+    whole numbers must be numbers (not true/false or "25")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class Interval(_Rule):
     type: Literal["weekly", "fortnightly", "four_weekly"]
     anchor: date
 
 
-class MonthlyDay(BaseModel):
+class MonthlyDay(_Rule):
     type: Literal["monthly_day"]
-    day: int = Field(ge=1, le=31)
+    day: StrictInt = Field(ge=1, le=31)
     adjust: Literal["previous_working_day", "next_working_day", "none"] = "previous_working_day"
 
 
-class LastWorkingDay(BaseModel):
+class LastWorkingDay(_Rule):
     type: Literal["last_working_day"]
 
 
-class LastWeekday(BaseModel):
+class LastWeekday(_Rule):
     type: Literal["last_weekday"]
-    weekday: int = Field(ge=0, le=6)
+    weekday: StrictInt = Field(ge=0, le=6)
 
 
 PayRule = Annotated[
