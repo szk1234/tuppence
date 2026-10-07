@@ -30,36 +30,65 @@ def new_launch_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def bind_loopback_socket(host: str = "127.0.0.1") -> socket.socket:
+    """Bind and listen now, so the port is never released before uvicorn serves on it."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host, 0))
+        sock.listen(128)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
 class ServerThread:
-    def __init__(self, app: object, host: str, port: int) -> None:
+    def __init__(
+        self, app: object, host: str, port: int, sock: socket.socket | None = None
+    ) -> None:
         self.host, self.port = host, port
-        config = uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="on")  # type: ignore[arg-type]
-        self._server = uvicorn.Server(config)
-        self._thread = threading.Thread(
-            target=self._server.run, name="tuppence-server", daemon=True
+        self._sock = sock
+        config = uvicorn.Config(
+            app,  # type: ignore[arg-type]
+            host=host,
+            port=port,
+            log_level="warning",
+            lifespan="on",
+            log_config=None,
         )
+        self._server = uvicorn.Server(config)
+        self._thread = threading.Thread(target=self._run, name="tuppence-server", daemon=True)
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/"
+
+    def _run(self) -> None:
+        self._server.run(sockets=[self._sock] if self._sock is not None else None)
 
     def start(self) -> None:
         self._thread.start()
 
     def wait_until_healthy(self, timeout: float = 20.0) -> None:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                if httpx.get(self.url + "health", timeout=1.0).status_code == 200:
-                    return
-            except httpx.HTTPError:
-                pass
-            time.sleep(0.1)
+        with httpx.Client(trust_env=False, timeout=1.0) as client:
+            while time.monotonic() < deadline:
+                if not self._thread.is_alive():
+                    raise RuntimeError("Tuppence's local server stopped while starting")
+                try:
+                    if client.get(self.url + "health").status_code == 200:
+                        return
+                except httpx.HTTPError:
+                    pass
+                time.sleep(0.1)
         raise TimeoutError(f"Tuppence didn't start within {timeout:.0f}s")
 
     def stop(self, timeout: float = 5.0) -> None:
         self._server.should_exit = True
-        self._thread.join(timeout)
+        if self._thread.is_alive():
+            self._thread.join(timeout)
+        if self._sock is not None:
+            self._sock.close()
 
 
 def open_webview_window(url: str) -> bool:
@@ -99,14 +128,19 @@ def run_desktop(
     except DataDirError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    port = find_free_port()
+    sock = bind_loopback_socket()
+    port = int(sock.getsockname()[1])
     settings = RuntimeSettings.for_mode(
         "desktop", data_dir=root, port=port, launch_token=new_launch_token()
     )
-    server = ServerThread(create_app(settings), "127.0.0.1", port)
+    server = ServerThread(create_app(settings), "127.0.0.1", port, sock)
     server.start()
     try:
-        server.wait_until_healthy()
+        try:
+            server.wait_until_healthy()
+        except (TimeoutError, RuntimeError) as exc:
+            print(f"Tuppence could not start: {exc}", file=sys.stderr)
+            return 1
         if smoke:
             result = {"ok": True, "url": server.url, "version": __version__, "mode": "desktop"}
             text = json.dumps(result)
