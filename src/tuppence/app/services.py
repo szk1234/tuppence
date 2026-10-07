@@ -21,6 +21,7 @@ from tuppence.core.household import HouseholdService
 from tuppence.core.income import IncomeService
 from tuppence.core.jobs import Job, JobQueue, Periodic, Worker
 from tuppence.core.migrate import migrate
+from tuppence.core.onboarding import OnboardingService
 from tuppence.core.secrets import SecretStore, choose_secret_store
 from tuppence.core.settings_store import SettingsStore
 from tuppence.core.timeline import Timeline
@@ -68,6 +69,7 @@ class Services:
     income: IncomeService
     debts: DebtService
     goals: GoalService
+    onboarding: OnboardingService
     periodic: list[Periodic] = field(default_factory=list)
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _launch_used: bool = field(default=False, repr=False)
@@ -153,6 +155,10 @@ def build_services(runtime: RuntimeSettings) -> Services:
     )
 
     accounts = AccountService(db, household)
+    timeline = Timeline(db)
+    income = IncomeService(db, household, accounts)
+    debts = DebtService(db, household, today=date.today)
+    goals = GoalService(db)
     services = Services(
         runtime=runtime,
         paths=paths,
@@ -162,7 +168,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
         sessions=Sessions(db),
         limiter=LoginLimiter(db),
         household=household,
-        timeline=Timeline(db),
+        timeline=timeline,
         config=ConfigService(db, settings_store, paths.config),
         queue=queue,
         worker=worker,
@@ -176,9 +182,12 @@ def build_services(runtime: RuntimeSettings) -> Services:
         breakers=breakers,
         llm=llm,
         accounts=accounts,
-        income=IncomeService(db, household, accounts),
-        debts=DebtService(db, household, today=date.today),
-        goals=GoalService(db),
+        income=income,
+        debts=debts,
+        goals=goals,
+        onboarding=OnboardingService(
+            db, household, timeline, accounts, income, debts, goals, settings_store, router
+        ),
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
     services.sessions.purge_kind("launch")
