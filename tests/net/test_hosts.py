@@ -90,3 +90,11 @@ def test_dns_names_resolve_and_must_all_be_private():
     assert not is_local_host("api.openai.com", resolve=lambda h: ["104.18.1.1"])
     assert not is_local_host("mixed.example.com", resolve=lambda h: ["192.168.1.9", "104.18.1.1"])
     assert not is_local_host("nxdomain.example.com", resolve=lambda h: [])
+
+
+def test_percent_suffix_does_not_make_a_name_a_literal():
+    assert not is_local_host("10.0.0.1%25.8.8.8.8.nip.io", resolve=lambda h: ["8.8.8.8"])
+
+
+def test_scoped_ipv6_literal_is_local():
+    assert is_local_host("fe80::1%eth0", resolve=lambda h: pytest.fail("should not resolve"))

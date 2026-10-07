@@ -32,7 +32,7 @@ def _system_resolve(host: str) -> list[str]:
 def _local_address(addr: str) -> bool:
     """Explicit allowlist; anything unlisted (6to4, Teredo, NAT64, 198.18/15...) is not local."""
     try:
-        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+        ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -45,11 +45,12 @@ def is_local_host(host: str, *, resolve: Callable[[str], list[str]] | None = Non
 
     Names (including single-label and .local/.lan ones) must resolve; unresolvable is not local.
     """
-    h = host.strip().strip("[]").lower().rstrip(".")
+    # Keep any trailing dot: resolve exactly the name httpcore will connect to.
+    h = host.strip().strip("[]").lower()
     if not h:
         return False
     try:
-        ipaddress.ip_address(h.split("%", 1)[0])
+        ipaddress.ip_address(h)
     except ValueError:
         if h == "localhost":
             return True

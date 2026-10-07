@@ -177,11 +177,46 @@ def test_error_note_never_contains_secrets(log):
 
 
 def test_real_header_with_newline_is_not_stored(log):
+    import socket
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
     ctx = CallContext(purpose="llm", local=True)
     client = make_client(ctx, privacy_log=log, local_only=lambda: False, timeout=5)
-    with client, pytest.raises(httpx.HTTPError):
-        client.get("http://127.0.0.1:9/x", headers={"Authorization": "Bearer sk-SECRET\nX: y"})
-    assert all("SECRET" not in e.model_dump_json() for e in log.list())
+    try:
+        with client, pytest.raises(httpx.LocalProtocolError):
+            client.get(
+                f"http://127.0.0.1:{port}/x", headers={"Authorization": "Bearer sk-SECRET\nX: y"}
+            )
+    finally:
+        listener.close()
+    [e] = log.list()
+    assert e.outcome == "error" and e.note == "LocalProtocolError"
+    assert "SECRET" not in e.model_dump_json()
+
+
+def test_guard_resolves_the_exact_wire_host(log, monkeypatch):
+    seen = []
+    monkeypatch.setattr("tuppence.net.hosts._system_resolve", lambda h: seen.append(h) or [])
+    ctx = CallContext(purpose="llm", local=True)
+    with make_client(
+        ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
+    ) as c:
+        for url in ("http://ai./v1", "http://localhost./v1", "http://10.0.0.1%25.evil.example/v1"):
+            with pytest.raises(LocalOnlyBlocked):
+                c.get(url)
+    assert seen == ["ai.", "localhost.", "10.0.0.1%25.evil.example"]
+
+
+def test_bracketed_ipv6_literal_through_the_guard(log):
+    ctx = CallContext(purpose="llm", local=True)
+    with make_client(
+        ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
+    ) as c:
+        assert c.get("http://[::1]:11434/v1").status_code == 200
+        assert c.get("http://[fe80::1]:11434/v1").status_code == 200
 
 
 def test_log_failure_after_send_does_not_fail_the_call(log, caplog):
