@@ -8,6 +8,8 @@ import datetime as dt
 import json
 from pathlib import Path
 
+import pytest
+
 from ingest.helpers import budget, use_local_model
 from tuppence.ingest.identify import identify
 from tuppence.ingest.parse import ReaderLimits, parse_document
@@ -146,4 +148,29 @@ def test_balance_lines_are_held_back_without_a_coverage_error(ingest_env):
     out = parse_shot(services, rows)
     sent = json.dumps(scripted.requests)
     assert "1,234.56" not in sent and "1,184.56" not in sent and "500.00" not in sent
+    assert not any("held back" in e for e in out.errors)
+
+
+# The app header layouts the re-review found sending the balance (R-M3-17).
+APP_HEADERS = {
+    "label under figure": ["Current Account", "£1,184.56", "Available balance", "Today"],
+    "figure then 'available'": ["Main account", "£1,184.56 available", "Today"],
+    "label above figure": ["Balance", "£1,184.56"],
+    "no thousands comma": ["Current Account", "Balance £1184.56"],
+    "spending balance": ["Spending balance £1,184.56"],
+    "two figures": ["Balance £1,184.56 Available £1,084.56"],
+    "currency code": ["Balance: GBP 1,184.56"],
+}
+
+
+@pytest.mark.parametrize("header", APP_HEADERS.values(), ids=APP_HEADERS.keys())
+def test_app_balance_headers_are_held_back_without_a_coverage_error(ingest_env, header):
+    services, scripted = ingest_env
+    rows = [*header, "LITTLE CAFE -£12.80", "5 Oct CITY WATER -£31.15"]
+    doc = shot(rows)
+    assert texts(doc, doc.data_refs) == ["LITTLE CAFE -£12.80", "5 Oct CITY WATER -£31.15"]
+    out = parse_shot(services, rows)
+    sent = json.dumps(scripted.requests, ensure_ascii=False)
+    assert "1,184.56" not in sent and "1184.56" not in sent and "1,084.56" not in sent
+    assert "LITTLE CAFE -£12.80" in sent and "CITY WATER -£31.15" in sent
     assert not any("held back" in e for e in out.errors)

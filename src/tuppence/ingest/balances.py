@@ -22,6 +22,7 @@ from tuppence.ingest.models import (
     ParsedStatement,
     Perspective,
 )
+from tuppence.ingest.sensitive import is_figure_line
 from tuppence.ingest.textnum import parse_money, to_pence
 
 _MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
@@ -36,14 +37,20 @@ _LABEL = re.compile(
     rf"\b(?P<opening>{_OPENING})\b|\b(?P<closing>{_CLOSING})\b|\bbrought\s+forward\b",
     re.IGNORECASE,
 )
+# A printed figure: pence required, thousands separator optional, a GBP code before or after.
+# Every optional piece takes the spaces after it, so a long gap can't make matching slow.
 _MONEY = re.compile(
-    r"\(?\s*[+\-−–]?\s*(?:£|\$|€)?\s*[+\-−–]?\s*"
-    r"\d{1,3}(?:,\d{3})*\.\d{2}(?![\d.])\s*\)?\s*[\-−–]?(?:\s*(?:CR|DR)\b)?",
+    r"(?:\(\s*)?(?:[+\-−–]\s*)?(?:(?:£|\$|€|GBP\b)\s*)?(?:[+\-−–]\s*)?"
+    r"(?<![\d,.])(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?![\d.])"
+    r"(?:\s*\))?(?:\s*GBP\b)?(?:\s*[\-−–])?(?:\s*(?:CR|DR)\b)?",
     re.IGNORECASE,
 )
+_CODE = re.compile(r"\bGBP\b", re.IGNORECASE)
 _FILLER = re.compile(r"^(?:\s|:|\.|-|\(|\)|on|at|as|is|of|date)*$", re.IGNORECASE)
 _MARKER = re.compile(r"\b(CR|DR)\b", re.IGNORECASE)
-_CARRIED = re.compile(r"(?:brought|carried)\s+forward", re.IGNORECASE)
+_CARRIED = re.compile(
+    r"(?:brought|carried)\s+forward|(?:opening|start(?:ing)?|previous)\s+balance", re.IGNORECASE
+)
 _OUT_LABELS = ("Paid out", "Money out", "Withdrawals", "Withdrawal", "Debits", "Debit")
 _IN_LABELS = ("Paid in", "Money in", "Deposits", "Deposit", "Credits", "Credit")
 _PAGE = re.compile(r"P(\d+)L\d+")
@@ -59,7 +66,7 @@ def _balance_pence(token: str, perspective: Perspective) -> int | None:
     """The printed figure as the statement model stores it: a bank account in credit is
     positive (CR keeps it so; DR, brackets or a minus are overdrawn), a card's balance owed is
     positive and CR means the card is in credit."""
-    value = parse_money(token.strip())
+    value = parse_money(_CODE.sub("", token).strip())
     if value is None:
         return None
     marker = _MARKER.search(token)
@@ -73,7 +80,7 @@ def _balance_pence(token: str, perspective: Perspective) -> int | None:
 
 # What may follow a balance figure: a marker saying which side of zero it is on, then the end
 # of the line, a date word or the next summary label. Anything else leaves the figure unread.
-_AFTER_FILL = re.compile(r"^[\s.,;:|()]+")
+_AFTER_FILL = re.compile(r"^[\s.,;:|()*]+")  # a footnote mark ("1,000.00*") is filler
 _AFTER_MARKER = re.compile(
     r"^(?:(?P<overdrawn>O/D|OD|DR|D|overdrawn)|(?P<credit>CR|in\s+credit))(?![A-Za-z])\.?",
     re.IGNORECASE,
@@ -114,10 +121,22 @@ def _figure(tail: str, perspective: Perspective) -> int | None:
     return _signed(match.group(0), plain[match.end() :], perspective)
 
 
+def _below(doc: Document, ref: str, withheld: set[str]) -> str | None:
+    """The withheld line just below `ref` when it is only a figure: the label's figure printed
+    on the next line ("Opening balance" over "£1,000.00")."""
+    at = next((i for i, line in enumerate(doc.lines) if line.ref == ref), None)
+    if at is None or at + 1 >= len(doc.lines):
+        return None
+    below = doc.lines[at + 1]
+    return below.text if below.ref in withheld and is_figure_line(below.text) else None
+
+
 def local_balances(doc: Document, *, perspective: Perspective) -> LocalBalances:
     """Opening and closing balance from the withheld lines (the summary box). A figure that
-    appears twice with different values, or that isn't plainly labelled, is left out."""
+    appears twice with different values, or that isn't plainly labelled, is left out. A label
+    with nothing after it but a date takes the figure-only line below it."""
     by_ref = doc.by_ref()
+    withheld = set(doc.preamble_refs)
     found: dict[str, set[int]] = {"opening": set(), "closing": set()}
     unclear: set[str] = set()
     for ref in doc.preamble_refs:
@@ -130,7 +149,10 @@ def local_balances(doc: Document, *, perspective: Perspective) -> LocalBalances:
             if label.group("opening") is None and label.group("closing") is None:
                 continue  # a bare "brought forward" is not a summary label
             end = labels[i + 1].start() if i + 1 < len(labels) else len(line.text)
-            pence = _figure(line.text[label.end() : end], perspective)
+            tail = line.text[label.end() : end]
+            if end == len(line.text) and _FILLER.match(_DATE.sub(" ", tail)):
+                tail = f"{tail} {_below(doc, ref, withheld) or ''}"
+            pence = _figure(tail, perspective)
             if pence is None:
                 unclear.add(side)
             else:

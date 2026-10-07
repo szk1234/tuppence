@@ -70,6 +70,39 @@ def doc_with(*summary: str, rows=("01/10/2026 SHOP 5.00 95.00",)):
             100000,
             185782,
         ),
+        # currency codes, no thousands separator, a footnote marker (R-M3-17)
+        (
+            ["Opening balance GBP 1,000.00", "Closing balance 1,857.82 GBP"],
+            "household",
+            100000,
+            185782,
+        ),
+        (["Opening balance 1000.00", "Closing balance £1857.82"], "household", 100000, 185782),
+        (
+            ["Opening balance: GBP 1000.00 CR", "Closing balance 65.00 GBP D"],
+            "household",
+            100000,
+            -6500,
+        ),
+        (["Opening balance 1,000.00*", "Closing balance 1,857.82 *"], "household", 100000, 185782),
+        # the label on one line and its figure on the next
+        (
+            ["Opening balance", "£1,000.00", "Closing balance", "1,857.82"],
+            "household",
+            100000,
+            185782,
+        ),
+        (["Opening balance on 1 Oct 2026", "100.00 D"], "household", -10000, None),
+        # a row of labels above a row of figures is not a pair
+        (
+            [
+                "Opening balance   Money in   Money out   Closing balance",
+                "1,000.00 900.00 42.18 1,857.82",
+            ],
+            "household",
+            None,
+            None,
+        ),
         # a word after the figure that isn't understood leaves the figure unread
         (["Opening balance 100.00 XQ", "Closing balance 65.00 Dx"], "household", None, None),
         (["Previous balance 100.00 D", "New balance 20.00 in credit"], "card", None, -2000),
@@ -252,3 +285,27 @@ def test_a_balance_line_after_the_table_is_withheld_and_read_here():
     assert "New balance 130.00" not in texts and "Previous balance 100.00" not in texts
     found = local_balances(doc, perspective="card")
     assert (found.opening, found.closing) == (10000, 13000)
+
+
+def test_a_dated_opening_balance_row_in_the_table_starts_the_balances():
+    """m1: the model skips "01/10/2026 Opening balance 1,000.00"; it is read here."""
+    doc = pages_document(
+        [[TABLE, "01/10/2026 Opening balance 1,000.00", "01/10/2026 ACME 900.00 1,900.00"]],
+        sha256="x",
+        kind="pdf",
+    )
+    parsed = statement(
+        row("P1L3", -90000, "900.00", 190000), skipped=[SkippedLine(ref="P1L2", reason="ob")]
+    )
+    result = repair_signs(doc, parsed, opening=None, level="full")
+    assert result.errors == [] and result.repaired == ["P1L3"]
+    assert parsed.rows[0].amount_pence == 90000
+
+
+def test_reading_balances_takes_linear_time_on_long_gaps():
+    import time
+
+    doc = doc_with("Opening balance (" + " " * 20_000 + "x", "(" + " " * 20_000 + "x")
+    start = time.monotonic()
+    local_balances(doc, perspective="household")
+    assert time.monotonic() - start < 2

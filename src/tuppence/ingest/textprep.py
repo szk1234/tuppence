@@ -242,14 +242,20 @@ def _page_edge_repeats(lines: Sequence[Line]) -> set[str]:
     return {text for text, pages in seen.items() if len(pages) >= 2}
 
 
+def balance_refs(lines: Sequence[Line]) -> set[str]:
+    """Lines that show a balance: a balance line, or a balance label on its own line and the
+    figure printed below (or above) it. Never transactions, never sent to a model."""
+    return {lines[i].ref for i in sensitive.balance_lines([line.text for line in lines])}
+
+
 def split_preamble(
     lines: Sequence[Line], *, names: Sequence[str] = ()
 ) -> tuple[list[str], list[str]]:
     """(withheld refs, data refs).
 
     Withheld lines never go to an AI reader: everything before the first anchor, and, after
-    it, any account or address line, balance summary, or repeated page furniture. A
-    repeat is furniture when it has a page marker, sits at the edge of 2+ pages, or has
+    it, any account or address line, balance or balance summary, or repeated page furniture.
+    A repeat is furniture when it has a page marker, sits at the edge of 2+ pages, or has
     no figures or date and is a holder's name (`names`, or a name line in the preamble).
     """
     counts: dict[str, int] = {}
@@ -257,6 +263,7 @@ def split_preamble(
         counts[_normal(line.text)] = counts.get(_normal(line.text), 0) + 1
     first = next((i for i, ln in enumerate(lines) if is_anchor(ln.text)), None)
     edge = _page_edge_repeats(lines)
+    balances = balance_refs(lines)
     known_names = {k for n in names if (k := _name_key(n))}
     for line in lines[: first if first is not None else 0]:
         if key := _name_key(line.text):
@@ -277,6 +284,7 @@ def split_preamble(
         if (
             (first is not None and i < first)
             or is_sensitive(text, names=names)
+            or line.ref in balances
             or is_summary(text)
             or furniture
             or name_repeat
@@ -303,21 +311,26 @@ def split_screenshot(
     Apps list pending and "Today" rows without a date, so only the lines above the first line
     with a date or an amount (a balance line doesn't count) are the header. After it, a line
     is withheld when it shows account details or a balance, or is only a name. A withheld
-    line with an amount on it, other than a balance line, may be a transaction: the parse
-    step reports it rather than lose it silently."""
+    line with an amount on it, other than a balance, may be a transaction: the parse step
+    reports it rather than lose it silently."""
+    balances = balance_refs(lines)
     first = next(
         (
             i
             for i, ln in enumerate(lines)
-            if (_has_date(ln.text) or has_amount(ln.text))
-            and not sensitive.is_balance_line(ln.text)
+            if (_has_date(ln.text) or has_amount(ln.text)) and ln.ref not in balances
         ),
         len(lines),
     )
     withheld: list[str] = []
     data: list[str] = []
     for i, line in enumerate(lines):
-        if i < first or is_sensitive(line.text, names=names) or _name_key(line.text) is not None:
+        if (
+            i < first
+            or line.ref in balances
+            or is_sensitive(line.text, names=names)
+            or _name_key(line.text) is not None
+        ):
             withheld.append(line.ref)
         else:
             data.append(line.ref)

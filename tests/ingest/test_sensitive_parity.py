@@ -78,6 +78,36 @@ CORPUS = [
     "Credit limit £3,000.00",
     "New balance 909.85",
     "Previous balance (100.00)",
+    # wider balance lines (R-M3-17): label variants, currency codes, no thousands separator,
+    # a figure followed by its label, two figures on one line
+    "Balance 1234.56",
+    "Balance £1184.56",
+    "Available balance £1184.56",
+    "Balance: GBP 1,234.56",
+    "Balance GBP 1234.56",
+    "Balance 1,234.56 GBP",
+    "Balance: 1234.56",
+    "Your balance £1,234.56",
+    "Your available balance £1,184.56",
+    "Total balance £1,234.56",
+    "Statement balance £1,234.56",
+    "Outstanding balance £1,234.56",
+    "Current balance: £1,234.56 CR",
+    "Account balance £1,234.56",
+    "Spending balance £1,234.56",
+    "Available credit £1,234.56",
+    "Available to spend: £1,184.56",
+    "Balance £ 1,234.56",
+    "Balance £1 234.56",
+    "Balance owing £1,234.56",
+    "Arranged overdraft £500.00",
+    "Arranged overdraft limit £500.00",
+    "£1,184.56 available",
+    "£1,184.56 Available balance",
+    "Balance £1,234.56 Available £1,184.56",
+    "Balance £1,234.56 · Available £1,184.56",
+    "Opening balance GBP 1,000.00",
+    "Closing balance 1780.00 GBP",
 ]
 # The corpus R-M3-7 added at 8ca14cc, unchanged.
 SPELLINGS_8CA14CC = [
@@ -119,7 +149,19 @@ PLAIN = [
     "Date Description Paid out Paid in Balance",
     "TRANSFER FROM ALEX EXAMPLE 50.00",
     "BALANCE TRANSFER £100.00",
+    "BALANCE TRANSFER 1234.56",
     "5 Oct Balance £20.00",
+    "01/10/2026 Balance 1,234.56",
+    "Balance",
+    "Available",
+    "Available balance",
+    "Balance (£)",
+    "Balance GBP",
+    "-£12.80",
+    "Little Cafe -£12.80",
+    "Coffee... 3.40",
+    "INV...1234.56",
+    "Ref ...£1,234.56",
     # column vocabulary is not a titled name (R-M3-16)
     "Dr Amount",
     "Cr Amount",
@@ -162,6 +204,69 @@ def test_every_filter_catches_every_spelling(text):
     assert withheld_from_screenshot(text)
     sent = sketch(["Date", "Description", text], [["01/10/2026", text, text]], names=NAMES)
     assert text not in sent
+
+
+# A balance label on one line and its figure on the next (or above it): both lines are held
+# back, wherever they are (R-M3-17).
+PAIRS = [
+    ["Available balance", "£1,184.56"],
+    ["Balance", "£1,184.56"],
+    ["Balance:", "1,184.56"],
+    ["Your balance", "1184.56 GBP"],
+    ["Available to spend", "-£12.00"],
+    ["£1,184.56", "Available balance"],
+    ["£1,184.56", "Available"],
+]
+
+
+def withheld_lines(rows, kind):
+    if kind == "image":
+        doc = pages_document(
+            [["5 Oct SHOP -£3.40", *rows, "6 Oct CAFE -£1.00"]], sha256="x", kind="image"
+        )
+    else:
+        doc = pages_document(
+            [["Date Description Amount", "02 Oct 2026 Shop 4.00", *rows, "03 Oct 2026 Cafe 3.00"]],
+            sha256="x",
+            kind="pdf",
+        )
+    by_ref = doc.by_ref()
+    return [by_ref[r].text for r in doc.preamble_refs]
+
+
+@pytest.mark.parametrize("kind", ["pdf", "image"])
+@pytest.mark.parametrize("rows", PAIRS, ids=" / ".join)
+def test_a_balance_label_and_its_figure_on_separate_lines_are_both_held_back(rows, kind):
+    assert all(row in withheld_lines(rows, kind) for row in rows)
+
+
+@pytest.mark.parametrize("kind", ["pdf", "image"])
+def test_a_figure_beside_a_balance_label_is_only_held_back_as_its_pair(kind):
+    rows = ["Coffee shop", "-£12.80", "Balance", "£1,171.76"]
+    withheld = withheld_lines(rows, kind)
+    assert "Balance" in withheld and "£1,171.76" in withheld
+    assert "-£12.80" not in withheld and "Coffee shop" not in withheld
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Balance" + " " * 20_000 + "x",
+        "Account" + " " * 20_000 + "x",
+        "Sort code" + " " * 20_000 + "x",
+        "(" + " " * 20_000 + "x",
+        "£1,184.56" + " " * 20_000 + "x",
+        "Available balance £1.00" + " " * 20_000 + "x",
+    ],
+)
+def test_the_classifier_takes_linear_time_on_long_gaps(text):
+    import time
+
+    start = time.monotonic()
+    classify(text, names=NAMES)
+    withheld_by_textprep(text)
+    withheld_from_screenshot(text)
+    assert time.monotonic() - start < 2
 
 
 @pytest.mark.parametrize("text", [t for t in EVERY if holds_details(t, names=NAMES)])

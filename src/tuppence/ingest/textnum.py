@@ -13,14 +13,15 @@ from tuppence.core.money import format_pounds
 pounds = format_pounds
 
 _SIGN = r"[+\-\u2212\u2013]"  # plus, hyphen, minus sign, en dash
+# Each optional piece takes the spaces next to it, so a long gap can't make matching slow.
 _MONEY = re.compile(
-    r"^(?P<open>\()?\s*(?P<lead>"
+    r"^(?:(?P<open>\()\s*)?(?:(?P<lead>"
     + _SIGN
-    + r")?\s*(?:GBP\s*|[£$€]\s*)?(?P<lead2>"
+    + r")\s*)?(?:(?:GBP|[£$€])\s*)?(?:(?P<lead2>"
     + _SIGN
-    + r")?\s*"
-    r"(?P<num>\d{1,3}(?:,\d{3})+|\d+)(?:\.(?P<dec>\d{1,2}))?\s*(?P<close>\))?\s*"
-    r"(?P<trail>" + _SIGN + r")?\s*(?P<marker>CR|DR)?\.?$",
+    + r")\s*)?"
+    r"(?P<num>\d{1,3}(?:,\d{3})+|\d+)(?:\.(?P<dec>\d{1,2}))?(?:\s*(?P<close>\)))?"
+    r"(?:\s*(?P<trail>" + _SIGN + r"))?(?:\s*(?P<marker>CR|DR))?\.?$",
     re.IGNORECASE,
 )
 DATE_FORMATS: tuple[str, ...] = (

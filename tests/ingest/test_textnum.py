@@ -79,3 +79,26 @@ def test_decode_handles_bom_windows_1252_and_utf16():
     assert decode_text(codecs.BOM_UTF8 + "£5\r\n".encode()) == "£5\n"
     assert decode_text("£5".encode("cp1252")) == "£5"
     assert decode_text("£5".encode("utf-16")) == "£5"
+
+
+@pytest.mark.parametrize(
+    "text,value",
+    [
+        ("( 12.50 )", Decimal("-12.50")),
+        ("GBP 12.50", Decimal("12.50")),
+        ("- £ 12.50", Decimal("-12.50")),
+        ("12.50 -", Decimal("-12.50")),
+        ("12.50 CR.", Decimal("12.50")),
+    ],
+)
+def test_parse_money_spacing(text, value):
+    assert parse_money(text) == value
+
+
+@pytest.mark.parametrize("text", ["(" + " " * 20_000 + "x", "1.00" + " " * 20_000 + "x"])
+def test_parse_money_takes_linear_time_on_a_long_gap(text):
+    import time
+
+    start = time.monotonic()
+    assert parse_money(text) is None
+    assert time.monotonic() - start < 2

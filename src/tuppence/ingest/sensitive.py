@@ -21,6 +21,33 @@ _STREET = (
     r"road|rd|street|st|lane|ln|avenue|ave|close|drive|way|gardens|court|place|terrace"
     r"|crescent|square|hill|grove|mews|walk"
 )
+# Balance lines. Every optional piece takes the spaces after it, so no run of spaces can be split
+# more than one way (a long gap must not make matching slow).
+_BALANCE_WORD = (
+    r"(?:your|available|current|account|cleared|running|opening|closing|new|previous|starting"
+    r"|ending|start|end|statement|outstanding|total|spending|actual)"
+)
+_BALANCE_LABEL = (
+    rf"(?:{_BALANCE_WORD}\s+){{0,2}}"
+    r"(?:balance(?:\s+(?:after|owing|owed|outstanding|remaining|available))?"
+    r"|available(?:\s+(?:to\s+spend|credit|funds))?"
+    r"|(?:arranged\s+)?overdraft\s+limit|arranged\s+overdraft|credit\s+limit)"
+)
+_SIGN = r"[-+\u2212\u2013]"
+_FIGURE = (
+    rf"(?:\(\s*)?(?:{_SIGN}\s*)?(?:(?:[£$€]|GBP\b)\s*)?(?:{_SIGN}\s*)?"
+    r"(?:\d{1,3}(?:[,\u00a0 ]\d{3})+|\d+)(?:\.\d{2})?"
+    r"(?:\s*\))?(?:\s*GBP\b)?(?:\s*[-\u2212](?!\d))?"
+    r"(?:\s*(?:CR|DR|O/D|OD|D|in\s+credit|overdrawn)\b)?(?:\.|\s*\*)?"
+)
+_BALANCE_ITEM = rf"(?:{_BALANCE_LABEL}\s*(?::\s*)?{_FIGURE}|{_FIGURE}\s+{_BALANCE_LABEL})"
+_BALANCE_LINE = re.compile(
+    rf"^\s*{_BALANCE_ITEM}(?:\s*(?:[|·•,;/]\s*)?{_BALANCE_ITEM}){{0,2}}\s*$", re.IGNORECASE
+)
+_LABEL_ONLY = re.compile(rf"^\s*{_BALANCE_LABEL}\s*(?::\s*)?$", re.IGNORECASE)
+_FIGURE_ONLY = re.compile(rf"^\s*{_FIGURE}\s*$", re.IGNORECASE)
+_MONEY_SHAPE = re.compile(r"[£$€]|GBP|\.\d{2}", re.IGNORECASE)
+
 LABELS: dict[str, re.Pattern[str]] = {
     "account_label": re.compile(
         r"\b(?:account|acct?|a/c)\.?\s*(?:no\.?|num(?:ber)?|name|holders?|type)\b", _I
@@ -37,7 +64,7 @@ VALUES: dict[str, re.Pattern[str]] = {
     # an account, sort code or roll number after its abbreviation: "A/C 12345678",
     # "Acct -71004", "s/c: 123456"
     "account_number": re.compile(
-        r"(?<![\w/])(?:account|acct?|a/c|s/c|s\.c\.)\.?\s*:?\s*#?\s*[-−–]?\s*"
+        r"(?<![\w/])(?:account|acct?|a/c|s/c|s\.c\.)\.?\s*(?::\s*)?(?:#\s*)?(?:[-−–]\s*)?"
         r"\d[\d -]{3,}\d",
         _I,
     ),
@@ -60,17 +87,9 @@ VALUES: dict[str, re.Pattern[str]] = {
         r"|^\s*(?:statement|prepared)\s+for\b",
         _I,
     ),
-    # A balance line: a balance or limit label and one figure, nothing else (no date, no
+    # A balance line: balance or limit labels and their figures, nothing else (no date, no
     # description), so it can't be a transaction.
-    "balance_line": re.compile(
-        r"^\s*(?:(?:available|current|account|cleared|running|opening|closing|new|previous"
-        r"|starting|ending)\s+)?"
-        r"(?:balance(?:\s+after)?|available(?:\s+to\s+spend)?|overdraft\s+limit|credit\s+limit)"
-        r"\s*:?\s*\(?\s*[-+\u2212\u2013]?\s*[£$€]?\s*[-+\u2212\u2013]?\s*"
-        r"\d{1,3}(?:,\d{3})*(?:\.\d{2})?\s*\)?\s*[-\u2212]?"
-        r"(?:\s*(?:CR|DR|D|OD|O/D|in\s+credit|overdrawn))?\.?\s*$",
-        _I,
-    ),
+    "balance_line": _BALANCE_LINE,
 }
 LABEL_CLASSES = frozenset(LABELS)
 
@@ -143,8 +162,29 @@ def classify(text: str, *, names: Sequence[str] = ()) -> set[str]:
 
 
 def is_balance_line(text: str) -> bool:
-    """A line that is only a balance or limit and its figure ("Balance £1,234.56")."""
-    return VALUES["balance_line"].search(text) is not None
+    """A line that is only balances or limits and their figures ("Balance £1,234.56",
+    "£1,184.56 available", "Balance £1,234.56 Available £1,184.56")."""
+    return _BALANCE_LINE.search(text) is not None
+
+
+def is_figure_line(text: str) -> bool:
+    """A line that is only a money figure ("£1,184.56", "1,000.00 CR")."""
+    return _FIGURE_ONLY.search(text) is not None and _MONEY_SHAPE.search(text) is not None
+
+
+def balance_lines(texts: Sequence[str]) -> set[int]:
+    """Indexes of the lines that show a balance: balance lines, and a balance label printed on
+    a line of its own together with the figure-only line below it (or, when there is none
+    below, above it), as apps lay out "Available balance" under "£1,184.56"."""
+    found = {i for i, text in enumerate(texts) if is_balance_line(text)}
+    for i, text in enumerate(texts):
+        if not _LABEL_ONLY.search(text):
+            continue
+        if i + 1 < len(texts) and is_figure_line(texts[i + 1]):
+            found.update((i, i + 1))
+        elif i > 0 and is_figure_line(texts[i - 1]) and i - 1 not in found:
+            found.update((i - 1, i))
+    return found
 
 
 def is_sensitive(text: str, *, names: Sequence[str] = ()) -> bool:
