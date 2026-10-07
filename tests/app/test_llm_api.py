@@ -509,7 +509,7 @@ def test_non_admin_cannot_change_shared_ai_and_privacy_settings(client, member, 
 def test_every_setting_is_shared_and_admin_only_in_server_mode(client, member):
     """AI, privacy and agent settings (llm.*, privacy.*, config.*) are all household-wide."""
     keys = [e["key"] for e in client.get("/api/settings").json()["settings"]]
-    assert keys and all(k.startswith(("llm.", "privacy.", "config.")) for k in keys)
+    assert keys and all(k.startswith(("llm.", "privacy.", "config.", "ingest.")) for k in keys)
     assert member.get("/api/settings").status_code == 200  # members can still read them
 
 

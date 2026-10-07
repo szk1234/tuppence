@@ -122,6 +122,8 @@ def test_0007_database_with_data_upgrades_to_0008(tmp_path, monkeypatch):
             " created_at) VALUES ('household', '1', 'nation', '\"england\"', '2020-01-01', 'x')"
         )
     monkeypatch.undo()
+    upto_0008 = [m for m in mig.available_migrations() if m[0] < "0009"]
+    monkeypatch.setattr(mig, "available_migrations", lambda: upto_0008)
     assert mig.migrate(db, tmp_path / "b") == ["0008_finance_profile"]
     with db.connection() as conn:
         row = conn.execute("SELECT value, version FROM profile_entry").fetchone()
@@ -147,6 +149,8 @@ def test_0008_backfills_household_timeline_from_the_household_row(tmp_path, monk
             " '2025-05-01', 'x')"
         )
     monkeypatch.undo()
+    upto_0008 = [m for m in mig.available_migrations() if m[0] < "0009"]
+    monkeypatch.setattr(mig, "available_migrations", lambda: upto_0008)
     assert mig.migrate(db, tmp_path / "b") == ["0008_finance_profile"]
     with db.connection() as conn:
         rows = conn.execute(

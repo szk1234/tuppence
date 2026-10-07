@@ -223,3 +223,15 @@ def test_a_malformed_host_exits_2_with_a_plain_message(tmp_path, capsys, host):
     err = capsys.readouterr().err
     assert rc == 2
     assert "isn't a host name or address" in err and "Traceback" not in err
+
+
+def test_main_module_is_safe_to_import_in_a_child_process(monkeypatch):
+    import runpy
+
+    import tuppence.cli as cli
+
+    def refuse() -> None:
+        raise AssertionError("run() must not start in a child process")
+
+    monkeypatch.setattr(cli, "run", refuse)
+    runpy.run_module("tuppence.__main__", run_name="__mp_main__")

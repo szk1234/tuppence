@@ -124,6 +124,20 @@ define(
     "Exchange rate used to price AI usage.",
 )
 
+define(
+    "ingest.max_file_mb",
+    Annotated[int, Field(ge=1, le=100)],
+    20,
+    "Largest statement file you can upload, in MB.",
+)
+define(
+    "ingest.vision_for_scans",
+    bool,
+    False,
+    "Read scanned pages and screenshots with your AI vision model instead of on this device. "
+    "The whole page is sent, including your name and address.",
+)
+
 
 class SettingInvalid(UserFacing, Exception):
     def __init__(self, key: str, message: str) -> None:

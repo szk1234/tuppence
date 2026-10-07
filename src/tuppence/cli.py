@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
 import secrets
 import socket
@@ -163,4 +164,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run() -> NoReturn:
+    multiprocessing.freeze_support()
     sys.exit(main())
