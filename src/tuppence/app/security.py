@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from tuppence.settings import RuntimeSettings
+
+log = logging.getLogger("tuppence")
 
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
@@ -18,6 +26,79 @@ _STATIC_HEADERS = [
     (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
     (b"cross-origin-opener-policy", b"same-origin"),
 ]
+
+
+def _split_host(value: str) -> tuple[str, str | None]:
+    """Split a Host header into (lower-cased hostname, port or None)."""
+    value = value.strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        if end == -1:
+            return value, None
+        host, rest = value[: end + 1], value[end + 1 :]
+        return host, rest[1:] if rest.startswith(":") else None
+    host, sep, port = value.partition(":")
+    return host, (port if sep else None)
+
+
+_LOOPBACK = {"127.0.0.1", "localhost", "[::1]"}
+
+
+def _json_response(status: int, body: dict[str, str]) -> tuple[Message, Message]:
+    payload = json.dumps(body).encode()
+    start: Message = {
+        "type": "http.response.start",
+        "status": status,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+        ],
+    }
+    return start, {"type": "http.response.body", "body": payload}
+
+
+class HostAllowlistMiddleware:
+    """Reject unexpected Host headers (DNS-rebinding defence).
+
+    local/desktop: only loopback names on this server's own port.
+    server: anything, unless an allow-list is configured (settings or TUPPENCE_ALLOWED_HOSTS).
+    An explicit list matches hostnames only; the port is ignored.
+    """
+
+    def __init__(self, app: ASGIApp, settings: RuntimeSettings) -> None:
+        self.app = app
+        self.settings = settings
+        listed = settings.allowed_hosts
+        if listed is None and settings.mode == "server":
+            env = os.environ.get("TUPPENCE_ALLOWED_HOSTS", "")
+            listed = [h for h in (x.strip() for x in env.split(",")) if h] or None
+        self.listed = {_split_host(h)[0] for h in listed} if listed else None
+
+    def _allowed(self, scope: Scope) -> bool:
+        raw = dict(scope.get("headers", [])).get(b"host", b"").decode("latin-1")
+        host, port = _split_host(raw)
+        if self.listed is not None:
+            return host in self.listed
+        if self.settings.mode == "server":
+            return True
+        if host not in _LOOPBACK:
+            return False
+        want = self.settings.port
+        if want == 0:
+            server = scope.get("server")
+            want = int(server[1]) if server and server[1] else 0
+        return port == str(want) or (port is None and want == 80)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket") or self._allowed(scope):
+            await self.app(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        start, body = _json_response(403, {"detail": "Unexpected host."})
+        await send(start)
+        await send(body)
 
 
 class SecurityHeadersMiddleware:
@@ -44,4 +125,20 @@ class SecurityHeadersMiddleware:
                 message["headers"] = headers
             await send(message)
 
-        await self.app(scope, receive, send_wrapper)
+        started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send_wrapper(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception:
+            if started:
+                raise
+            log.exception("Unhandled error handling %s %s", scope.get("method"), path)
+            start, body = _json_response(500, {"detail": "Something went wrong."})
+            await send_wrapper(start)
+            await send_wrapper(body)

@@ -21,6 +21,8 @@ class RuntimeSettings(BaseModel):
     web_dir: Path | None = None
     launch_token: str | None = None
     secure_cookies: bool = False
+    # None means "derive from mode" (loopback only for local/desktop; any host in server mode).
+    allowed_hosts: list[str] | None = None
 
     @classmethod
     def for_mode(
@@ -33,6 +35,7 @@ class RuntimeSettings(BaseModel):
         web_dir: Path | None = None,
         launch_token: str | None = None,
         secure_cookies: bool = False,
+        allowed_hosts: list[str] | None = None,
     ) -> RuntimeSettings:
         return cls(
             mode=mode,
@@ -42,4 +45,5 @@ class RuntimeSettings(BaseModel):
             web_dir=web_dir,
             launch_token=launch_token,
             secure_cookies=secure_cookies,
+            allowed_hosts=allowed_hosts,
         )

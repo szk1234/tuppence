@@ -6,7 +6,9 @@ from tuppence.settings import RuntimeSettings
 
 
 def make_client(tmp_path, mode="local"):
-    settings = RuntimeSettings.for_mode(mode, data_dir=tmp_path, web_dir=tmp_path / "no-ui")
+    settings = RuntimeSettings.for_mode(
+        mode, data_dir=tmp_path, web_dir=tmp_path / "no-ui", allowed_hosts=["testserver"]
+    )
     return TestClient(create_app(settings))
 
 

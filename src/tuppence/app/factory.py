@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from tuppence import __version__
 from tuppence.app.errors import install_error_handlers
 from tuppence.app.routes import include_routers
-from tuppence.app.security import SecurityHeadersMiddleware
+from tuppence.app.security import HostAllowlistMiddleware, SecurityHeadersMiddleware
 from tuppence.app.services import build_services
 from tuppence.app.static import mount_web
 from tuppence.settings import RuntimeSettings
@@ -27,6 +27,7 @@ def create_app(settings: RuntimeSettings) -> FastAPI:
     app.state.services = services
     app.state.paths = services.paths
     install_error_handlers(app)
+    app.add_middleware(HostAllowlistMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware)
 
     @app.get("/health", include_in_schema=False)

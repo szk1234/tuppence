@@ -17,7 +17,9 @@ def _fake_ui(tmp_path):
 
 
 def client_for(tmp_path, web_dir):
-    settings = RuntimeSettings.for_mode("local", data_dir=tmp_path / "data", web_dir=web_dir)
+    settings = RuntimeSettings.for_mode(
+        "local", data_dir=tmp_path / "data", web_dir=web_dir, allowed_hosts=["testserver"]
+    )
     return TestClient(create_app(settings))
 
 

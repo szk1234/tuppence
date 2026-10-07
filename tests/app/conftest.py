@@ -8,6 +8,8 @@ from tuppence.settings import RuntimeSettings
 @pytest.fixture
 def make_app(tmp_path):
     def _make(mode="server", **kw):
+        if mode != "server":
+            kw.setdefault("allowed_hosts", ["testserver"])
         settings = RuntimeSettings.for_mode(
             mode, data_dir=tmp_path / "data", web_dir=tmp_path / "no-ui", **kw
         )
