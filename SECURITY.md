@@ -26,6 +26,41 @@ internet.
 
 Both are shown, commented out, in `compose.yaml`.
 
+### Saved AI keys and the secret key
+
+On the desktop app and with `uvx`/`pipx`, saved AI keys and custom header values go into
+the operating system's keychain when one is available. Otherwise, and always in server
+(Docker) mode, they are encrypted in the database with a Fernet key:
+
+- By default Tuppence creates that key as `secret.key` (mode `0600`) in the data folder.
+  That keeps it in the same place, and the same Docker volume, as the database and its
+  backups: anyone with a copy of the folder can decrypt the saved keys.
+- To keep them apart, put the key somewhere else and set `TUPPENCE_SECRET_KEY_FILE` to
+  its path. With Docker, use a secret: create the key once with
+  `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" > tuppence_secret_key.txt`,
+  make it readable only by the container's user (`sudo chown 10001 tuppence_secret_key.txt
+  && chmod 400 tuppence_secret_key.txt`), and uncomment the `secrets` lines and
+  `TUPPENCE_SECRET_KEY_FILE` in `compose.yaml`. If you start using a new key file, keys
+  saved under the old one can't be read: choose "Forget saved AI keys" in Settings › AI
+  and enter them again.
+- If `TUPPENCE_SECRET_KEY_FILE` is set but the file is missing, empty or not a valid key,
+  Tuppence refuses to start and names the file. If the default `secret.key` goes missing,
+  Tuppence still starts and asks you to re-enter your keys.
+
+API keys must be plain printable characters; Tuppence never shows a saved key again, and
+error messages, the privacy log and the usage ledger record only the type of a failure,
+never its text, so a key echoed in a library error can't end up stored.
+
+### Outbound connections
+
+Every outbound request goes through one guarded HTTP client
+(`src/tuppence/net/client.py`), and a test fails if any other module builds its own. The
+guard resolves each host once and connects to the address it checked, refuses cloud
+metadata addresses for every purpose, enforces Local only and per-task pins, refuses a
+connection set up as local whose host no longer resolves inside your network, never
+follows redirects, ignores proxy settings from the environment, and holds every request
+to a wall-clock time limit (a server can't keep a call open by sending bytes slowly).
+
 ### Data folder
 
 Tuppence creates its data folder readable only by your user (`0700` on Linux

@@ -20,3 +20,5 @@ src/tuppence/web_dist/
 !.env.example
 web/test-results/
 web/playwright-report/
+tuppence_secret_key*
+secret.key

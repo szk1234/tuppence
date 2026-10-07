@@ -15,6 +15,11 @@ services:
     #   TUPPENCE_ALLOWED_HOSTS: "money.home.lan"
     #   # Only when you reach Tuppence over HTTPS (e.g. behind Caddy): Secure sign-in cookie.
     #   TUPPENCE_SECURE_COOKIES: "1"
+    #   # The key that encrypts saved AI keys, kept out of the data volume as a Docker
+    #   # secret (create tuppence_secret_key.txt first: see SECURITY.md).
+    #   TUPPENCE_SECRET_KEY_FILE: /run/secrets/tuppence_secret_key
+    # secrets:
+    #   - tuppence_secret_key
 
   ollama:
     image: ollama/ollama:latest
@@ -26,3 +31,8 @@ services:
 volumes:
   tuppence-data: {}
   ollama: {}
+
+# Uncomment with TUPPENCE_SECRET_KEY_FILE above:
+# secrets:
+#   tuppence_secret_key:
+#     file: ./tuppence_secret_key.txt
