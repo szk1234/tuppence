@@ -75,6 +75,18 @@ define(
     "How much work the agents do.",
 )
 define(
+    "llm.mode",
+    Literal["simple", "advanced"],
+    "simple",
+    "Simple: one AI model for everything. Advanced: choose models per task.",
+)
+define(
+    "llm.simple_model",
+    dict[str, str] | None,
+    None,
+    "The AI model used for every task in simple mode.",
+)
+define(
     "llm.monthly_cap_gbp",
     Annotated[float, Field(ge=0, allow_inf_nan=False)],
     10.0,

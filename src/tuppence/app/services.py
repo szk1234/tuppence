@@ -19,8 +19,11 @@ from tuppence.core.migrate import migrate
 from tuppence.core.secrets import SecretStore, choose_secret_store
 from tuppence.core.settings_store import SettingsStore
 from tuppence.core.timeline import Timeline
+from tuppence.llm.budget import BreakerBoard, UsageLedger
 from tuppence.llm.catalogue import ModelCatalogue, load_baseline
+from tuppence.llm.client import LLMClient
 from tuppence.llm.connections import ClientFactory, ConnectionRegistry
+from tuppence.llm.routing import TaskRouter
 from tuppence.net import client as netclient
 from tuppence.net.client import CallContext
 from tuppence.net.privacy_log import PrivacyLog
@@ -49,6 +52,10 @@ class Services:
     catalogue: ModelCatalogue
     client_factory: ClientFactory
     connections: ConnectionRegistry
+    router: TaskRouter
+    usage: UsageLedger
+    breakers: BreakerBoard
+    llm: LLMClient
     periodic: list[Periodic] = field(default_factory=list)
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _launch_used: bool = field(default=False, repr=False)
@@ -84,6 +91,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
     db = Database(paths.db)
     migrate(db, paths.backups)
     settings_store = SettingsStore(db)
+    household = HouseholdService(db)
     queue = JobQueue(db)
 
     def backup_handler(_job: Job) -> dict[str, Any]:
@@ -111,6 +119,19 @@ def build_services(runtime: RuntimeSettings) -> Services:
             timeout=timeout,
         )
 
+    connections = ConnectionRegistry(db, secrets, catalogue, client_factory=client_factory)
+    router = TaskRouter(db, settings_store, connections)
+    usage = UsageLedger(db)
+    breakers = BreakerBoard()
+    llm = LLMClient(
+        connections=connections,
+        router=router,
+        usage=usage,
+        settings=settings_store,
+        household=household,
+        breakers=breakers,
+    )
+
     services = Services(
         runtime=runtime,
         paths=paths,
@@ -119,7 +140,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
         users=Users(db),
         sessions=Sessions(db),
         limiter=LoginLimiter(db),
-        household=HouseholdService(db),
+        household=household,
         timeline=Timeline(db),
         config=ConfigService(db, settings_store, paths.config),
         queue=queue,
@@ -128,7 +149,11 @@ def build_services(runtime: RuntimeSettings) -> Services:
         secrets=secrets,
         catalogue=catalogue,
         client_factory=client_factory,
-        connections=ConnectionRegistry(db, secrets, catalogue, client_factory=client_factory),
+        connections=connections,
+        router=router,
+        usage=usage,
+        breakers=breakers,
+        llm=llm,
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
     services.sessions.purge_kind("launch")
