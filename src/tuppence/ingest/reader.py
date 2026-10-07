@@ -286,7 +286,12 @@ def context_block(*, today: dt.date, account: str, facts: HeaderFacts, level: Ch
         header.append(f"period {facts.period_start.isoformat()} to {facts.period_end.isoformat()}")
     lines.append("STATEMENT HEADER: " + ("; ".join(header) if header else "none"))
     if level == "screenshot":
-        lines.append("This is a screenshot from a banking app. Transcribe only what is visible.")
+        lines.append(
+            "This is a screenshot from a banking app. Transcribe only what is visible. A row "
+            "with an amount but no date of its own is still a transaction: it takes the date "
+            "of the heading above it (Today is TODAY, Yesterday the day before), and a "
+            "pending row takes TODAY."
+        )
     return "\n".join(lines) + "\n"
 
 

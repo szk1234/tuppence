@@ -28,6 +28,7 @@ from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, read_document
 from tuppence.ingest.registry import CsvLayout, LayoutRegistry
 from tuppence.ingest.textnum import decode_text
+from tuppence.ingest.textprep import has_amount
 
 ACCOUNT_LABELS: dict[str, str] = {
     "current": "current account",
@@ -116,6 +117,24 @@ def sign_doubt(
             "is remembered."
         )
     return None
+
+
+def _held_back_amounts(doc: Document) -> str | None:
+    """A screenshot's withheld lines that show an amount may be transactions: say so (without
+    quoting them) instead of losing them silently."""
+    by_ref = doc.by_ref()
+    count = sum(1 for ref in doc.preamble_refs if ref in by_ref and has_amount(by_ref[ref].text))
+    if count == 0:
+        return None
+    if count == 1:
+        return (
+            "A line of this screenshot with an amount on it was held back from the AI because "
+            "it also shows account details. It may be a transaction, so please check it."
+        )
+    return (
+        f"{count} lines of this screenshot with an amount on them were held back from the AI "
+        "because they also show account details. They may be transactions, so please check them."
+    )
 
 
 def level_for(doc: Document) -> CheckLevel:
@@ -248,6 +267,8 @@ def parse_document(
         *check_statement(parsed, level=level, dates=True),
         *repair.errors,
     ]
+    if level == "screenshot" and (held := _held_back_amounts(doc)):
+        errors.append(held)
     if not parsed.rows:
         errors.append("No transactions were read from this file, so it needs a look.")
     elif not read.ok and not errors:

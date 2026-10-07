@@ -314,6 +314,35 @@ def split_preamble(
     return withheld, data
 
 
+_CURRENCY_FIGURE = re.compile(r"[£$€]\s?\d")
+
+
+def has_amount(text: str) -> bool:
+    """A money figure on the line: 12.30 with pence, or a currency sign before digits."""
+    return _MONEY_TOKEN.search(text) is not None or _CURRENCY_FIGURE.search(text) is not None
+
+
+def split_screenshot(lines: Sequence[Line]) -> tuple[list[str], list[str]]:
+    """(withheld refs, data refs) for a screenshot from a banking app.
+
+    Apps list pending and "Today" rows without a date, so only the lines above the first line
+    with a date or an amount are the header. After it, a line is withheld when it shows
+    account details or is only a name. A withheld line with an amount on it may be a
+    transaction: the parse step reports it rather than lose it silently."""
+    first = next(
+        (i for i, ln in enumerate(lines) if _has_date(ln.text) or has_amount(ln.text)),
+        len(lines),
+    )
+    withheld: list[str] = []
+    data: list[str] = []
+    for i, line in enumerate(lines):
+        if i < first or is_sensitive(line.text) or _name_key(line.text) is not None:
+            withheld.append(line.ref)
+        else:
+            data.append(line.ref)
+    return withheld, data
+
+
 def text_document(text: str, *, sha256: str, names: Sequence[str] = ()) -> Document:
     lines = [
         Line(ref=f"L{n}", text=t.rstrip())
@@ -339,7 +368,12 @@ def pages_document(
             if row.strip():
                 n += 1
                 lines.append(Line(ref=f"P{p}L{n}", text=row.rstrip()))
-    pre, data = split_preamble(lines, names=names) if preamble else ([], [ln.ref for ln in lines])
+    if not preamble:
+        pre, data = [], [ln.ref for ln in lines]
+    elif kind == "image":
+        pre, data = split_screenshot(lines)
+    else:
+        pre, data = split_preamble(lines, names=names)
     return Document(
         kind=kind, sha256=sha256, lines=lines, preamble_refs=pre, data_refs=data, pages=len(pages)
     )
