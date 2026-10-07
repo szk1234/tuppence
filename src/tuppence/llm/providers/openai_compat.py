@@ -27,7 +27,7 @@ def _message(m: Message) -> dict[str, Any]:
     content: Any = m.content
     if m.images:
         content = [
-            {"type": "text", "text": m.content},
+            *([{"type": "text", "text": m.content}] if m.content else []),
             *(
                 {
                     "type": "image_url",

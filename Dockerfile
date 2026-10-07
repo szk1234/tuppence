@@ -14,9 +14,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TUPPENCE_DATA_DIR=/data
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 WORKDIR /app
-# OpenCV (pulled in by RapidOCR) needs these two system libraries.
+# OpenCV (headless build, used by RapidOCR) needs this one system library.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+ && apt-get install -y --no-install-recommends libglib2.0-0 \
  && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 RUN uv sync --frozen --no-dev --no-install-project

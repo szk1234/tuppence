@@ -15,3 +15,12 @@ def test_boxes_on_one_line_join_left_to_right_with_column_gaps():
 
 def test_no_boxes():
     assert rows_from_boxes([]) == []
+
+
+def test_a_very_long_row_is_grouped_in_linear_time():
+    import time
+
+    boxes = [Box("w", i * 6.0, 100, i * 6.0 + 5, 110) for i in range(60_000)]
+    started = time.monotonic()
+    rows = rows_from_boxes(boxes)
+    assert len(rows) == 1 and time.monotonic() - started < 5

@@ -47,3 +47,41 @@ def create_connection_blocked():
     except OSError as exc:
         return "switched off" in str(exc)
     return False
+
+
+def hog():
+    return len(bytearray(8 * 1024 * 1024 * 1024))  # one absurd allocation
+
+
+def bulky():
+    return "x" * (60 * 1024 * 1024)
+
+
+def where():
+    return os.getcwd()
+
+
+def dns_blocked():
+    import socket
+
+    try:
+        socket.getaddrinfo("localhost", 80)
+    except OSError:
+        return True
+    return False
+
+
+def udp_blocked():
+    import socket
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return True
+    try:
+        sock.sendto(b"hello", ("127.0.0.1", 9))
+    except OSError:
+        return True
+    finally:
+        sock.close()
+    return False

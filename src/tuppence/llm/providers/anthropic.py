@@ -33,7 +33,7 @@ def _content(m: Message) -> Any:
         }
         for i in m.images
     ]
-    return [*blocks, {"type": "text", "text": m.content}]
+    return [*blocks, {"type": "text", "text": m.content}] if m.content else blocks
 
 
 def _convert(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:

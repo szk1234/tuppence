@@ -55,3 +55,27 @@ def test_the_child_cannot_use_the_network():
     with pytest.raises(SandboxFailed, match=r"couldn't be read \(OSError\)"):
         run_isolated(helpers.connect_out, timeout_s=30)
     assert run_isolated(helpers.create_connection_blocked, timeout_s=30) is True
+
+
+def test_dns_and_udp_and_new_sockets_are_blocked():
+    assert run_isolated(helpers.dns_blocked, timeout_s=30) is True
+    assert run_isolated(helpers.udp_blocked, timeout_s=30) is True
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="address-space limit is Linux")
+def test_one_absurd_allocation_is_refused_by_the_address_space_limit():
+    with pytest.raises(SandboxFailed, match="more memory"):
+        run_isolated(helpers.hog, timeout_s=60, memory_mb=200)
+
+
+def test_an_oversized_result_is_refused():
+    with pytest.raises(SandboxFailed, match="more text than Tuppence can handle"):
+        run_isolated(helpers.bulky, timeout_s=60)
+
+
+def test_the_child_works_in_a_private_temp_folder_that_is_removed():
+    import os
+
+    folder = run_isolated(helpers.where, timeout_s=30)
+    assert "tuppence-sandbox-" in folder and folder != os.getcwd()
+    assert not os.path.exists(folder)

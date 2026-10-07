@@ -82,3 +82,10 @@ def test_images_never_go_to_a_cloud_model_while_pseudonymising(env):
     with pytest.raises(AllModelsFailed, match="images can't be pseudonymised"):
         services.llm.chat("vision", [WITH_IMAGE])
     assert scripted.requests == []
+
+
+def test_image_only_messages_carry_no_empty_text_part():
+    only = Message(role="user", content="", images=[IMAGE])
+    assert all(p["type"] != "text" for p in openai_compat._message(only)["content"])
+    _, out = anthropic._convert([only])
+    assert [b["type"] for b in out[0]["content"]] == ["image"]

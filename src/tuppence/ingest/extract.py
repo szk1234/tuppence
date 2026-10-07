@@ -6,20 +6,22 @@ sandbox, with a time limit and a memory limit.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel
 
+from tuppence.ingest.imaging import vision_image
 from tuppence.ingest.importers.camt import camt_document
 from tuppence.ingest.importers.ofx import ofx_document
 from tuppence.ingest.importers.qif import qif_document
 from tuppence.ingest.importers.xlsx import xlsx_records
 from tuppence.ingest.models import Document, FileKind
 from tuppence.ingest.ocr import image_rows
-from tuppence.ingest.pdftext import pdf_pages, render_page_png
-from tuppence.ingest.sandbox import run_isolated
+from tuppence.ingest.pdftext import pdf_pages, render_pages_png
+from tuppence.ingest.sandbox import SandboxTimeout, run_isolated
 from tuppence.ingest.sniff import check_zip
 from tuppence.ingest.textnum import decode_text
 from tuppence.ingest.textprep import (
@@ -51,6 +53,10 @@ def extract_document(
     known_header: Callable[[Sequence[str]], bool] | None = None,
     vision: VisionReader | None = None,
 ) -> Document:
+    """One overall deadline (`limits.timeout_s`) covers every step of one extraction,
+    including each vision call, so a long scan can't run for hours."""
+    path = path.resolve()  # the sandbox works in its own folder
+    clock = _Deadline(limits)
     if kind == "csv":
         return csv_document(path.read_bytes(), sha256=sha256, known=known_header)
     if kind == "text":
@@ -63,36 +69,49 @@ def extract_document(
         return camt_document(path.read_bytes(), sha256=sha256)
     if kind == "xlsx":
         check_zip(path)
-        records = run_isolated(
-            xlsx_records, str(path), timeout_s=limits.timeout_s, memory_mb=limits.memory_mb
-        )
+        records = clock.run(xlsx_records, str(path))
         return table_document(records, sha256=sha256, kind="xlsx", known=known_header)
     if kind == "pdf":
-        return _pdf(path, sha256, limits, vision)
-    return _image(path, sha256, limits, vision)
+        return _pdf(path, sha256, limits, clock, vision)
+    return _image(path, sha256, limits, clock, vision)
 
 
-def _pdf(path: Path, sha256: str, limits: ExtractLimits, vision: VisionReader | None) -> Document:
-    result = run_isolated(
-        pdf_pages,
-        str(path),
-        limits.max_pages,
-        vision is None,
-        timeout_s=limits.timeout_s,
-        memory_mb=limits.memory_mb,
-    )
+class _Deadline:
+    """Hands each sandbox call what is left of the extraction's time."""
+
+    def __init__(self, limits: ExtractLimits) -> None:
+        self.limits = limits
+        self.end = time.monotonic() + limits.timeout_s
+
+    def remaining(self) -> float:
+        left = self.end - time.monotonic()
+        if left <= 0:
+            raise SandboxTimeout(
+                f"Reading this file took longer than {int(self.limits.timeout_s)} seconds, "
+                "so it was stopped."
+            )
+        return min(left, self.limits.timeout_s)
+
+    def run[T](self, fn: Callable[..., T], *args: object) -> T:
+        return run_isolated(fn, *args, timeout_s=self.remaining(), memory_mb=self.limits.memory_mb)
+
+
+def _pdf(
+    path: Path,
+    sha256: str,
+    limits: ExtractLimits,
+    clock: _Deadline,
+    vision: VisionReader | None,
+) -> Document:
+    result = clock.run(pdf_pages, str(path), limits.max_pages, vision is None)
     pages: list[list[str]] = result["pages"]
     ocr_pages: list[int] = list(result["ocr_pages"])
     warnings: list[str] = []
     if vision is not None:
-        for number in result["scanned_pages"]:
-            png = run_isolated(
-                render_page_png,
-                str(path),
-                number,
-                timeout_s=limits.timeout_s,
-                memory_mb=limits.memory_mb,
-            )
+        scanned: list[int] = list(result["scanned_pages"])
+        pngs = clock.run(render_pages_png, str(path), scanned) if scanned else []
+        for number, png in zip(scanned, pngs, strict=True):
+            clock.remaining()  # the model calls count against the same deadline
             pages[number - 1] = vision.transcribe(png, "image/png")
             ocr_pages.append(number)
         if result["scanned_pages"]:
@@ -115,14 +134,19 @@ def _pdf(path: Path, sha256: str, limits: ExtractLimits, vision: VisionReader | 
     return doc
 
 
-def _image(path: Path, sha256: str, limits: ExtractLimits, vision: VisionReader | None) -> Document:
+def _image(
+    path: Path,
+    sha256: str,
+    limits: ExtractLimits,
+    clock: _Deadline,
+    vision: VisionReader | None,
+) -> Document:
     if vision is not None:
-        media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-        rows, confidence = vision.transcribe(path.read_bytes(), media_type), None
+        # Decoded, size-checked and re-encoded in the sandbox: no metadata goes to the model.
+        data, media_type = clock.run(vision_image, str(path))
+        rows, confidence = vision.transcribe(data, media_type), None
     else:
-        result = run_isolated(
-            image_rows, str(path), timeout_s=limits.timeout_s, memory_mb=limits.memory_mb
-        )
+        result = clock.run(image_rows, str(path))
         rows, confidence = result["rows"], result["ocr_confidence"]
     doc = pages_document([rows], sha256=sha256, kind="image", preamble=False)
     doc.pages, doc.ocr_pages, doc.ocr_confidence = 1, [1], confidence

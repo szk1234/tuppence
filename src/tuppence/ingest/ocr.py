@@ -7,7 +7,6 @@ from typing import Any
 
 from tuppence.ingest.layout_rows import Box, rows_from_boxes
 
-MAX_PIXELS = 40_000_000
 MAX_SIDE = 3000
 _engine: Any = None
 
@@ -53,14 +52,7 @@ def ocr_image(image: Any) -> tuple[list[str], float]:
 
 def image_rows(path: str) -> dict[str, Any]:
     """{"rows": [...], "ocr_confidence": float} for a PNG or JPEG file."""
-    import warnings
+    from tuppence.ingest.imaging import open_checked
 
-    from PIL import Image
-
-    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", Image.DecompressionBombWarning)
-        with Image.open(path) as image:
-            image.load()
-            rows, confidence = ocr_image(image)
+    rows, confidence = ocr_image(open_checked(path))
     return {"rows": rows, "ocr_confidence": confidence}
