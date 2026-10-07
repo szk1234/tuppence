@@ -1,0 +1,4 @@
+#!/bin/sh
+# Personal-data guard. Configure your private list with:
+#   git config tuppence.denylistFile /path/outside/repo/denylist.txt
+exec uv run --quiet python scripts/denylist_guard.py

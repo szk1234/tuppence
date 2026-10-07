@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+web/node_modules/
+web/dist/
+src/tuppence/web_dist/
+.env
+*.db
+*.db-wal
+*.db-shm
+/data/
+.DS_Store
