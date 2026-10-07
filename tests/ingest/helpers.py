@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from tuppence.core.accounts import Account, AccountIn
 from tuppence.core.household import PersonIn
 from tuppence.llm.budget import RunBudget
@@ -45,3 +47,33 @@ def drain(services) -> None:
 
 def budget(calls: int = 50) -> RunBudget:
     return RunBudget(max_calls=calls, max_tokens=2_000_000, max_gbp=1.0, max_seconds=600)
+
+
+def parse_pages(services, pages, account_kind="current", *, limits=None, registry=None):
+    """Run the AI read and parse steps over statement pages given as lists of text lines.
+    Returns (outcome, document)."""
+    import datetime as dt
+
+    from tuppence.ingest.identify import identify
+    from tuppence.ingest.parse import ReaderLimits, parse_document
+    from tuppence.ingest.registry import LayoutRegistry, load_bank_pack
+    from tuppence.ingest.textprep import pages_document
+
+    window = use_local_model(services)
+    pack = load_bank_pack()
+    registry = registry or LayoutRegistry(pack)
+    doc = pages_document(pages, sha256="x", kind="pdf")
+    evidence = identify(doc, pack=pack, registry=registry, key=b"test-key")
+    out = parse_document(
+        doc,
+        Path("unused.pdf"),
+        evidence,
+        account_kind,
+        registry=registry,
+        llm=services.llm,
+        run=budget(),
+        context_window=window,
+        today=dt.date(2026, 11, 1),
+        limits=limits or ReaderLimits(),
+    )
+    return out, doc
