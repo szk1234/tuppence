@@ -88,19 +88,19 @@ define(
 )
 define(
     "llm.monthly_cap_gbp",
-    Annotated[float, Field(ge=0, allow_inf_nan=False)],
+    Annotated[float, Field(ge=0, le=100_000, allow_inf_nan=False)],
     10.0,
     "Monthly AI spending cap in pounds.",
 )
 define(
     "llm.run_cap_gbp",
-    Annotated[float, Field(ge=0, allow_inf_nan=False)],
+    Annotated[float, Field(ge=0, le=100_000, allow_inf_nan=False)],
     1.0,
     "Spending cap for one analysis run, in pounds.",
 )
 define(
     "llm.usd_to_gbp",
-    Annotated[float, Field(gt=0, allow_inf_nan=False)],
+    Annotated[float, Field(gt=0, le=100_000, allow_inf_nan=False)],
     0.75,
     "Exchange rate used to price AI usage.",
 )

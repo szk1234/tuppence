@@ -14,6 +14,7 @@ from tuppence.llm.types import (
     BudgetExceeded,
     LLMBadResponse,
     Message,
+    NoticeRequired,
 )
 
 
@@ -106,7 +107,7 @@ def test_cloud_needs_notice_first(env):
     services.settings.set(
         "llm.simple_model", {"connection_id": c.id, "model_id": "m-small"}, expected_version=0
     )
-    with pytest.raises(AllModelsFailed, match="Confirm what"):
+    with pytest.raises(NoticeRequired, match="Confirm what"):
         services.llm.chat("coach", U)
 
 
@@ -172,7 +173,7 @@ def test_monthly_cap(env):
             "UPDATE llm_model SET price_in_usd_per_mtok = 1000000, price_out_usd_per_mtok = 1000000"
         )
     services.settings.set("llm.monthly_cap_gbp", 0.01, expected_version=0)
-    with pytest.raises(AllModelsFailed, match="spending cap"):
+    with pytest.raises(BudgetExceeded, match="monthly|month"):
         services.llm.chat("coach", U)
 
 
@@ -320,7 +321,7 @@ def test_unknown_price_cloud_counts_at_fallback_price_and_trips_monthly_cap(env)
     month_now(services)
     setup_cloud(services)  # the fake provider lists no prices
     services.settings.set("llm.monthly_cap_gbp", 0.0, expected_version=0)
-    with pytest.raises(AllModelsFailed, match="spending cap"):
+    with pytest.raises(BudgetExceeded, match="monthly|month"):
         services.llm.chat("coach", U)
     assert sent_chats(scripted) == []
 
@@ -356,7 +357,7 @@ def test_missing_usage_is_estimated_and_counts(env):
     first = services.llm.chat("coach", U)
     assert first.cost_gbp and first.cost_gbp > 0.5
     assert spend(services) == pytest.approx(first.cost_gbp)
-    with pytest.raises(AllModelsFailed, match="spending cap"):
+    with pytest.raises(BudgetExceeded, match="monthly|month"):
         for _ in range(9):
             services.llm.chat("coach", U)
     assert services.usage.summary(*month_now(services))["estimated_calls"] >= 1
@@ -583,7 +584,7 @@ def test_concurrent_calls_cannot_both_fit_under_the_monthly_cap(env):
     def go():
         try:
             results.append(services.llm.chat("coach", U, max_tokens=4000).text)
-        except AllModelsFailed as exc:
+        except BudgetExceeded as exc:
             results.append("capped" if "spending cap" in str(exc) else str(exc))
 
     threads = [threading.Thread(target=go) for _ in range(2)]
@@ -824,3 +825,23 @@ def test_a_clamped_timeout_is_the_runs_limit_not_a_sick_server(env):
     with pytest.raises(BudgetExceeded, match="time"):
         services.llm.chat("coach", U, run=run)
     assert services.breakers.failures == {}
+
+
+def test_monthly_cap_error_names_the_monthly_cap(env):
+    services, _ = env
+    setup_cloud(services)
+    services.settings.set("llm.monthly_cap_gbp", 0.0, expected_version=0)
+    with pytest.raises(BudgetExceeded, match="month"):
+        services.llm.chat("coach", U)
+
+
+def test_notice_required_carries_the_connection_id(env):
+    services, _ = env
+    c = services.connections.create("openai", api_key="sk-x", base_url="http://127.0.0.1:9100/v1")
+    services.connections.test(c.id)
+    services.settings.set(
+        "llm.simple_model", {"connection_id": c.id, "model_id": "m-small"}, expected_version=0
+    )
+    with pytest.raises(NoticeRequired) as exc:
+        services.llm.chat("coach", U)
+    assert exc.value.connection_id == c.id

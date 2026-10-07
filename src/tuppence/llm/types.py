@@ -106,7 +106,9 @@ class LLMBadResponse(LLMError):
 
 
 class NoticeRequired(LLMError):
-    pass
+    def __init__(self, message: str, *, connection_id: str | None = None) -> None:
+        super().__init__(message)
+        self.connection_id = connection_id
 
 
 class BudgetExceeded(LLMError):

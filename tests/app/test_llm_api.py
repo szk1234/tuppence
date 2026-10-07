@@ -54,7 +54,9 @@ def test_connection_lifecycle_and_try(client, scripted):
 
     choose_simple(client, conn["id"])
     blocked = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
-    assert blocked.status_code == 502 and "Confirm what" in blocked.json()["detail"]
+    body = blocked.json()
+    assert blocked.status_code == 409 and "Confirm what" in body["detail"]
+    assert body["code"] == "notice_required" and body["connection_id"] == conn["id"]
 
     client.post(f"/api/llm/connections/{conn['id']}/acknowledge-notice")
     scripted.replies = [{"content": "Hello!"}]
@@ -173,24 +175,11 @@ def test_local_only_blocks_try_with_409(client, scripted):
     assert r.status_code == 409 and "Local only" in r.json()["detail"]
 
 
-def test_budget_exceeded_is_429(client, scripted, monkeypatch):
-    from tuppence.llm.types import BudgetExceeded
-
-    ready(client, scripted)
-
-    def boom(*_a, **_k):
-        raise BudgetExceeded("This run reached its cap of £0.50.")
-
-    monkeypatch.setattr(client.app.state.services.llm, "chat", boom)
-    r = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
-    assert r.status_code == 429 and "cap" in r.json()["detail"]
-
-
-def test_monthly_cap_stops_try_with_the_cap_named(client, scripted):
+def test_monthly_cap_is_429_and_names_the_cap(client, scripted):
     ready(client, scripted)
     client.patch("/api/settings/llm.monthly_cap_gbp", json={"value": 0, "expected_version": 0})
     r = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
-    assert r.status_code in (429, 502) and "spending cap" in r.json()["detail"]
+    assert r.status_code == 429 and "month" in r.json()["detail"].lower()
 
 
 def test_every_model_failing_is_502(client, scripted):
@@ -223,3 +212,216 @@ def test_usage_month_validation(client):
 
 def test_detect_lists_servers(client, scripted):
     assert client.get("/api/llm/detect").json() == {"servers": []} or True
+
+
+# --- credentials never follow a host change -------------------------------------------
+
+
+def auth_headers(req):
+    return {k: v for k, v in req.headers.items() if k.lower() in {"authorization", "x-org"}}
+
+
+def test_retargeting_a_connection_drops_its_saved_credentials(client, scripted):
+    conn = make_conn(client, headers={"X-Org": "hdrsecret-777"})
+    seen = []
+
+    def handler(req):
+        seen.append((str(req.url), auth_headers(req)))
+        return httpx.Response(200, json={"data": [{"id": "m-small"}]})
+
+    scripted.handler = handler
+    r = client.patch(
+        f"/api/llm/connections/{conn['id']}",
+        json={
+            "changes": {"base_url": "http://evil.example.com"},
+            "expected_version": conn["version"],
+        },
+    )
+    assert r.status_code == 200
+    moved = r.json()
+    assert moved["has_key"] is False
+    assert moved["headers"] == [{"name": "X-Org", "has_value": False}]
+    client.post(f"/api/llm/connections/{conn['id']}/test")
+    assert seen and all(h == {} for _, h in seen)
+    assert "sk-secret" not in str(seen) and "hdrsecret" not in str(seen)
+
+
+def test_retargeting_with_a_new_key_keeps_the_new_key(client, scripted):
+    conn = make_conn(client)
+    seen = []
+
+    def handler(req):
+        seen.append(auth_headers(req))
+        return httpx.Response(200, json={"data": [{"id": "m-small"}]})
+
+    scripted.handler = handler
+    r = client.patch(
+        f"/api/llm/connections/{conn['id']}",
+        json={
+            "changes": {"base_url": "http://other.example.com", "api_key": "sk-new"},
+            "expected_version": conn["version"],
+        },
+    )
+    assert r.status_code == 200 and r.json()["has_key"] is True
+    client.post(f"/api/llm/connections/{conn['id']}/test")
+    assert seen and seen[0].get("authorization") == "Bearer sk-new"
+
+
+def test_changing_only_the_path_keeps_the_key(client):
+    conn = make_conn(client)
+    r = client.patch(
+        f"/api/llm/connections/{conn['id']}",
+        json={"changes": {"base_url": URL + "/other"}, "expected_version": conn["version"]},
+    )
+    assert r.status_code == 200 and r.json()["has_key"] is True
+
+
+def test_create_cannot_reference_another_connections_secrets(client):
+    a = make_conn(client)
+    r = client.post(
+        "/api/llm/connections",
+        json={"preset": "openai", "base_url": URL, "secret_ref": "x", "headers_ref": "y"},
+    )
+    assert r.status_code == 422 and a["has_key"]  # key required, extra fields are ignored
+
+
+# --- admin only in server mode ---------------------------------------------------------
+
+
+@pytest.fixture
+def member(make_app, client):
+    services = client.app.state.services
+    services.users.create("member", "another-long-password", is_admin=False)
+    from fastapi.testclient import TestClient
+
+    c = TestClient(client.app)
+    r = c.post("/api/auth/login", json={"username": "member", "password": "another-long-password"})
+    assert r.status_code == 200, r.text
+    c.headers["X-CSRF-Token"] = r.json()["csrf_token"]
+    return c
+
+
+def test_non_admin_cannot_change_ai_in_server_mode(client, member, scripted):
+    conn = make_conn(client)
+    msg = "Only the household admin can change AI connections."
+    calls = [
+        member.post("/api/llm/connections", json={"preset": "custom", "base_url": URL}),
+        member.patch(
+            f"/api/llm/connections/{conn['id']}",
+            json={"changes": {"name": "x"}, "expected_version": 1},
+        ),
+        member.delete(f"/api/llm/connections/{conn['id']}"),
+        member.post(f"/api/llm/connections/{conn['id']}/test"),
+        member.post(f"/api/llm/connections/{conn['id']}/acknowledge-notice"),
+        member.get("/api/llm/detect"),
+        member.put(
+            "/api/llm/routing/tasks/coach",
+            json={"chain": [], "local_only": False, "expected_version": 0},
+        ),
+        member.post("/api/llm/try", json={"task": "coach", "prompt": "hi"}),
+        member.post("/api/llm/secrets/forget"),
+    ]
+    for r in calls:
+        assert r.status_code == 403 and r.json()["detail"] == msg, r.request.url
+    assert member.get("/api/llm/connections").status_code == 200
+
+
+def test_desktop_user_is_the_admin(make_app):
+    from fastapi.testclient import TestClient
+
+    c = TestClient(make_app("desktop", launch_token="T" * 43), follow_redirects=False)
+    assert c.get("/auth/launch", params={"token": "T" * 43}).status_code == 303
+    c.headers["X-CSRF-Token"] = c.get("/api/auth/session").json()["csrf_token"]
+    assert c.post("/api/llm/secrets/forget").status_code == 204
+
+
+# --- test endpoint never reflects bodies ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (401, "unauthorised"),
+        (403, "unauthorised"),
+        (404, "not_found"),
+        (429, "rate_limited"),
+        (503, "server_error"),
+    ],
+)
+def test_test_endpoint_classifies_without_reflecting_bodies(client, scripted, status, reason):
+    conn = make_conn(client)
+    scripted.handler = lambda req: httpx.Response(status, text="INTERNAL-BODY-SECRET")
+    r = client.post(f"/api/llm/connections/{conn['id']}/test")
+    out = r.json()
+    assert r.status_code == 200 and out["ok"] is False
+    assert out["reason"] == reason and out["status"] == status
+    assert "INTERNAL-BODY-SECRET" not in r.text
+
+
+def test_test_endpoint_unreachable_and_not_json(client, scripted):
+    conn = make_conn(client)
+
+    def refuse(req):
+        raise httpx.ConnectError("boom-detail-xyz")
+
+    scripted.handler = refuse
+    out = client.post(f"/api/llm/connections/{conn['id']}/test").json()
+    assert out["reason"] == "unreachable" and "boom-detail" not in str(out)
+    scripted.handler = lambda req: httpx.Response(200, text="<html>nope</html>")
+    out = client.post(f"/api/llm/connections/{conn['id']}/test").json()
+    assert out["reason"] == "not_an_ai_server" and "nope" not in str(out)
+
+
+# --- metadata addresses are never contacted -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest",
+        "http://[fd00:ec2::254]/latest",
+        "http://100.100.100.200/latest",
+        "http://metadata.google.internal/computeMetadata",
+    ],
+)
+def test_metadata_hosts_are_blocked_and_logged(client, scripted, url):
+    conn = client.post("/api/llm/connections", json={"preset": "custom", "base_url": url}).json()
+    scripted.handler = lambda req: pytest.fail("request left the guard")
+    out = client.post(f"/api/llm/connections/{conn['id']}/test").json()
+    assert out["ok"] is False and "metadata" in out["error"]
+    entries = client.get("/api/privacy/log").json()["entries"]
+    assert entries[0]["outcome"] == "blocked"
+
+
+# --- input validation -----------------------------------------------------------------------
+
+
+def test_bad_inputs_are_422_not_500(client, scripted):
+    conn = make_conn(client)
+    client.post(f"/api/llm/connections/{conn['id']}/test")
+    bad_chain = client.put(
+        "/api/llm/routing/tasks/coach",
+        json={"chain": [{}], "local_only": False, "expected_version": 0},
+    )
+    assert bad_chain.status_code == 422
+    big = client.patch(
+        f"/api/llm/models/{conn['id']}/m-small",
+        json={"context_window": 10**30, "expected_version": 1},
+    )
+    assert big.status_code == 422
+    tiny = client.patch(
+        f"/api/llm/models/{conn['id']}/m-small",
+        json={"context_window": 100, "expected_version": 1},
+    )
+    assert tiny.status_code == 422
+    neg = client.put(
+        "/api/llm/routing/tasks/coach",
+        json={"chain": [], "local_only": False, "expected_version": -1},
+    )
+    assert neg.status_code == 422
+    assert client.post("/api/llm/try", json={"task": "dancing", "prompt": "hi"}).status_code == 422
+    assert client.post("/api/llm/try", json={"task": "coach", "prompt": ""}).status_code == 422
+    huge = client.patch(
+        "/api/settings/llm.monthly_cap_gbp", json={"value": 1e9, "expected_version": 0}
+    )
+    assert huge.status_code == 422

@@ -15,6 +15,7 @@ from tuppence.llm.types import (
     BudgetExceeded,
     LLMError,
     NoModelConfigured,
+    NoticeRequired,
 )
 from tuppence.net.client import LocalOnlyBlocked
 
@@ -51,6 +52,13 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AllModelsBlocked)
     async def _blocked(_r: Request, exc: AllModelsBlocked) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(NoticeRequired)
+    async def _notice(_r: Request, exc: NoticeRequired) -> JSONResponse:
+        return JSONResponse(
+            {"detail": str(exc), "code": "notice_required", "connection_id": exc.connection_id},
+            status_code=409,
+        )
 
     @app.exception_handler(NoModelConfigured)
     async def _no_model(_r: Request, exc: NoModelConfigured) -> JSONResponse:

@@ -49,6 +49,23 @@ def require_session(request: Request) -> Principal:
     return principal
 
 
+def require_admin(request: Request) -> None:
+    """Server mode: only an admin account. Local and desktop: the one user is the admin."""
+    services = get_services(request)
+    if services.runtime.mode != "server":
+        return
+    principal: Principal | None = getattr(request.state, "principal", None)
+    user = (
+        services.users.get(principal.user_id)
+        if principal is not None and principal.user_id is not None
+        else None
+    )
+    if user is None or not user.is_admin:
+        raise HTTPException(
+            status_code=403, detail="Only the household admin can change AI connections."
+        )
+
+
 def check_same_origin(request: Request) -> None:
     origin = request.headers.get("origin")
     if origin is None:
@@ -63,6 +80,7 @@ __all__ = [
     "Principal",
     "check_same_origin",
     "get_services",
+    "require_admin",
     "require_session",
     "set_session_cookie",
 ]

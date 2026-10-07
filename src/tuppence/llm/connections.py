@@ -112,6 +112,11 @@ def _host(url: str) -> str:
     return httpx.URL(url).host.lower()
 
 
+def _origin(url: str) -> tuple[str, str, int | None]:
+    u = httpx.URL(url)
+    return (u.scheme, u.host.lower(), u.port)
+
+
 def _header_meta(raw: str) -> dict[str, Any]:
     """Tolerant parse of the `headers` column: {"names": [...], "ref": str | None}."""
     try:
@@ -276,10 +281,12 @@ class ConnectionRegistry:
             if not isinstance(name, str) or not name.strip():
                 raise InputError("The name can't be empty.")
             data["name"] = name.strip()
+        moved = False  # a different scheme, host or port: saved credentials must not follow
         if "base_url" in changes:
             if not isinstance(changes["base_url"], str):
                 raise InputError("Enter the server's base URL.")
             data["base_url"] = normalise_base_url(changes["base_url"], row["api_style"])
+            moved = _origin(data["base_url"]) != _origin(row["base_url"])
             data["is_local"] = int(_locality(row["preset"], data["base_url"]))
             if not data["is_local"] and (
                 row["is_local"] or _host(data["base_url"]) != _host(row["base_url"])
@@ -303,11 +310,17 @@ class ConnectionRegistry:
         old_refs: list[str | None] = []
         new_refs: list[str | None] = []
         try:
+            if moved and not new_key and row["secret_ref"] is not None:
+                clear_key = True  # the key was for the old server; the user must re-enter it
             if new_key or clear_key:
                 new_ref = self.secrets.put(new_key) if new_key else None
                 new_refs.append(new_ref)
                 old_refs.append(row["secret_ref"])
                 data["secret_ref"] = new_ref
+            if moved and "headers" not in changes and _header_meta(row["headers"])["ref"]:
+                meta = _header_meta(row["headers"])
+                old_refs.append(meta["ref"])
+                data["headers"] = json.dumps({"names": meta["names"], "ref": None})
             if "headers" in changes:
                 header_json = self._store_headers(_clean_headers(changes["headers"]))
                 new_refs.append(_header_meta(header_json)["ref"])
@@ -544,8 +557,8 @@ class ConnectionRegistry:
     ) -> ModelInfo:
         """Override a model's context window (source `user`). Without `expected_version` the
         write applies to the current row; with it, a stale write raises `VersionConflict`."""
-        if value < 512:
-            raise InputError("The context window must be at least 512 tokens.")
+        if not 256 <= value <= 10_000_000:
+            raise InputError("The context window must be between 256 and 10,000,000 tokens.")
         version = (
             expected_version
             if expected_version is not None

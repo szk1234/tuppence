@@ -10,7 +10,8 @@ from typing import Any
 import httpx
 
 from tuppence.core.clock import to_iso, utcnow
-from tuppence.net.hosts import is_local_host
+from tuppence.net import hosts
+from tuppence.net.hosts import is_local_host, is_metadata_host
 from tuppence.net.privacy_log import PrivacyEvent, PrivacyLog, Purpose
 
 GUARDED_PURPOSES = {"llm", "research"}
@@ -45,6 +46,17 @@ def _wire_host(request: httpx.Request) -> str:
     return request.url.raw_host.decode("ascii")
 
 
+class MetadataHostBlocked(LocalOnlyBlocked):
+    """A cloud instance-metadata address: blocked for every purpose."""
+
+    def __init__(self, host: str) -> None:
+        Exception.__init__(
+            self, f"Tuppence never contacts {host}: it is a cloud instance-metadata address."
+        )
+        self.host = host
+        self.pinned = False
+
+
 class GuardedTransport(httpx.BaseTransport):
     def __init__(
         self,
@@ -76,10 +88,20 @@ class GuardedTransport(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         host = _wire_host(request)
+        lookups: dict[str, list[str]] = {}
+
+        def resolve(name: str) -> list[str]:  # one lookup per name per request
+            if name not in lookups:
+                lookups[name] = hosts._system_resolve(name)
+            return lookups[name]
+
+        if is_metadata_host(host, resolve=resolve):
+            self.log.record(self._event(request, outcome="blocked", note="Cloud metadata address"))
+            raise MetadataHostBlocked(host)
         if (
             self.ctx.purpose in GUARDED_PURPOSES
             and (self.ctx.require_local or self.local_only())
-            and not (self.ctx.local and is_local_host(host))
+            and not (self.ctx.local and is_local_host(host, resolve=resolve))
         ):
             pinned = self.ctx.require_local and not self.local_only()
             note = "Task is set to local models only" if pinned else "Local only is on"

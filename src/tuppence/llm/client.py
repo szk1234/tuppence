@@ -187,6 +187,7 @@ class LLMClient:
         attempts: list[str] = []
         blocks: list[LocalOnlyBlocked] = []
         run_skips: list[str] = []
+        notices: list[NoticeRequired] = []
         pinned = self.router.is_pinned_local(task)
         # Read once: the guard enforces this decision even if the setting changes mid-call.
         require_local = pinned or bool(self.settings.get("privacy.local_only"))
@@ -204,8 +205,10 @@ class LLMClient:
                 continue
             if conn.needs_notice:
                 notice = NoticeRequired(
-                    f"Confirm what {conn.name} will see before Tuppence uses it (Settings › AI)."
+                    f"Confirm what {conn.name} will see before Tuppence uses it (Settings › AI).",
+                    connection_id=conn.id,
                 )
+                notices.append(notice)
                 attempts.append(f"{label}: {notice}")
                 continue
             outcome = self._try_model(
@@ -232,6 +235,8 @@ class LLMClient:
             raise AllModelsBlocked(str(first), host=first.host, pinned=first.pinned)
         if run_skips and len(run_skips) == len(attempts):
             raise BudgetExceeded(run_skips[0])
+        if notices and len(notices) == len(attempts):
+            raise notices[0]
         raise AllModelsFailed(attempts)
 
     def _log_block(self, conn: Connection, task: str, pinned: bool) -> LocalOnlyBlocked:
@@ -298,9 +303,9 @@ class LLMClient:
         with self._spend_lock:
             spent = self.usage.month_spend_gbp(now.year, now.month) + self._reserved
             if projected > 0 and spent + projected > cap:
-                return str(
-                    BudgetExceeded(f"This month's AI spending cap (£{cap:.2f}) would be exceeded.")
-                )
+                reason = f"This month's AI spending cap (£{cap:.2f}) would be exceeded."
+                run_skips.append(reason)
+                return reason
             self._reserved += projected
         try:
             if run is not None:
