@@ -13,6 +13,7 @@ from typing import Any
 
 from tuppence.core.clock import from_iso, to_iso, utcnow
 from tuppence.core.db import Database
+from tuppence.core.errors import safe_error_text
 
 log = logging.getLogger("tuppence.jobs")
 Handler = Callable[["Job"], "dict[str, Any] | None"]
@@ -302,7 +303,7 @@ class Worker:
             self._book(job, self.queue.defer, job.id, exc.reason, delay_s=exc.delay_s)
         except Exception as exc:  # noqa: BLE001 - a job failure must never kill the worker
             log.exception("job %s (%s) failed", job.id, job.kind)
-            self._book(job, self.queue.fail, job.id, f"{type(exc).__name__}: {exc}")
+            self._book(job, self.queue.fail, job.id, safe_error_text(exc))
         else:
             self._book(job, self.queue.complete, job.id, result)
         return True

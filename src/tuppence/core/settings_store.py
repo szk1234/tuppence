@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
+from tuppence.core.errors import UserFacing
 from tuppence.core.records import VersionConflict
 
 
@@ -106,7 +107,7 @@ define(
 )
 
 
-class SettingInvalid(Exception):
+class SettingInvalid(UserFacing, Exception):
     def __init__(self, key: str, message: str) -> None:
         super().__init__(f"{key}: {message}")
         self.key = key

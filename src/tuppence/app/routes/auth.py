@@ -26,6 +26,7 @@ from tuppence.core.auth import (
     WeakPassword,
     hash_slot,
 )
+from tuppence.core.errors import safe_error_text
 
 Svc = Annotated[Services, Depends(get_services)]
 
@@ -133,7 +134,7 @@ def setup(body: Credentials, services: Svc) -> JSONResponse:
     except SetupComplete:
         raise HTTPException(status_code=409, detail="Setup is already complete.") from None
     except WeakPassword as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise HTTPException(status_code=422, detail=safe_error_text(exc)) from None
     except AuthBusy:
         return _busy()
     return _start_user_session(services, user.id)

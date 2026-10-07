@@ -298,3 +298,97 @@ def test_secret_cleanup_failure_after_commit_is_not_an_error(reg, monkeypatch):
     assert reg.api_key(c.id) == "new"
     reg.delete(c.id)
     assert reg.list() == []
+
+
+BAD_KEYS = ["sk-abc\x0bdef", "sk abc", "sk-café", "k" * 4001, "sk-a\tb", "sk-a\nb"]
+
+
+@pytest.mark.parametrize(
+    "key", BAD_KEYS, ids=["control", "space", "non-ascii", "too-long", "tab", "newline"]
+)
+def test_bad_api_keys_are_rejected_without_echoing_them(reg, key):
+    with pytest.raises(InputError) as exc:
+        reg.create("openai", api_key=key)
+    assert key not in str(exc.value) and "sk-" not in str(exc.value)
+    c = reg.create("openai", api_key="sk-good-123")
+    with pytest.raises(InputError):
+        reg.update(c.id, {"api_key": key}, expected_version=c.version)
+    assert reg.api_key(c.id) == "sk-good-123"
+
+
+def test_surrounding_spaces_on_a_pasted_key_are_trimmed(reg):
+    c = reg.create("openai", api_key="  sk-good-123 \n")
+    assert reg.api_key(c.id) == "sk-good-123"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-Gw": "abc\x01def"},
+        {"X-Gw": "abc\tdef"},
+        {"X-Gw": "café"},
+        {"X-Gw": "v" * 4001},
+        {"X(Gw)": "v"},
+        {"X" * 101: "v"},
+        {f"X-{i}": "v" for i in range(21)},
+    ],
+    ids=["control", "tab", "non-ascii", "long-value", "bad-name", "long-name", "too-many"],
+)
+def test_bad_header_names_and_values_are_rejected(reg, headers):
+    with pytest.raises(InputError) as exc:
+        reg.create("custom", base_url="http://10.0.0.5/v1", headers=headers)
+    assert "abc" not in str(exc.value) and "caf" not in str(exc.value)
+    c = reg.create("custom", base_url="http://10.0.0.5/v1")
+    with pytest.raises(InputError):
+        reg.update(c.id, {"headers": headers}, expected_version=c.version)
+
+
+def test_header_values_may_hold_a_gateway_credential(reg):
+    c = reg.create("custom", base_url="http://10.0.0.5/v1", headers={"Authorization": "Basic a2V5"})
+    assert [h.name for h in c.headers] == ["Authorization"]
+
+
+def test_connection_names_are_bounded(reg):
+    with pytest.raises(InputError):
+        reg.create("ollama", name="x" * 201)
+    c = reg.create("ollama", name="y" * 200)
+    with pytest.raises(InputError):
+        reg.update(c.id, {"name": "x" * 201}, expected_version=c.version)
+
+
+@pytest.fixture
+def keychain_reg(tmp_path, reg):
+    import keyring
+
+    from fakes.keyrings import RefusingKeyring
+    from tuppence.core.secrets import KeyringStore
+
+    previous = keyring.get_keyring()
+    backend = RefusingKeyring()
+    keyring.set_keyring(backend)
+    reg.secrets = KeyringStore(db=reg.db)
+    yield reg, backend
+    keyring.set_keyring(previous)
+
+
+def test_keychain_refusing_reads_is_a_secret_error_before_sending(keychain_reg, seen):
+    from tuppence.core.secrets import SecretStoreUnavailable
+
+    reg, backend = keychain_reg
+    c = reg.create("openai", api_key="sk-good-123")
+    backend.refuse = {"get"}
+    with pytest.raises(SecretStoreUnavailable, match="keychain"):
+        reg.test(c.id)
+    assert seen == []
+
+
+def test_forget_keys_carries_on_past_entries_the_keychain_refuses(keychain_reg):
+    reg, backend = keychain_reg
+    a = reg.create("openai", api_key="sk-a-123", headers={"X-A": "1"})
+    b = reg.create("openai", api_key="sk-b-123")
+    backend.refuse = {"delete"}
+    assert reg.forget_keys() == 3
+    for c in (reg.get(a.id), reg.get(b.id)):
+        assert not c.has_key and all(not h.has_value for h in c.headers)
+    backend.refuse = set()
+    assert reg.forget_keys() == 0 and backend.data == {}

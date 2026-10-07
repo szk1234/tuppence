@@ -284,3 +284,28 @@ def test_real_http_transport_to_local_server(log):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_transport_error_text_never_carries_a_header_value(log):
+    """A key with a control character makes httpx quote it in its error; nothing keeps that."""
+    import socket
+
+    from tuppence.llm.providers.openai_compat import OpenAICompatProvider
+    from tuppence.llm.types import ChatRequest, LLMConnectionError, Message
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    try:
+        ctx = CallContext(purpose="llm", local=True)
+        with make_client(ctx, privacy_log=log, local_only=lambda: False, timeout=2.0) as client:
+            provider = OpenAICompatProvider(
+                client, f"http://127.0.0.1:{port}/v1", "PROBEKEY0123456789\x0bTAIL"
+            )
+            with pytest.raises(LLMConnectionError) as exc:
+                provider.chat(ChatRequest(model="m", messages=[Message(role="user", content="x")]))
+    finally:
+        server.close()
+    assert "PROBEKEY" not in str(exc.value)
+    assert [e.note for e in log.list()] == ["LocalProtocolError"]

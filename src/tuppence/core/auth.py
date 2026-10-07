@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from tuppence.core.clock import from_iso, to_iso, utcnow
 from tuppence.core.db import Database
+from tuppence.core.errors import UserFacing
 
 _hasher = PasswordHasher()
 # Each argon2 call allocates ~64 MiB; cap concurrency so a burst of logins can't exhaust memory.
@@ -59,7 +60,7 @@ def hash_slot() -> Iterator[None]:
         _hash_slots.release()
 
 
-class WeakPassword(ValueError):
+class WeakPassword(UserFacing, ValueError):
     pass
 
 

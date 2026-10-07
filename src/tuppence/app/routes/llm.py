@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from tuppence.app.deps import get_services, require_admin
 from tuppence.app.services import Services
+from tuppence.core.errors import safe_error_text
 from tuppence.llm.connections import Connection, DetectedServer, ModelInfo, detect_local
 from tuppence.llm.presets import PRESETS
 from tuppence.llm.routing import RoutingView
@@ -146,7 +147,7 @@ def test_connection(connection_id: str, services: Svc) -> dict[str, Any]:
         out = {"ok": True, "reason": "ok", "status": 200}
         out["models"] = services.connections.test(connection_id)
     except LocalOnlyBlocked as exc:
-        out = {"ok": False, "reason": "blocked", "status": None, "error": str(exc)}
+        out = {"ok": False, "reason": "blocked", "status": None, "error": safe_error_text(exc)}
     except LLMError as exc:
         reason, status, message = classify_test_error(exc)
         out = {"ok": False, "reason": reason, "status": status, "error": message}
@@ -192,8 +193,10 @@ def try_model(body: TryIn, services: Svc) -> dict[str, Any]:
     }
 
 
-@router.post("/secrets/forget", status_code=204, dependencies=Admin)
-def forget_keys(services: Svc) -> Response:
-    """Forget every saved AI key and header value; connections stay with has_key false."""
-    services.connections.forget_keys()
-    return Response(status_code=204)
+@router.post("/secrets/forget", dependencies=Admin)
+def forget_keys(services: Svc) -> dict[str, int]:
+    """Forget every saved AI key and header value; connections stay with has_key false.
+
+    `not_removed` counts entries the OS keychain refused to delete (they need removing by
+    hand, or forgetting again once the keychain is unlocked)."""
+    return {"not_removed": services.connections.forget_keys()}

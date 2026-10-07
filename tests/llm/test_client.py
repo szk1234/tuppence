@@ -845,3 +845,32 @@ def test_notice_required_carries_the_connection_id(env):
     with pytest.raises(NoticeRequired) as exc:
         services.llm.chat("coach", U)
     assert exc.value.connection_id == c.id
+
+
+def test_provider_error_text_never_reaches_the_ledger_or_the_reasons(env):
+    services, scripted = env
+    setup_local(services)
+
+    def leak(req):
+        raise httpx.LocalProtocolError("Illegal header value b'Bearer PROBEKEY0123456789'")
+
+    scripted.handler = leak
+    with pytest.raises(AllModelsFailed) as exc:
+        services.llm.chat("coach", U)
+    assert "PROBEKEY" not in str(exc.value) and "LLMConnectionError" in str(exc.value)
+    with services.db.connection() as conn:
+        errors = [r[0] for r in conn.execute("SELECT error FROM llm_usage")]
+    assert errors == ["LLMConnectionError"]
+
+
+def test_http_error_bodies_are_not_stored_or_returned(env):
+    services, scripted = env
+    setup_local(services)
+    scripted.replies = [httpx.Response(400, json={"error": "bad key PROBEKEY0123456789"})]
+    with pytest.raises(AllModelsFailed) as exc:
+        services.llm.chat("coach", U)
+    assert "PROBEKEY" not in str(exc.value) and "LLMHTTPError (HTTP 400)" in str(exc.value)
+    with services.db.connection() as conn:
+        assert [r[0] for r in conn.execute("SELECT error FROM llm_usage")] == [
+            "LLMHTTPError (HTTP 400)"
+        ]

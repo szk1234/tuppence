@@ -65,7 +65,10 @@ def _send(client: httpx.Client, method: str, url: str, **kw: Any) -> dict[str, A
     except httpx.TimeoutException as exc:
         raise LLMTimeout(f"Timed out talking to {httpx.URL(url).host}") from exc
     except httpx.TransportError as exc:
-        raise LLMConnectionError(f"Couldn't reach {httpx.URL(url).host}: {exc}") from exc
+        # The class name only: transport error text can quote request headers (API keys).
+        raise LLMConnectionError(
+            f"Couldn't reach {httpx.URL(url).host} ({type(exc).__name__})"
+        ) from exc
     if response.status_code >= 400:
         raise LLMHTTPError(
             response.status_code,

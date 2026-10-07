@@ -3,9 +3,11 @@ import stat
 import sys
 
 import keyring
+import keyring.errors
 import pytest
 from keyring.backend import KeyringBackend
 
+from fakes.keyrings import RefusingKeyring
 from tuppence.core import secrets as sec
 from tuppence.core.db import Database
 from tuppence.core.migrate import migrate
@@ -326,3 +328,78 @@ def test_deleting_last_keychain_secret_clears_kind(db, tmp_path, monkeypatch):
     assert sec._recorded_kind(db) == "keychain"  # noqa: SLF001
     store.delete(r2)
     assert sec._recorded_kind(db) is None  # noqa: SLF001
+
+
+@pytest.fixture
+def install_keyring():
+    previous = keyring.get_keyring()
+
+    def _install(backend):
+        keyring.set_keyring(backend)
+        return backend
+
+    yield _install
+    keyring.set_keyring(previous)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: keyring.errors.KeyringLocked("locked: backend detail"),
+        lambda: keyring.errors.KeyringError("denied: backend detail"),
+        lambda: RuntimeError("dbus went away: backend detail"),
+    ],
+)
+def test_keychain_failures_at_use_time_are_secret_errors(db, install_keyring, error):
+    install_keyring(RefusingKeyring(refuse=("get", "set", "delete"), error=error))
+    store = sec.KeyringStore(db=db)
+    for call in (lambda: store.put("sk-x"), lambda: store.get("sec_1"), lambda: store.delete("x")):
+        with pytest.raises(sec.SecretStoreUnavailable) as exc:
+            call()
+        assert isinstance(exc.value, sec.SecretError)
+        assert "keychain" in str(exc.value) and "backend detail" not in str(exc.value)
+
+
+def test_missing_keychain_entry_on_delete_is_not_an_error(db, install_keyring):
+    install_keyring(RefusingKeyring())
+    store = sec.KeyringStore(db=db)
+    store.delete("never-saved")  # PasswordDeleteError from a real backend: already gone
+
+
+def test_forget_all_continues_past_entries_it_cannot_remove(db, install_keyring):
+    backend = install_keyring(RefusingKeyring())
+    store = sec.KeyringStore(db=db)
+    refs = [store.put(v) for v in ("a", "b", "c")]
+    real_delete = backend.delete_password
+
+    def delete_some(service, username):
+        if username == refs[1]:
+            raise keyring.errors.KeyringError("denied")
+        real_delete(service, username)
+
+    backend.delete_password = delete_some
+    assert store.forget_all() == 1
+    assert list(backend.data) == [("Tuppence", refs[1])]
+    # The entry that stayed is still tracked, so forgetting again can remove it later.
+    assert sec._keychain_refs(db) == [refs[1]]  # noqa: SLF001
+    assert sec._recorded_kind(db) == "keychain"  # noqa: SLF001
+    backend.delete_password = real_delete
+    assert store.forget_all() == 0
+    assert backend.data == {} and sec._recorded_kind(db) is None  # noqa: SLF001
+
+
+def test_unavailable_keychain_reports_entries_left_behind(db, tmp_path, monkeypatch):
+    monkeypatch.delenv("TUPPENCE_SECRET_KEY_FILE", raising=False)
+    monkeypatch.setattr(sec, "keyring_usable", lambda: True)
+    monkeypatch.setattr(keyring, "set_password", lambda *a: None)
+    first = sec.choose_secret_store("desktop", db, tmp_path)
+    first.put("a")
+    first.put("b")
+    monkeypatch.setattr(sec, "keyring_usable", lambda: False)
+    assert sec.choose_secret_store("desktop", db, tmp_path).forget_all() == 2
+
+
+def test_encrypted_forget_all_leaves_nothing(db, tmp_path):
+    store = sec.EncryptedDbStore(db, sec.load_or_create_key(tmp_path, env={}))
+    store.put("a")
+    assert store.forget_all() == 0

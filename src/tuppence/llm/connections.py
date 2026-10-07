@@ -14,7 +14,6 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
-from keyring.errors import KeyringError
 from pydantic import BaseModel
 
 from tuppence.core.clock import to_iso, utcnow
@@ -39,6 +38,13 @@ class ApiKeyMissing(SecretError):
 
 DEFAULT_CONTEXT_LOCAL = 4096
 DEFAULT_CONTEXT_CLOUD = 32768
+MAX_NAME = 200
+MAX_KEY = 4000
+MAX_HEADERS = 20
+MAX_HEADER_NAME = 100
+MAX_HEADER_VALUE = 4000
+# RFC 9110 token characters: what a header name may be made of.
+_TOKEN = frozenset("!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 
 class HeaderInfo(BaseModel):
@@ -88,7 +94,41 @@ def _locality(preset_id: str, base_url: str) -> bool:
     return is_local_host(httpx.URL(base_url).host)
 
 
+def _printable(text: str, *, spaces: bool) -> bool:
+    low = 0x20 if spaces else 0x21
+    return all(low <= ord(c) <= 0x7E for c in text)
+
+
+def _clean_key(raw: Any) -> str | None:
+    """A pasted API key, trimmed; None when blank. Never echoes the key in an error."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise InputError("The API key must be text.")
+    key = raw.strip()
+    if not key:
+        return None
+    if len(key) > MAX_KEY:
+        raise InputError(f"That API key is too long (the limit is {MAX_KEY:,} characters).")
+    if not _printable(key, spaces=False):
+        raise InputError(
+            "An API key can only contain plain letters, digits and symbols, with no spaces "
+            "or line breaks. Check you copied the whole key and nothing else."
+        )
+    return key
+
+
+def _clean_name(raw: Any) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise InputError("The name can't be empty.")
+    name = raw.strip()
+    if len(name) > MAX_NAME:
+        raise InputError(f"Keep the name to {MAX_NAME} characters or fewer.")
+    return name
+
+
 def _clean_headers(headers: Any) -> dict[str, str]:
+    """Header names and values as sent on the wire. Errors never echo what was typed."""
     if headers is None:
         return {}
     if not isinstance(headers, dict):
@@ -100,11 +140,20 @@ def _clean_headers(headers: Any) -> dict[str, str]:
         name = name.strip()
         if not name:
             continue
-        if not name.isascii() or any(c in name for c in ": \t\r\n"):
-            raise InputError("A header name can't contain spaces or ':'.")
-        if not value.isascii() or "\r" in value or "\n" in value:
-            raise InputError("Header values must be plain text (ASCII).")
+        if len(name) > MAX_HEADER_NAME or not set(name) <= _TOKEN:
+            raise InputError(
+                f"A header name can only use letters, digits and - (up to {MAX_HEADER_NAME} "
+                "characters), with no spaces or ':'."
+            )
+        if len(value) > MAX_HEADER_VALUE:
+            raise InputError(f"Header values can be up to {MAX_HEADER_VALUE:,} characters.")
+        if not _printable(value, spaces=True):
+            raise InputError(
+                "Header values must be plain text (ASCII letters, digits, symbols and spaces)."
+            )
         out[name] = value
+    if len(out) > MAX_HEADERS:
+        raise InputError(f"A connection can have up to {MAX_HEADERS} custom headers.")
     return out
 
 
@@ -209,7 +258,7 @@ class ConnectionRegistry:
                 continue
             try:
                 self.secrets.delete(ref)
-            except (SecretError, KeyringError) as exc:
+            except SecretError as exc:
                 log.warning("couldn't remove an unused saved secret (%s)", type(exc).__name__)
 
     def create(
@@ -228,9 +277,10 @@ class ConnectionRegistry:
         if not raw_url:
             raise InputError("Enter the server's base URL.")
         url = normalise_base_url(raw_url, p.api_style)
-        key = (api_key or "").strip() or None
+        key = _clean_key(api_key)
         if p.key_required and not key:
             raise InputError(f"An API key is needed for {p.label}.")
+        label = _clean_name(name) if name is not None and name.strip() else p.label
         clean = _clean_headers(headers)
         connection_id = "c_" + pysecrets.token_hex(4)
         secret_ref = self.secrets.put(key) if key else None
@@ -249,7 +299,7 @@ class ConnectionRegistry:
                     [
                         connection_id,
                         preset,
-                        (name or p.label).strip() or p.label,
+                        label,
                         p.api_style,
                         url,
                         secret_ref,
@@ -277,10 +327,7 @@ class ConnectionRegistry:
             raise InputError(f"Can't change: {', '.join(sorted(unknown))}")
         data: dict[str, Any] = {}
         if "name" in changes:
-            name = changes["name"]
-            if not isinstance(name, str) or not name.strip():
-                raise InputError("The name can't be empty.")
-            data["name"] = name.strip()
+            data["name"] = _clean_name(changes["name"])
         moved = False  # a different scheme, host or port: saved credentials must not follow
         if "base_url" in changes:
             if not isinstance(changes["base_url"], str):
@@ -296,10 +343,7 @@ class ConnectionRegistry:
             if not isinstance(changes["enabled"], bool):
                 raise InputError("Enabled must be true or false.")
             data["enabled"] = int(changes["enabled"])
-        raw_key = changes.get("api_key")
-        if raw_key is not None and not isinstance(raw_key, str):
-            raise InputError("The API key must be text.")
-        new_key = (raw_key or "").strip()  # blank means "leave the saved key alone"
+        new_key = _clean_key(changes.get("api_key")) or ""  # blank: leave the saved key alone
         if "clear_api_key" in changes and not isinstance(changes["clear_api_key"], bool):
             raise InputError("clear_api_key must be true or false.")
         clear_key = changes.get("clear_api_key") is True
@@ -350,17 +394,23 @@ class ConnectionRegistry:
             conn.execute("DELETE FROM llm_connection WHERE id = ?", [connection_id])
         self._drop(row["secret_ref"], _header_meta(row["headers"])["ref"])
 
-    def forget_keys(self) -> None:
-        """Forget every saved key and header value; connections stay, with `has_key` false."""
-        self.secrets.forget_all()
-        with self.db.transaction() as conn:
-            conn.execute("UPDATE llm_connection SET secret_ref = NULL")
-            for r in conn.execute("SELECT id, headers FROM llm_connection").fetchall():
-                names = _header_meta(r["headers"])["names"]
-                conn.execute(
-                    "UPDATE llm_connection SET headers = ? WHERE id = ?",
-                    [json.dumps({"names": names, "ref": None}), r["id"]],
-                )
+    def forget_keys(self) -> int:
+        """Forget every saved key and header value; connections stay, with `has_key` false.
+
+        Carries on past entries the secret store refuses to remove and returns how many
+        are left there (in the OS keychain), so the user can be told.
+        """
+        try:
+            return self.secrets.forget_all()
+        finally:
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE llm_connection SET secret_ref = NULL")
+                for r in conn.execute("SELECT id, headers FROM llm_connection").fetchall():
+                    names = _header_meta(r["headers"])["names"]
+                    conn.execute(
+                        "UPDATE llm_connection SET headers = ? WHERE id = ?",
+                        [json.dumps({"names": names, "ref": None}), r["id"]],
+                    )
 
     def api_key(self, connection_id: str) -> str | None:
         ref = self._row(connection_id)["secret_ref"]

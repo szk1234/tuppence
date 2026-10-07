@@ -7,6 +7,8 @@ from typing import Any, Literal, Protocol
 import httpx
 from pydantic import BaseModel, Field
 
+from tuppence.core.errors import UserFacing
+
 Role = Literal["system", "user", "assistant", "tool"]
 
 
@@ -105,31 +107,35 @@ class LLMBadResponse(LLMError):
     pass
 
 
-class NoticeRequired(LLMError):
+class ReplyFormatError(UserFacing, LLMBadResponse):
+    """A model's reply still didn't match the schema after one repair (our own wording)."""
+
+
+class NoticeRequired(UserFacing, LLMError):
     def __init__(self, message: str, *, connection_id: str | None = None) -> None:
         super().__init__(message)
         self.connection_id = connection_id
 
 
-class BudgetExceeded(LLMError):
+class BudgetExceeded(UserFacing, LLMError):
     pass
 
 
-class ContextTooLarge(LLMError):
+class ContextTooLarge(UserFacing, LLMError):
     pass
 
 
-class NoModelConfigured(LLMError):
+class NoModelConfigured(UserFacing, LLMError):
     pass
 
 
-class AllModelsFailed(LLMError):
+class AllModelsFailed(UserFacing, LLMError):
     def __init__(self, attempts: list[str]) -> None:
         super().__init__("No AI model could answer: " + "; ".join(attempts))
         self.attempts = attempts
 
 
-class AllModelsBlocked(LLMError):
+class AllModelsBlocked(UserFacing, LLMError):
     """Every model for the task was stopped by Local only or a local-only pin."""
 
     def __init__(self, message: str, *, host: str | None = None, pinned: bool = False) -> None:

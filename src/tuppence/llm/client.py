@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 
 from tuppence.config.models import Budgets
 from tuppence.core.clock import to_iso
+from tuppence.core.errors import safe_error_text
 from tuppence.core.household import HouseholdService
 from tuppence.core.settings_store import SettingsStore
 from tuppence.llm.budget import BreakerBoard, RunBudget, UsageLedger, estimate_tokens, priced_cost
@@ -28,12 +29,12 @@ from tuppence.llm.types import (
     ChatRequest,
     ChatResponse,
     ContextTooLarge,
-    LLMBadResponse,
     LLMError,
     LLMHTTPError,
     LLMTimeout,
     Message,
     NoticeRequired,
+    ReplyFormatError,
     ToolSpec,
     Usage,
 )
@@ -333,7 +334,7 @@ class LLMClient:
                     conn, task, req, pseudo.count if pseudo else 0, require_local, run
                 )
             except LocalOnlyBlocked as exc:
-                return str(exc)
+                return safe_error_text(exc)
             except BudgetExceeded:
                 raise
             except LLMError as exc:
@@ -345,6 +346,8 @@ class LLMClient:
                     self.breakers.success(conn.id)
                 if isinstance(exc, LLMHTTPError) and exc.status == 429:
                     cooldown[conn.id] = self._retry_after(exc) or BACKOFF[-1]
+                # Class name and status only: provider text can echo request headers.
+                reason = safe_error_text(exc)
                 self.usage.record(
                     task,
                     conn.id,
@@ -352,10 +355,10 @@ class LLMClient:
                     Usage(),
                     None,
                     ok=False,
-                    error=str(exc),
+                    error=reason,
                     run_id=run_id,
                 )
-                return str(exc)
+                return reason
             self.breakers.success(conn.id)
             usage, estimated = resp.usage, False
             if usage.input_tokens == 0 or usage.output_tokens == 0:
@@ -468,6 +471,6 @@ class LLMClient:
         try:
             return schema.model_validate(extract_json(second.text))
         except (ValueError, ValidationError) as exc:
-            raise LLMBadResponse(
+            raise ReplyFormatError(
                 f"The model's reply didn't match the expected format: {_problem(exc)[:200]}"
             ) from exc

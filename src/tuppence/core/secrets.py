@@ -17,6 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
+from tuppence.core.errors import UserFacing
 
 SERVICE = "Tuppence"
 META_KEY = "store"
@@ -24,7 +25,7 @@ REF_PREFIX = "ref:"
 log = logging.getLogger("tuppence")
 
 
-class SecretError(Exception):
+class SecretError(UserFacing, Exception):
     """Base class for secret-storage problems that should be shown to the user."""
 
 
@@ -47,11 +48,28 @@ class SecretStore(Protocol):
     def put(self, value: str, ref: str | None = None) -> str: ...
     def get(self, ref: str) -> str | None: ...
     def delete(self, ref: str) -> None: ...
-    def forget_all(self) -> None: ...
+    def forget_all(self) -> int:
+        """Forget every saved secret. Returns how many couldn't be removed from the store."""
+        ...
 
 
 def _new_ref() -> str:
     return "sec_" + pysecrets.token_hex(8)
+
+
+KEYCHAIN_FAILED = (
+    "Tuppence couldn't use this computer's keychain just now: it may be locked, or access "
+    "was refused. Unlock it (or open Tuppence from your desktop session) and try again."
+)
+
+
+def _keychain[T](call: Callable[[], T]) -> T:
+    """Run one keychain call; any backend failure becomes a plain SecretStoreUnavailable."""
+    try:
+        return call()
+    except Exception as exc:  # noqa: BLE001 - locked, denied or backend down: all the same here
+        log.warning("keychain call failed (%s)", type(exc).__name__)
+        raise SecretStoreUnavailable(KEYCHAIN_FAILED) from None
 
 
 class KeyringStore:
@@ -65,7 +83,7 @@ class KeyringStore:
         import keyring
 
         ref = ref or _new_ref()
-        keyring.set_password(self.service, ref, value)
+        _keychain(lambda: keyring.set_password(self.service, ref, value))
         if self.db is not None:
             with self.db.transaction() as conn:
                 _record_kind(conn, self.kind)
@@ -78,14 +96,17 @@ class KeyringStore:
     def get(self, ref: str) -> str | None:
         import keyring
 
-        return keyring.get_password(self.service, ref)
+        return _keychain(lambda: keyring.get_password(self.service, ref))
 
     def delete(self, ref: str) -> None:
         import keyring
         from keyring.errors import PasswordDeleteError
 
-        with contextlib.suppress(PasswordDeleteError):
-            keyring.delete_password(self.service, ref)
+        def remove() -> None:
+            with contextlib.suppress(PasswordDeleteError):  # already gone
+                keyring.delete_password(self.service, ref)
+
+        _keychain(remove)
         if self.db is not None:
             with self.db.transaction() as conn:
                 conn.execute("DELETE FROM secret_meta WHERE key = ?", [REF_PREFIX + ref])
@@ -95,10 +116,18 @@ class KeyringStore:
                 if left is None:
                     conn.execute("DELETE FROM secret_meta WHERE key = ?", [META_KEY])
 
-    def forget_all(self) -> None:
+    def forget_all(self) -> int:
+        """Remove every tracked entry, carrying on past any the keychain refuses. Those stay
+        tracked, so forgetting again later can still remove them."""
+        left = 0
         for ref in _keychain_refs(self.db):
-            self.delete(ref)
-        _clear_meta(self.db)
+            try:
+                self.delete(ref)
+            except SecretStoreUnavailable:
+                left += 1
+        if not left:
+            _clear_meta(self.db)
+        return left
 
 
 class UnavailableStore:
@@ -123,9 +152,12 @@ class UnavailableStore:
     def delete(self, ref: str) -> None:
         raise SecretStoreUnavailable(self.MESSAGE)
 
-    def forget_all(self) -> None:
-        """Escape hatch: drop what Tuppence remembers, even though the keychain can't be reached."""
+    def forget_all(self) -> int:
+        """Escape hatch: drop what Tuppence remembers, even though the keychain can't be reached.
+        Returns how many entries are left in the keychain for the user to remove."""
+        left = len(_keychain_refs(self.db))
         _clear_meta(self.db)
+        return left
 
 
 class EncryptedDbStore:
@@ -173,11 +205,12 @@ class EncryptedDbStore:
         with self.db.transaction() as conn:
             conn.execute("DELETE FROM secret WHERE ref = ?", [ref])
 
-    def forget_all(self) -> None:
+    def forget_all(self) -> int:
         with self.db.transaction() as conn:
             conn.execute("DELETE FROM secret")
         _clear_meta(self.db)
         self._fernet = None
+        return 0
 
 
 def _record_kind(conn: sqlite3.Connection, kind: str) -> None:
@@ -362,9 +395,10 @@ class AutoStore:
     def delete(self, ref: str) -> None:
         self._resolve().delete(ref)
 
-    def forget_all(self) -> None:
-        self._resolve().forget_all()
+    def forget_all(self) -> int:
+        left = self._resolve().forget_all()
         self._inner = None
+        return left
 
 
 def choose_secret_store(mode: str, db: Database, data_dir: Path) -> SecretStore:

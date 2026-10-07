@@ -191,7 +191,8 @@ def test_every_model_failing_is_502(client, scripted):
 
 def test_forget_keys_then_use_is_409(client, scripted):
     conn = ready(client, scripted)
-    assert client.post("/api/llm/secrets/forget").status_code == 204
+    forgot = client.post("/api/llm/secrets/forget")
+    assert forgot.status_code == 200 and forgot.json() == {"not_removed": 0}
     conns = client.get("/api/llm/connections").json()["connections"]
     assert [c["has_key"] for c in conns] == [False]
     r = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
@@ -354,7 +355,7 @@ def test_desktop_user_is_the_admin(make_app):
     c = TestClient(make_app("desktop", launch_token="T" * 43), follow_redirects=False)
     assert c.get("/auth/launch", params={"token": "T" * 43}).status_code == 303
     c.headers["X-CSRF-Token"] = c.get("/api/auth/session").json()["csrf_token"]
-    assert c.post("/api/llm/secrets/forget").status_code == 204
+    assert c.post("/api/llm/secrets/forget").status_code == 200
 
 
 # --- test endpoint never reflects bodies ------------------------------------------------
@@ -482,3 +483,63 @@ def test_non_admin_can_still_change_other_settings(client, member):
     keys = [e["key"] for e in client.get("/api/settings").json()["settings"]]
     other = [k for k in keys if not k.startswith(("llm.", "privacy."))]
     assert other  # the permission is about shared AI and privacy keys only
+
+
+@pytest.fixture
+def keychain(client):
+    """Swap the app's secret store for an OS keychain that tests can lock and unlock."""
+    import keyring
+
+    from fakes.keyrings import RefusingKeyring
+    from tuppence.core.secrets import KeyringStore
+
+    previous = keyring.get_keyring()
+    backend = RefusingKeyring()
+    keyring.set_keyring(backend)
+    services = client.app.state.services
+    services.connections.secrets = KeyringStore(db=services.db)
+    yield backend
+    keyring.set_keyring(previous)
+
+
+def test_a_keychain_that_refuses_at_use_time_is_a_409_never_a_500(client, scripted, keychain):
+    keychain.refuse = {"set"}
+    r = client.post(
+        "/api/llm/connections", json={"preset": "openai", "api_key": "sk-1234567", "base_url": URL}
+    )
+    assert r.status_code == 409 and "keychain" in r.json()["detail"]
+    assert "backend detail" not in r.text
+    keychain.refuse = set()
+    conn = ready(client, scripted)
+    keychain.refuse = {"get"}
+    t = client.post(f"/api/llm/connections/{conn['id']}/test")
+    assert t.status_code == 409 and "keychain" in t.json()["detail"]
+    r = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
+    assert r.status_code == 409 and "keychain" in r.json()["detail"]
+    keychain.refuse = {"delete"}
+    f = client.post("/api/llm/secrets/forget")
+    assert f.status_code == 200 and f.json() == {"not_removed": 1}
+    conns = client.get("/api/llm/connections").json()["connections"]
+    assert [c["has_key"] for c in conns] == [False]
+
+
+def test_keys_and_header_values_must_be_printable_ascii(client):
+    bad_key = client.post(
+        "/api/llm/connections",
+        json={"preset": "openai", "api_key": "sk-abc\u000bdef", "base_url": URL},
+    )
+    assert bad_key.status_code == 422 and "sk-abc" not in bad_key.text
+    bad_header = client.post(
+        "/api/llm/connections",
+        json={"preset": "custom", "base_url": URL, "headers": {"X-Gw": "abc\u0001def"}},
+    )
+    assert bad_header.status_code == 422 and "abc" not in bad_header.text
+
+
+def test_validation_errors_never_echo_what_was_sent(client):
+    key = "sk-" + "Z" * 4100
+    r = client.post(
+        "/api/llm/connections", json={"preset": "openai", "api_key": key, "base_url": URL}
+    )
+    assert r.status_code == 422 and "ZZZZ" not in r.text
+    assert r.json()["detail"][0]["loc"][-1] == "api_key" and r.json()["detail"][0]["msg"]

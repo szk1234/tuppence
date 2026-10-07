@@ -120,9 +120,30 @@ def test_worker_runs_handlers_and_records_results(env):
     while w.run_once():
         pass
     assert seen == [{"v": 1}] and q.get(ok).status == "done" and q.get(ok).result == {"ok": True}
-    assert q.get(bad).status == "failed" and "division by zero" in q.get(bad).error
+    # A job error is stored as safe_error_text gives it: never a library error's own text.
+    assert q.get(bad).status == "failed" and q.get(bad).error == "ZeroDivisionError"
     assert q.get(later).status == "queued" and q.get(later).error == "waiting for data"
     assert q.get(unknown).status == "queued"  # kinds without a handler are left alone
+
+
+def test_worker_keeps_messages_tuppence_wrote(env):
+    from tuppence.core.errors import InputError
+
+    q, _clock = env
+
+    def leaky(job):
+        raise RuntimeError("Authorization: Bearer sk-LEAKED")
+
+    def plain(job):
+        raise InputError("Add a household member first.")
+
+    a = q.enqueue("leaky", max_attempts=1)
+    b = q.enqueue("plain", max_attempts=1)
+    w = Worker(q, {"leaky": leaky, "plain": plain})
+    while w.run_once():
+        pass
+    assert q.get(a).error == "RuntimeError"
+    assert q.get(b).error == "Add a household member first."
 
 
 def test_worker_thread_start_stop(env):

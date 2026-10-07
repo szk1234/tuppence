@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from tuppence.core.clock import to_iso, utcnow
+from tuppence.core.errors import UserFacing, safe_error_text
 from tuppence.net import hosts
 from tuppence.net.privacy_log import PrivacyEvent, PrivacyLog, Purpose
 
@@ -17,7 +18,7 @@ GUARDED_PURPOSES = {"llm", "research"}
 _log = logging.getLogger("tuppence.privacy")
 
 
-class LocalOnlyBlocked(Exception):
+class LocalOnlyBlocked(UserFacing, Exception):
     def __init__(self, host: str, *, pinned: bool = False) -> None:
         if pinned:
             msg = f"This task is set to use only local models, so Tuppence didn't contact {host}."
@@ -125,14 +126,14 @@ class GuardedTransport(httpx.BaseTransport):
             response = self._send(request, host, addresses, literal)
             response.read()
         except Exception as exc:
-            # Class name only: exception text can echo header values (API keys).
+            # Never the exception's text: it can echo header values (API keys).
             self._record_after_send(
                 self._event(
                     request,
                     host,
                     bytes_out=len(body),
                     outcome="error",
-                    note=type(exc).__name__,
+                    note=safe_error_text(exc),
                 )
             )
             raise
