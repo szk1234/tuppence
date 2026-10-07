@@ -8,8 +8,13 @@ from pydantic import BaseModel
 from tuppence.config.models import Budgets
 from tuppence.core.household import PersonIn
 from tuppence.llm.budget import RunBudget
-from tuppence.llm.types import AllModelsFailed, BudgetExceeded, LLMBadResponse, Message
-from tuppence.net.client import LocalOnlyBlocked
+from tuppence.llm.types import (
+    AllModelsBlocked,
+    AllModelsFailed,
+    BudgetExceeded,
+    LLMBadResponse,
+    Message,
+)
 
 
 def setup_local(services, model="m-small"):
@@ -109,7 +114,7 @@ def test_local_only_blocks_cloud_before_sending(env):
     services, scripted = env
     setup_cloud(services)
     services.settings.set("privacy.local_only", True, expected_version=0)
-    with pytest.raises(LocalOnlyBlocked, match="Local only"):
+    with pytest.raises(AllModelsBlocked, match="Local only"):
         services.llm.chat("coach", U)
     assert scripted.requests == []
     assert services.privacy_log.list()[0].outcome == "blocked"
@@ -409,7 +414,7 @@ def test_blocked_cloud_call_is_logged_not_a_notice_error(env):
         conn.execute("UPDATE llm_connection SET notice_acknowledged_at = NULL")
     assert services.connections.get(c.id).needs_notice
     services.settings.set("privacy.local_only", True, expected_version=0)
-    with pytest.raises(LocalOnlyBlocked) as exc:
+    with pytest.raises(AllModelsBlocked) as exc:
         services.llm.chat("coach", U)
     assert "Confirm what" not in str(exc.value) and "Local only" in str(exc.value)
     assert services.privacy_log.list()[0].outcome == "blocked"
@@ -633,7 +638,7 @@ def test_local_only_keyless_cloud_alone_is_a_block_not_a_key_error(env):
     cloud = setup_cloud(services)
     drop_key(services, cloud)
     services.settings.set("privacy.local_only", True, expected_version=0)
-    with pytest.raises(LocalOnlyBlocked):
+    with pytest.raises(AllModelsBlocked):
         services.llm.chat("coach", U)
     assert len(blocked_rows(services)) == 1
 
@@ -643,7 +648,7 @@ def test_local_only_block_comes_before_the_monthly_cap(env):
     setup_cloud(services)
     services.settings.set("privacy.local_only", True, expected_version=0)
     services.settings.set("llm.monthly_cap_gbp", 0.0, expected_version=0)
-    with pytest.raises(LocalOnlyBlocked):
+    with pytest.raises(AllModelsBlocked):
         services.llm.chat("coach", U)
     assert len(blocked_rows(services)) == 1
 
@@ -729,7 +734,7 @@ def test_guard_enforces_the_decision_if_local_only_flips_mid_call(env, monkeypat
         return real_get(key)
 
     monkeypatch.setattr(services.settings, "get", get)
-    with pytest.raises(LocalOnlyBlocked):
+    with pytest.raises(AllModelsBlocked):
         services.llm.chat("coach", U)
     assert sent_chats(scripted) == []
 

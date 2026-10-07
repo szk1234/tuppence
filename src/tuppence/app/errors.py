@@ -7,7 +7,16 @@ from fastapi.responses import JSONResponse
 
 from tuppence.core.errors import InputError
 from tuppence.core.records import NotFound, VersionConflict
+from tuppence.core.secrets import SecretError
 from tuppence.core.settings_store import SettingInvalid
+from tuppence.llm.types import (
+    AllModelsBlocked,
+    AllModelsFailed,
+    BudgetExceeded,
+    LLMError,
+    NoModelConfigured,
+)
+from tuppence.net.client import LocalOnlyBlocked
 
 CONFLICT_MESSAGE = "This was changed somewhere else. Reload and try again."
 
@@ -30,3 +39,31 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(InputError)
     async def _invalid_input(_r: Request, exc: InputError) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=422)
+
+    @app.exception_handler(SecretError)
+    async def _secret(_r: Request, exc: SecretError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(LocalOnlyBlocked)
+    async def _local_only(_r: Request, exc: LocalOnlyBlocked) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(AllModelsBlocked)
+    async def _blocked(_r: Request, exc: AllModelsBlocked) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(NoModelConfigured)
+    async def _no_model(_r: Request, exc: NoModelConfigured) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(BudgetExceeded)
+    async def _budget(_r: Request, exc: BudgetExceeded) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=429)
+
+    @app.exception_handler(AllModelsFailed)
+    async def _all_failed(_r: Request, exc: AllModelsFailed) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=502)
+
+    @app.exception_handler(LLMError)
+    async def _llm(_r: Request, exc: LLMError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=502)

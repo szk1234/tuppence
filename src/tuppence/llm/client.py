@@ -22,6 +22,7 @@ from tuppence.llm.jsonextract import extract_json, to_strict_schema
 from tuppence.llm.pseudonymise import Pseudonymiser
 from tuppence.llm.routing import TaskRouter, timeout_for
 from tuppence.llm.types import (
+    AllModelsBlocked,
     AllModelsFailed,
     BudgetExceeded,
     ChatRequest,
@@ -227,7 +228,8 @@ class LLMClient:
                 continue
             return outcome
         if blocks and len(blocks) == len(attempts):
-            raise blocks[0]
+            first = blocks[0]
+            raise AllModelsBlocked(str(first), host=first.host, pinned=first.pinned)
         if run_skips and len(run_skips) == len(attempts):
             raise BudgetExceeded(run_skips[0])
         raise AllModelsFailed(attempts)

@@ -125,3 +125,11 @@ class AllModelsFailed(LLMError):
     def __init__(self, attempts: list[str]) -> None:
         super().__init__("No AI model could answer: " + "; ".join(attempts))
         self.attempts = attempts
+
+
+class AllModelsBlocked(LLMError):
+    """Every model for the task was stopped by Local only or a local-only pin."""
+
+    def __init__(self, message: str, *, host: str | None = None, pinned: bool = False) -> None:
+        super().__init__(message)
+        self.host, self.pinned = host, pinned

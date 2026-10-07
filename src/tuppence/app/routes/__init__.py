@@ -5,9 +5,17 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from tuppence.app.deps import require_session
-from tuppence.app.routes import auth, config, household, jobs, privacy, settings
+from tuppence.app.routes import auth, config, household, jobs, llm, privacy, settings, usage
 
-PROTECTED = [settings.router, household.router, config.router, jobs.router, privacy.router]
+PROTECTED = [
+    settings.router,
+    household.router,
+    config.router,
+    jobs.router,
+    privacy.router,
+    llm.router,
+    usage.router,
+]
 
 
 def include_routers(app: FastAPI) -> None:
