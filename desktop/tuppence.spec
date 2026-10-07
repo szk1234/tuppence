@@ -7,6 +7,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(SPECPATH).parent  # noqa: F821  (SPECPATH is injected by PyInstaller)
 WEB = ROOT / "src" / "tuppence" / "web_dist"
+MIGRATIONS = ROOT / "src" / "tuppence" / "core" / "migrations"
 if not (WEB / "index.html").is_file():
     raise SystemExit("Build the UI first: npm --prefix web ci && npm --prefix web run build")
 
@@ -19,7 +20,10 @@ except Exception:  # pywebview not installed: window falls back to the browser
 a = Analysis(  # noqa: F821
     [str(ROOT / "desktop" / "entry.py")],
     pathex=[str(ROOT / "src")],
-    datas=[(str(WEB), "tuppence/web_dist")],
+    datas=[
+        (str(WEB), "tuppence/web_dist"),
+        (str(MIGRATIONS), "tuppence/core/migrations"),  # .sql files read via importlib.resources
+    ],
     hiddenimports=hidden,
     excludes=["tkinter", "pytest"],
 )
