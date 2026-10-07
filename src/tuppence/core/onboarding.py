@@ -10,10 +10,12 @@ is how many of those are met. Every check and every step is worth one point:
 * Household checks (always present): nation, postcode district, housing tenure.
 * Data checks (always present): at least one income source, at least one account, an AI model
   chosen (`llm.simple_model` in simple mode, or any task chain in advanced mode).
-* Per active adult: work status and income band. Per active child: birth year.
-  Every active credit card also adds one check: its purchase APR.
-* Dependent adults get no checks: they have no work or income questions of their own and no
-  birth-year-driven entitlement checks, so a prompt would only nag.
+* Per active adult: work status and income band ("Prefer not to say" is an answer, so it meets
+  the income-band check). Per active child: birth year. Every active credit card also adds one
+  check: its purchase APR.
+* Dependent adults get no checks. The wizard and Settings › Household may record their work
+  status and income band (optional, as for anyone who isn't a child), but nothing here depends on
+  them and they have no birth-year-driven entitlement checks, so a prompt would only nag.
 * One per wizard step that is done or skipped (skipping counts as progress).
 
 People who have left the household never add checks, and incomes of people who left do not
@@ -69,6 +71,12 @@ TITLES = {
     "first_upload": "Your first statements",
 }
 HOUSEHOLD_LINK = "/settings/household"
+
+
+def person_link(person_id: str) -> str:
+    """Settings › Household, scrolled to this person (their edit and work/income controls)."""
+    return f"{HOUSEHOLD_LINK}#person-{person_id}"
+
 
 StepStatus = Literal["todo", "done", "skipped"]
 
@@ -161,12 +169,14 @@ class OnboardingService:
                     f"employment:{p.id}",
                     f"Add {p.display_name}'s work status",
                     "tax and benefit checks",
+                    person_link(p.id),
                 )
                 add(
                     "income_band" in attrs,
                     f"income_band:{p.id}",
                     f"Add {p.display_name}'s income band",
                     "Marriage Allowance and Child Benefit checks",
+                    person_link(p.id),
                 )
             elif p.role == "child":
                 add(
@@ -174,6 +184,7 @@ class OnboardingService:
                     f"birth_year:{p.id}",
                     f"Add {p.display_name}'s birth year",
                     "Tax-Free Childcare and funded childcare checks",
+                    person_link(p.id),
                 )
         add(
             bool(self.income.list()),

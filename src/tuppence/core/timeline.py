@@ -31,8 +31,16 @@ ALLOWED_ATTRIBUTES: dict[str, dict[str, TypeAdapter[Any]]] = {
         "employment_status": TypeAdapter(
             Literal["employed", "self_employed", "both", "retired", "student", "not_working"]
         ),
+        # "prefer_not_to_say" is an explicit answer: it replaces a band the person withdrew.
         "income_band": TypeAdapter(
-            Literal["under_12570", "12570_50270", "50270_100000", "100000_125140", "over_125140"]
+            Literal[
+                "under_12570",
+                "12570_50270",
+                "50270_100000",
+                "100000_125140",
+                "over_125140",
+                "prefer_not_to_say",
+            ]
         ),
         "household_member": TypeAdapter(bool),
     },
@@ -51,6 +59,19 @@ ALLOWED_ATTRIBUTES: dict[str, dict[str, TypeAdapter[Any]]] = {
 
 # Money attributes: sent as pounds strings, stored as integer pence (never a bare number).
 POUNDS_ATTRIBUTES = frozenset({"housing_monthly_pence"})
+
+# What people see when a value isn't acceptable (never the validator's list of raw values).
+_PLAIN: dict[str, str] = {
+    "employment_status": "Choose a work status.",
+    "income_band": "Choose an income band, or Prefer not to say.",
+    "household_member": "Say whether this person lives in the household.",
+    "nation": "Choose England, Wales, Scotland or Northern Ireland.",
+    "postcode_district": "Enter the first part of your postcode, like LS6.",
+    "housing_tenure": "Choose renting, buying with a mortgage, own outright or living with family.",
+    "housing_monthly_pence": "Enter an amount like 1450 or 1,450.50.",
+    "bedrooms": "Enter bedrooms as a whole number from 0 to 20.",
+    "council_tax_band": "Choose a council tax band from A to I.",
+}
 
 HOUSEHOLD_ID = "1"
 # Household attributes whose current value the household row caches (column names).
@@ -80,8 +101,8 @@ def _validate(subject_type: str, attribute: str, value: Any) -> Any:
         value = parse_pounds(value)
     try:
         clean = adapters[attribute].validate_python(value)
-    except ValidationError as exc:
-        raise InputError(f"{attribute}: {exc.errors()[0]['msg']}") from exc
+    except ValidationError:
+        raise InputError(_PLAIN.get(attribute, "That value isn't valid here.")) from None
     if subject_type == "household" and attribute == "postcode_district":
         clean = normalise_district(clean)
     return clean

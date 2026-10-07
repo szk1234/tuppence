@@ -169,3 +169,55 @@ def test_neighbour_version_unchanged_by_write_or_delete(tl):
     assert tl.history("household", "1", "bedrooms")[0].version == a.version
     tl.delete(b.id, b.version)
     assert tl.history("household", "1", "bedrooms")[0].version == a.version
+
+
+def test_income_band_prefer_not_to_say_replaces_the_band(tl):
+    tl.set("person", "p1", "income_band", "12570_50270", date(2026, 1, 1))
+    tl.set(
+        "person",
+        "p1",
+        "income_band",
+        "prefer_not_to_say",
+        date(2026, 6, 1),
+        expected_current="12570_50270",
+    )
+    assert tl.value_as_of("person", "p1", "income_band", date(2026, 6, 1)) == "prefer_not_to_say"
+    assert tl.value_as_of("person", "p1", "income_band", date(2026, 5, 31)) == "12570_50270"
+    # Same day: the band is replaced, not kept alongside.
+    tl.set("person", "p1", "income_band", "50270_100000", date(2026, 7, 1))
+    tl.set("person", "p1", "income_band", "prefer_not_to_say", date(2026, 7, 1))
+    assert [h.value for h in tl.history("person", "p1", "income_band")] == [
+        "12570_50270",
+        "prefer_not_to_say",
+        "prefer_not_to_say",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "message"),
+    [
+        ("income_band", None, "Choose an income band, or Prefer not to say."),
+        ("income_band", "lots", "Choose an income band, or Prefer not to say."),
+        ("employment_status", None, "Choose a work status."),
+        ("employment_status", "astronaut", "Choose a work status."),
+    ],
+)
+def test_bad_person_values_get_plain_messages(tl, attribute, value, message):
+    with pytest.raises(InputError) as caught:
+        tl.set("person", "p1", attribute, value, date(2026, 1, 1))
+    assert str(caught.value) == message
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("nation", "atlantis"),
+        ("housing_tenure", None),
+        ("bedrooms", 21),
+        ("council_tax_band", "Z"),
+    ],
+)
+def test_bad_household_values_never_show_the_raw_validation_text(tl, attribute, value):
+    with pytest.raises(InputError) as caught:
+        tl.set("household", "1", attribute, value, date(2026, 1, 1))
+    assert "Input should" not in str(caught.value) and "_" not in str(caught.value)

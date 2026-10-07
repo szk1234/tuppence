@@ -1,8 +1,14 @@
-export const router = $state({ path: typeof window === 'undefined' ? '/' : window.location.pathname })
+const here = () => ({ path: window.location.pathname, hash: window.location.hash })
+/** `path` picks the page; `hash` (with its "#", or "") is a place on it, such as "#person-p_1". */
+export const router = $state(typeof window === 'undefined' ? { path: '/', hash: '' } : here())
 
-export function navigate(path: string) {
-  if (path !== window.location.pathname) window.history.pushState({}, '', path)
-  router.path = path
+export function navigate(target: string) {
+  const url = new URL(target, window.location.origin)
+  if (url.pathname + url.hash !== window.location.pathname + window.location.hash) {
+    window.history.pushState({}, '', url.pathname + url.search + url.hash)
+  }
+  router.path = url.pathname
+  router.hash = url.hash
 }
 
 const SIGN_IN_PATHS = new Set(['/login', '/setup'])
@@ -20,5 +26,5 @@ export function link(event: MouseEvent) {
 }
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('popstate', () => { router.path = window.location.pathname })
+  window.addEventListener('popstate', () => { Object.assign(router, here()) })
 }

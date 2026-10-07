@@ -199,3 +199,32 @@ def test_money_timeline_attribute_takes_pounds_and_overflow_is_422(client):
         assert (
             client.post("/api/household/timeline", json={**base, "value": bad}).status_code == 422
         )
+
+
+def test_withdrawing_the_income_band_is_plain_and_replaces_it(client):
+    pid = client.post(
+        "/api/household/people", json={"display_name": "Alex Example", "role": "adult"}
+    ).json()["id"]
+    entry = {
+        "subject_type": "person",
+        "subject_id": pid,
+        "attribute": "income_band",
+        "valid_from": "2026-01-01",
+    }
+    first = client.post("/api/household/timeline", json={**entry, "value": "12570_50270"})
+    assert first.status_code == 201
+    null = client.post(
+        "/api/household/timeline",
+        json={**entry, "value": None, "expected_current": "12570_50270"},
+    )
+    assert null.status_code == 422
+    assert null.json()["detail"] == "Choose an income band, or Prefer not to say."
+    out = client.post(
+        "/api/household/timeline",
+        json={**entry, "value": "prefer_not_to_say", "expected_current": "12570_50270"},
+    )
+    assert out.status_code == 201
+    history = client.get(
+        "/api/household/timeline", params={"subject_type": "person", "subject_id": pid}
+    ).json()["entries"]
+    assert [e["value"] for e in history] == ["prefer_not_to_say"]

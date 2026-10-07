@@ -24,8 +24,19 @@ test('add people, set district, reject a full postcode, remove a person', async 
   await page.getByRole('button', { name: 'Add person' }).click()
   await expect(page.getByText('born 2019')).toBeVisible()
 
+  // A child added without a birth year gets it later through Edit (what "Add Kid B's birth year" leads to).
+  await page.getByLabel('Name').fill('Kid B')
+  await page.getByLabel('Role').selectOption('child')
+  await page.getByRole('button', { name: 'Add person' }).click()
+  await expect(page.getByText('Kid B added.')).toBeVisible()
+  await page.getByRole('button', { name: 'Edit Kid B' }).click()
+  await page.getByLabel('Birth year (children)').fill('2021')
+  await page.getByRole('button', { name: 'Save person' }).click()
+  await expect(page.getByText('Kid B saved.')).toBeVisible()
+  await expect(page.getByText('born 2021')).toBeVisible()
+
   await page.reload()
-  await expect(page.getByText('Alex Example')).toBeVisible()
+  await expect(page.getByText('Alex Example', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Remove Kid A' }).click()
   await expect(page.getByRole('listitem').filter({ hasText: 'Kid A' })).toHaveCount(0)
   await expect(page.getByRole('listitem').filter({ hasText: 'Alex Example' })).toHaveCount(1)

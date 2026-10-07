@@ -238,3 +238,28 @@ def test_dependent_adults_have_no_prompts(env):
     svc, household, *_ = env
     d = household.create_person(PersonIn(display_name="Nan", role="dependent_adult"))
     assert not any(d.id in i for i in ids(svc.state()))
+
+
+def test_person_prompts_deep_link_to_the_person_on_household(env):
+    svc, household, *_ = env
+    kid = household.create_person(PersonIn(display_name="Sam", role="child"))
+    alex = household.create_person(PersonIn(display_name="Alex", role="adult"))
+    links = {p.id: p.link for p in svc.state().prompts}
+    assert links[f"birth_year:{kid.id}"] == f"/settings/household#person-{kid.id}"
+    assert links[f"employment:{alex.id}"] == f"/settings/household#person-{alex.id}"
+    assert links[f"income_band:{alex.id}"] == f"/settings/household#person-{alex.id}"
+
+
+def test_prefer_not_to_say_answers_the_income_band_prompt(env):
+    svc, household, timeline, *_ = env
+    alex = household.create_person(PersonIn(display_name="Alex", role="adult"))
+    timeline.set("person", alex.id, "income_band", "prefer_not_to_say", TODAY)
+    assert f"income_band:{alex.id}" not in ids(svc.state())
+
+
+def test_dependent_adults_may_record_work_and_income_but_are_never_prompted(env):
+    svc, household, timeline, *_ = env
+    d = household.create_person(PersonIn(display_name="Nan", role="dependent_adult"))
+    timeline.set("person", d.id, "employment_status", "retired", TODAY)
+    timeline.set("person", d.id, "income_band", "under_12570", TODAY)
+    assert not any(d.id in i for i in ids(svc.state()))

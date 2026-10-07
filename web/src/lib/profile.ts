@@ -23,7 +23,8 @@ export const PERSON_ATTRIBUTES: Record<string, AttrDef> = {
   },
   income_band: {
     label: 'Income band', kind: 'choice',
-    options: { under_12570: 'Under £12,570', '12570_50270': '£12,570 to £50,270', '50270_100000': '£50,270 to £100,000', '100000_125140': '£100,000 to £125,140', over_125140: 'Over £125,140' },
+    options: { under_12570: 'Under £12,570', '12570_50270': '£12,570 to £50,270', '50270_100000': '£50,270 to £100,000', '100000_125140': '£100,000 to £125,140', over_125140: 'Over £125,140',
+      prefer_not_to_say: 'Prefer not to say' },
   },
 }
 
