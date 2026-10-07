@@ -41,8 +41,9 @@ def reply(messages: list[dict[str, Any]]) -> str:
     user = next(
         (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"), ""
     )
-    if MAPPING_MARKER in text:
-        return json.dumps(mapping(user))
+    if MAPPING_MARKER in text:  # a JSON-repair turn has no sketch of its own: use the last one
+        sketches = [str(m.get("content", "")) for m in messages if m.get("role") == "user"]
+        return json.dumps(mapping(next((c for c in reversed(sketches) if "HEADINGS:" in c), user)))
     if READ_MARKER in text:
         return json.dumps(read(user))
     return json.dumps({"note": "oracle has no answer for this prompt"})

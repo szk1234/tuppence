@@ -128,3 +128,20 @@ def test_the_oracle_answers_a_mapping_retry():
         ]
     )
     assert json.loads(answer)["date_column"] == "Date"
+
+
+def test_the_oracle_answers_the_clients_json_repair_turn():
+    """m7: the last user message of a repair turn has no HEADINGS; the sketch is earlier."""
+    sketch = 'HEADINGS:\n["Date", "Details", "Amount"]\nROWS:\n["<DATE:dd/mm/yyyy>", "<TEXT>"]'
+    answer = oracle.reply(
+        [
+            {"role": "system", "content": oracle.MAPPING_MARKER},
+            {"role": "user", "content": sketch},
+            {"role": "assistant", "content": "not json"},
+            {
+                "role": "user",
+                "content": "That wasn't valid: x. Reply with only the corrected JSON.",
+            },
+        ]
+    )
+    assert json.loads(answer)["amount_column"] == "Amount"
