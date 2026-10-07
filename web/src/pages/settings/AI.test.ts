@@ -1,8 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { afterEach, expect, it, vi } from 'vitest'
+import { session } from '../../lib/session.svelte'
 import AI from './AI.svelte'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  session.mode = 'local'; session.user = null
+})
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } })
 
 const conn = (over: Record<string, unknown> = {}) => ({
@@ -152,4 +156,101 @@ it('forgets saved keys after confirmation', async () => {
   expect(calls.some(([u]) => u === '/api/llm/secrets/forget')).toBe(false)
   await fireEvent.click(await screen.findByRole('button', { name: 'Forget keys' }))
   await waitFor(() => expect(calls.some(([u]) => u === '/api/llm/secrets/forget')).toBe(true))
+})
+
+it('reloads connections after a 409 on edit so a retry uses the fresh version', async () => {
+  const state = { conn: conn({ version: 3 }), routing: routing() }
+  let patches = 0
+  const calls = setup((url, init) => {
+    if (url === '/api/llm/connections/c1' && init?.method === 'PATCH') {
+      if (patches++ === 0) {
+        state.conn = conn({ version: 9 })
+        return json({ detail: 'This was changed somewhere else. Reload and try again.', current_version: 9 }, 409)
+      }
+      return json(conn({ name: 'Work AI', version: 10 }))
+    }
+  }, state)
+  render(AI)
+  const card = await screen.findByRole('region', { name: 'OpenAI' })
+  await fireEvent.click(within(card).getByRole('button', { name: 'Edit' }))
+  await fireEvent.input(within(card).getByLabelText('Name'), { target: { value: 'Work AI' } })
+  await fireEvent.click(within(card).getByRole('button', { name: 'Save changes' }))
+  expect(await screen.findByText('This was changed somewhere else. Reload and try again.')).toBeInTheDocument()
+  await waitFor(() => expect(calls.filter(([u]) => u === '/api/llm/connections').length).toBeGreaterThan(1))
+  await fireEvent.click(within(card).getByRole('button', { name: 'Save changes' }))
+  await waitFor(() => expect(calls.filter(([, i]) => i?.method === 'PATCH').length).toBe(2))
+  const second = calls.filter(([, i]) => i?.method === 'PATCH')[1]
+  expect(JSON.parse(second[1]!.body as string).expected_version).toBe(9)
+})
+
+it('hides write controls for a non-admin in server mode and shows a 403 message', async () => {
+  session.mode = 'server'; session.user = { username: 'sam', is_admin: false }
+  setup((url, init) => {
+    if (url === '/api/settings/llm.mode' && init?.method === 'PATCH') return json({ detail: 'Only the household admin can change AI connections.' }, 403)
+  })
+  render(AI)
+  const card = await screen.findByRole('region', { name: 'OpenAI' })
+  expect(within(card).queryByRole('button', { name: 'Test' })).toBeNull()
+  expect(within(card).queryByRole('button', { name: 'Remove' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Find local AI' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Save connection' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Forget saved AI keys' })).toBeNull()
+  expect(screen.queryByLabelText('Message')).toBeNull()
+  expect(screen.getAllByText(/Only the household admin/).length).toBeGreaterThan(0)
+})
+
+it('shows the 403 detail when a write is refused', async () => {
+  setup((url, init) => {
+    if (url === '/api/llm/connections/c1/test') return json({ detail: 'Only the household admin can change AI connections.' }, 403)
+    if (url === '/api/settings/llm.mode' && init?.method === 'PATCH') return json({ detail: 'Only the household admin can change AI connections.' }, 403)
+  })
+  render(AI)
+  await screen.findByRole('region', { name: 'OpenAI' })
+  await fireEvent.click(await screen.findByLabelText('Advanced: choose per task'))
+  expect(await screen.findByText('Only the household admin can change AI connections.')).toBeInTheDocument()
+})
+
+it('shows a 429 message naming the cap', async () => {
+  setup((url) => {
+    if (url === '/api/llm/try') return json({ detail: "This month's AI spending cap (£10.00) would be exceeded." }, 429)
+  })
+  render(AI)
+  await screen.findByRole('region', { name: 'OpenAI' })
+  await fireEvent.input(screen.getByLabelText('Message'), { target: { value: 'Hi' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  expect(await screen.findByText(/spending cap \(£10.00\)/)).toBeInTheDocument()
+})
+
+it('keeps chain entries beyond the second when editing a task', async () => {
+  const ref = (m: string) => ({ connection_id: 'c1', model_id: m })
+  const state = { conn: conn({ needs_notice: false }), routing: routing({ mode: 'advanced', tasks: {
+    coach: { chain: [ref('gpt-x'), ref('b'), ref('c'), ref('d')], local_only: false, version: 4 },
+  } }) }
+  const calls = setup((url, init) => {
+    if (url === '/api/llm/routing/tasks/coach' && init?.method === 'PUT') return json(state.routing)
+  }, state)
+  render(AI)
+  const task = await screen.findByRole('region', { name: 'Task coach' })
+  expect(within(task).getByText("More fallbacks are set; they're kept.")).toBeInTheDocument()
+  await fireEvent.click(within(task).getByLabelText('Keep this task on this device'))
+  await waitFor(() => expect(calls.some(([, i]) => i?.method === 'PUT')).toBe(true))
+  const put = calls.find(([, i]) => i?.method === 'PUT')!
+  const body = JSON.parse(put[1]!.body as string)
+  expect(body.local_only).toBe(true)
+  expect(body.expected_version).toBe(4)
+  expect(body.chain.map((r: any) => r.model_id)).toEqual(['gpt-x', 'b', 'c', 'd'])
+})
+
+it('moves focus into the dialog on open and back to the opener on close', async () => {
+  setup()
+  render(AI)
+  const card = await screen.findByRole('region', { name: 'OpenAI' })
+  const opener = within(card).getByRole('button', { name: "Review what's sent" })
+  opener.focus()
+  await fireEvent.click(opener)
+  const heading = await screen.findByText('Before you use OpenAI')
+  await waitFor(() => expect(document.activeElement).toBe(heading))
+  await fireEvent.keyDown(heading, { key: 'Escape' })
+  await waitFor(() => expect(screen.queryByText('Before you use OpenAI')).toBeNull())
+  await waitFor(() => expect(document.activeElement).toBe(opener))
 })

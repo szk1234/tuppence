@@ -8,7 +8,7 @@
   type LogEntry = { id: number; ts: string; purpose: string; task: string | null; destination: string; bytes_out: number; bytes_in: number; outcome: string; note: string | null }
 
   const TOGGLES: Array<[string, string, string]> = [
-    ['privacy.local_only', 'Local only', 'AI and research calls stay on this device or your home network.'],
+    ['privacy.local_only', 'Local only', 'AI and research calls stay on this device or your home network. Cloud models are refused while this is on.'],
     ['privacy.pseudonymise', 'Pseudonymise before cloud AI', 'Names and account numbers become stand-ins like "Adult A" and "ACCT_2". Off by default.'],
     ['privacy.research_lookups', 'Research lookups', 'Look up unknown merchant names online. Only merchant names are sent, never amounts or your details.'],
     ['privacy.live_market_data', 'Live market data', 'Interest rates, inflation, exchange rates and share prices. Share lookups reveal which tickers you hold.'],

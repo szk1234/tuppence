@@ -44,6 +44,7 @@
   let noticeFor = $state<Connection | null>(null)
   let afterNotice: (() => Promise<void>) | null = null
   let confirmForget = $state(false)
+  let confirmRemove = $state<Connection | null>(null)
 
   // try it
   let message = $state('')
@@ -84,13 +85,13 @@
   }
 
   /** Run a call; if the server says the cloud notice is needed, show it, then retry once acknowledged. */
-  async function guard(fn: () => Promise<void>) {
+  async function guard(fn: () => Promise<void>, onError: (e: unknown) => void) {
     try { await fn() } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.code === 'notice_required') {
         const c = connections.find((x) => x.id === e.connectionId)
-        if (c) { noticeFor = c; afterNotice = () => guard(fn); return }
+        if (c) { noticeFor = c; afterNotice = () => guard(fn, onError); return }
       }
-      throw e
+      onError(e)
     }
   }
 
@@ -131,7 +132,7 @@
   }
 
   async function remove(c: Connection) {
-    error = ''; saved = ''
+    confirmRemove = null; error = ''; saved = ''
     try {
       await api(`/api/llm/connections/${c.id}`, { method: 'DELETE' })
       connections = connections.filter((x) => x.id !== c.id)
@@ -152,7 +153,13 @@
     try {
       replaceConn(await api<Connection>(`/api/llm/connections/${c.id}`, { method: 'PATCH', body: { changes, expected_version: c.version } }))
       editing = null; saved = 'Connection saved.'
-    } catch (err) { fail(err) } finally { busy = false }
+    } catch (err) {
+      fail(err)
+      if (err instanceof ApiError && err.status === 409) {
+        const fresh = await api<{ connections: Connection[] }>('/api/llm/connections').catch(() => null)
+        if (fresh) connections = fresh.connections
+      }
+    } finally { busy = false }
   }
 
   async function acknowledge() {
@@ -189,7 +196,8 @@
 
   async function saveTask(task: string, primary: string, fallback: string, localOnly: boolean) {
     error = ''; saved = ''
-    const chain = [parseKey(primary), parseKey(fallback)].filter((r): r is Ref => r !== null)
+    const rest = routing!.tasks[task].chain.slice(2)
+    const chain = [parseKey(primary), parseKey(fallback)].filter((r): r is Ref => r !== null).concat(rest)
     try {
       routing = await api<Routing>(`/api/llm/routing/tasks/${task}`, { method: 'PUT', body: { chain, local_only: localOnly, expected_version: routing!.tasks[task].version } })
     } catch (e) { fail(e); await loadRouting().catch(() => {}) }
@@ -201,8 +209,8 @@
       await guard(async () => {
         const r = await api<{ text: string }>('/api/llm/try', { method: 'POST', body: { task: 'coach', prompt: message } })
         reply = r.text
-      })
-    } catch (err) { tryError = err instanceof ApiError ? err.detail : 'Something went wrong.' } finally { sending = false }
+      }, (err) => { tryError = err instanceof ApiError ? err.detail : 'Something went wrong.' })
+    } finally { sending = false }
   }
 </script>
 
@@ -227,7 +235,7 @@
             <button type="button" onclick={() => test(c)}>Test</button>
             {#if c.needs_notice}<button type="button" onclick={() => { noticeFor = c; afterNotice = null }}>Review what's sent</button>{/if}
             <button type="button" onclick={() => (editing === c.id ? (editing = null) : startEdit(c))}>{editing === c.id ? 'Close editor' : 'Edit'}</button>
-            <button type="button" onclick={() => remove(c)}>Remove</button>
+            <button type="button" onclick={() => (confirmRemove = c)}>Remove</button>
           </div>
           {#if editing === c.id}
             <form onsubmit={(e) => saveEdit(e, c)}>
@@ -317,6 +325,7 @@
                 <option value="">None</option>
                 {#each models as m (refKey(m))}<option value={refKey(m)}>{nameOf(m.connection_id)} — {m.model_id}</option>{/each}
               </select>
+              {#if route.chain.length > 2}<p class="hint">More fallbacks are set; they're kept.</p>{/if}
               <div class="toggle">
                 <label><input type="checkbox" checked={route.local_only} onchange={(e) => saveTask(task, primary, fallback, (e.currentTarget as HTMLInputElement).checked)} /> Keep this task on this device</label>
               </div>
@@ -354,5 +363,13 @@
   <div class="row">
     <button type="button" onclick={forgetKeys}>Forget keys</button>
     <button type="button" onclick={() => (confirmForget = false)}>Cancel</button>
+  </div>
+</Modal>
+
+<Modal open={confirmRemove !== null} title={`Remove ${confirmRemove?.name ?? ''}?`} onclose={() => (confirmRemove = null)}>
+  <p>Tuppence will forget this connection and its saved key. Models routed to it will need choosing again.</p>
+  <div class="row">
+    <button type="button" onclick={() => confirmRemove && remove(confirmRemove)}>Remove connection</button>
+    <button type="button" onclick={() => (confirmRemove = null)}>Cancel</button>
   </div>
 </Modal>
