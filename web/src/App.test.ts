@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.svelte'
 import Home from './pages/Home.svelte'
@@ -28,5 +28,25 @@ describe('App', () => {
       new Response(JSON.stringify({ authenticated: false, mode: 'server', needs_setup: true, user: null, csrf_token: null }), { status: 200 })))
     render(App)
     expect(await screen.findByRole('heading', { name: 'Set up Tuppence' })).toBeInTheDocument()
+  })
+
+  it('lands on Home after signing in from /login', async () => {
+    window.history.pushState({}, '', '/login')
+    const { router } = await import('./lib/router.svelte')
+    router.path = '/login'
+    const { session } = await import('./lib/session.svelte')
+    session.loaded = false
+    const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200 })
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/auth/session') return json({ authenticated: false, mode: 'server', needs_setup: false, user: null, csrf_token: null })
+      if (url === '/api/auth/login') return json({ authenticated: true, mode: 'server', needs_setup: false, user: { username: 'alex', is_admin: true }, csrf_token: 't' })
+      return json({ status: 'ok', version: '1', mode: 'server' })
+    }))
+    render(App)
+    await fireEvent.input(await screen.findByLabelText('Username'), { target: { value: 'alex' } })
+    await fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'long-enough-pass' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(await screen.findByRole('heading', { name: 'Tuppence' })).toBeInTheDocument()
+    expect(router.path).toBe('/')
   })
 })

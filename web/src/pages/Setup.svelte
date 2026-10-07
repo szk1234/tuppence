@@ -1,6 +1,7 @@
 <script lang="ts">
   import Notice from '../components/Notice.svelte'
   import { api, ApiError } from '../lib/api'
+  import { navigate } from '../lib/router.svelte'
   import { applySession, type SessionInfo } from '../lib/session.svelte'
   let username = $state('')
   let password = $state('')
@@ -8,7 +9,7 @@
   let busy = $state(false)
   async function submit(e: SubmitEvent) {
     e.preventDefault(); error = ''; busy = true
-    try { applySession(await api<SessionInfo>('/api/auth/setup', { method: 'POST', body: { username, password } })) }
+    try { applySession(await api<SessionInfo>('/api/auth/setup', { method: 'POST', body: { username, password } })); navigate('/') }
     catch (err) { error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
     finally { busy = false }
   }

@@ -41,4 +41,11 @@ describe('api', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
     await expect(api('/api/x', { method: 'POST' })).resolves.toBeUndefined()
   })
+
+  it('builds a readable message from FastAPI validation errors', async () => {
+    stubFetch(422, { detail: [{ loc: ['body', 'password'], msg: 'String should have at least 10 characters' }] })
+    await expect(api('/api/x', { method: 'POST', body: {} })).rejects.toMatchObject({
+      detail: 'password: String should have at least 10 characters',
+    })
+  })
 })

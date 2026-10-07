@@ -41,3 +41,17 @@ it('shows the friendly error for a full postcode', async () => {
   await fireEvent.click(screen.getByRole('button', { name: 'Save household' }))
   expect(await screen.findByText(/first part of your postcode/)).toBeInTheDocument()
 })
+
+it('rejects an invalid birth year without sending it', async () => {
+  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url === '/api/household') return json({ nation: null, postcode_district: null, currency: 'GBP', period_mode: 'calendar_month', period_anchor_person_id: null, version: 1 })
+    return json({ people: [] })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(Household)
+  await fireEvent.input(await screen.findByLabelText('Name'), { target: { value: 'Kid B' } })
+  await fireEvent.input(screen.getByLabelText('Birth year (children)'), { target: { value: '20x' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Add person' }))
+  expect(await screen.findByText('Enter a 4-digit year')).toBeInTheDocument()
+  expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'POST')).toBe(false)
+})

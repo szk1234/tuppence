@@ -26,7 +26,14 @@ export async function api<T = unknown>(path: string, opts: { method?: string; bo
   try { data = await res.json() } catch { data = null }
   if (!res.ok) {
     if (res.status === 401) unauthorised()
-    const detail = typeof data?.detail === 'string' ? data.detail : `Request failed (${res.status})`
+    let detail = `Request failed (${res.status})`
+    if (typeof data?.detail === 'string') detail = data.detail
+    else if (Array.isArray(data?.detail) && data.detail.length) {
+      const first = data.detail[0]
+      const field = Array.isArray(first?.loc) ? first.loc[first.loc.length - 1] : undefined
+      const msg = typeof first?.msg === 'string' ? first.msg : detail
+      detail = field !== undefined && field !== 'body' ? `${field}: ${msg}` : msg
+    }
     throw new ApiError(res.status, detail, data?.current_version)
   }
   return data as T

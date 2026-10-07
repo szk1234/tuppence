@@ -14,6 +14,8 @@
   let presets = $state<string[]>([])
   let preset = $state({ value: 'balanced', version: 0 })
   let drafts = $state<Record<string, Record<string, unknown>>>({})
+  let invalid = $state<Record<string, boolean>>({})
+  let selected = $state('balanced')
   let error = $state('')
   let saved = $state('')
 
@@ -21,10 +23,34 @@
 
   async function load() {
     const res = await api<{ agents: View[]; preset: { value: string; version: number } }>('/api/config/agents')
-    agents = res.agents; preset = res.preset; drafts = {}
+    agents = res.agents; preset = res.preset; selected = res.preset.value; drafts = {}; invalid = {}
     presets = (await api<{ presets: string[] }>('/api/config/presets')).presets
   }
   onMount(() => { load().catch(fail) })
+
+  const hasInvalid = (agent: string) => Object.keys(invalid).some((k) => k.startsWith(`${agent}.`) && invalid[k])
+  const hasChanges = (agent: string) => {
+    const d = drafts[agent]
+    if (!d) return false
+    return Object.values(d).some((v) => typeof v !== 'object' || v === null || Object.keys(v).length > 0)
+  }
+
+  function setNumber(agent: string, section: string, key: string, raw: string) {
+    const id = `${agent}.${section}.${key}`
+    const n = Number(raw)
+    if (raw.trim() === '' || !Number.isFinite(n)) {
+      invalid[id] = true
+      const d = drafts[agent]
+      const s = d?.[section] as Record<string, unknown> | undefined
+      if (s && key in s) {
+        const { [key]: _gone, ...rest } = s
+        drafts[agent] = { ...d, [section]: rest }
+      }
+      return
+    }
+    invalid[id] = false
+    setDraft(agent, section, key, n)
+  }
 
   function setDraft(agent: string, section: string, key: string, value: unknown) {
     const d = drafts[agent] ?? {}
@@ -33,8 +59,8 @@
   }
 
   async function save(view: View) {
-    const changes = drafts[view.manifest.name]
-    if (!changes) return
+    if (!hasChanges(view.manifest.name) || hasInvalid(view.manifest.name)) return
+    const changes = $state.snapshot(drafts[view.manifest.name])
     error = ''
     try {
       const updated = await api<View>(`/api/config/agents/${view.manifest.name}`, {
@@ -65,7 +91,7 @@
       preset = { value: entry.value, version: entry.version }
       await load()
       saved = `Preset changed to ${value}.`
-    } catch (err) { fail(err) }
+    } catch (err) { selected = preset.value; fail(err) }
   }
 </script>
 
@@ -77,7 +103,7 @@
 
   <div class="card">
     <label for="preset">Preset</label>
-    <select id="preset" value={preset.value} onchange={(e) => choosePreset((e.currentTarget as HTMLSelectElement).value)}>
+    <select id="preset" bind:value={selected} onchange={(e) => choosePreset((e.currentTarget as HTMLSelectElement).value)}>
       {#each presets as p}<option value={p}>{p}</option>{/each}
     </select>
     <a href="/api/config/export" download>Export settings</a>
@@ -102,7 +128,9 @@
               <div class="field">
                 <label for={`${m.name}-${path}`}>{key}</label>
                 <input id={`${m.name}-${path}`} type="number" step="any" value={value}
-                  oninput={(e) => setDraft(m.name, section, key, Number((e.currentTarget as HTMLInputElement).value))} />
+                  aria-invalid={invalid[`${m.name}.${path}`] ? 'true' : undefined}
+                  oninput={(e) => setNumber(m.name, section, key, (e.currentTarget as HTMLInputElement).value)} />
+                {#if invalid[`${m.name}.${path}`]}<span class="warn" role="alert">Enter a number</span>{/if}
                 {#if view.overridden.includes(path)}
                   <span class="badge">Changed by you</span>
                   <button class="link" onclick={() => reset(view, path)}>Reset</button>
@@ -112,7 +140,7 @@
           </fieldset>
         {/if}
       {/each}
-      <button onclick={() => save(view)} disabled={!drafts[m.name]}>Save {m.name}</button>
+      <button onclick={() => save(view)} disabled={!hasChanges(m.name) || hasInvalid(m.name)}>Save {m.name}</button>
     </section>
   {/each}
 </section>

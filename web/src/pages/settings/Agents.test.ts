@@ -35,3 +35,23 @@ it('edits a limit and shows it as overridden', async () => {
   await fireEvent.click(within(card).getByRole('button', { name: 'Save researcher' }))
   expect(await within(card).findByText('Changed by you')).toBeInTheDocument()
 })
+
+it('flags a cleared number, does not send it, and disables Save', async () => {
+  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url === '/api/config/agents') return json({ agents: [researcher(20, 0)], preset: { value: 'balanced', version: 0 } })
+    if (url === '/api/config/presets') return json({ presets: ['balanced'] })
+    return json({ detail: 'unexpected' }, 500)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(Agents)
+  const card = await screen.findByRole('region', { name: 'researcher' })
+  const input = within(card).getByLabelText('max_merchants_per_run')
+  await fireEvent.input(input, { target: { value: '12' } })
+  expect(within(card).getByRole('button', { name: 'Save researcher' })).toBeEnabled()
+  await fireEvent.input(input, { target: { value: '' } })
+  expect(await within(card).findByText('Enter a number')).toBeInTheDocument()
+  const save = within(card).getByRole('button', { name: 'Save researcher' })
+  expect(save).toBeDisabled()
+  await fireEvent.click(save)
+  expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'PATCH')).toBe(false)
+})

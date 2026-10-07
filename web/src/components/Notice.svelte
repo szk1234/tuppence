@@ -2,9 +2,11 @@
   let { message = '', kind = 'error' }: { message?: string; kind?: 'error' | 'ok' } = $props()
 </script>
 
-<div class="notice {kind}" role={kind === 'error' ? 'alert' : 'status'} aria-live="polite">
-  {#if message}{message}{/if}
-</div>
+{#if kind === 'error'}
+  <div class="notice error" role="alert">{#if message}{message}{/if}</div>
+{:else}
+  <div class="notice ok" role="status" aria-live="polite">{#if message}{message}{/if}</div>
+{/if}
 
 <style>
   .notice:empty { display: none; }

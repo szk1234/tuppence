@@ -1,6 +1,12 @@
 <script lang="ts">
   import { link, router } from '../lib/router.svelte'
   import { session, signOut } from '../lib/session.svelte'
+  import Notice from './Notice.svelte'
+  let navError = $state('')
+  async function out() {
+    navError = ''
+    try { await signOut() } catch { navError = 'Could not sign out. Try again.' }
+  }
   const items = [
     { href: '/', label: 'Home' },
     { href: '/settings/household', label: 'Household' },
@@ -16,9 +22,10 @@
     {/each}
   </ul>
   {#if session.mode === 'server' && session.user}
-    <button class="link" onclick={signOut}>Sign out {session.user.username}</button>
+    <button class="link" onclick={out}>Sign out {session.user.username}</button>
   {/if}
 </nav>
+<Notice message={navError} />
 
 <style>
   nav { display: flex; gap: 1.5rem; align-items: center; padding: .75rem 1.25rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }

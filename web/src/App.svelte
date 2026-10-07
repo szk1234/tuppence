@@ -11,7 +11,7 @@
   import Agents from './pages/settings/Agents.svelte'
   import Household from './pages/settings/Household.svelte'
 
-  const routes: Record<string, typeof Home> = { '/': Home, '/settings/household': Household, '/settings/agents': Agents }
+  const routes: Record<string, typeof Home> = { '/': Home, '/login': Home, '/setup': Home, '/settings/household': Household, '/settings/agents': Agents }
   let failed = $state(false)
   onMount(() => { loadSession().catch(() => { failed = true }) })
   const Page = $derived(routes[router.path] ?? NotFound)
