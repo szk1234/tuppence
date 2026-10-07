@@ -34,6 +34,9 @@ def bind_loopback_socket(host: str = "127.0.0.1") -> socket.socket:
     """Bind and listen now, so the port is never released before uvicorn serves on it."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            # Stop other local processes from binding the same port (port hijack).
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         sock.bind((host, 0))
         sock.listen(128)
     except OSError:
