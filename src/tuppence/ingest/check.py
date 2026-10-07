@@ -325,7 +325,10 @@ def _sign(row: ParsedRow, text: str, sign_from: str) -> list[str]:
     positives = [shown for negative, shown in found if not negative]
     if negatives and amount >= 0:
         return [f"{row.ref}: sign mismatch (line shows {negatives[0]}, amount is {pounds(amount)})"]
-    fee = row.bank_type == "fee"  # a fee is printed as a plain charge, e.g. Revolut's Fee column
+    # Only the importer's own split-out fee rows (ref "L12#fee", from a separate Fee column) are
+    # printed as a plain charge; a row merely typed "fee" by a CSV Type column or the reader is
+    # still sign-checked.
+    fee = row.ref.endswith("#fee")
     if positives and not negatives and amount <= 0 and not sign_from and not fee:
         return [f"{row.ref}: sign mismatch (line shows {positives[0]}, amount is {pounds(amount)})"]
     if "-" in row.amount_text and amount >= 0 and not negatives:

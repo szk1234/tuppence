@@ -290,3 +290,11 @@ def test_dr_and_cr_are_sign_labels():
     assert check_document(d2, p) == []
     wrong = statement(row("L2", 2, 1230, "12.30", sign_from="DR"))
     assert any("requires negative" in e for e in check_document(d2, wrong))
+
+
+def test_only_split_out_fee_rows_skip_the_plain_charge_sign_check():
+    d = doc("01/10/2026,Monthly fee,5.00,,995.00")
+    # A row merely typed "fee" (from a CSV Type column or the reader) is still sign-checked.
+    typed = check_document(d, statement(row("L2", 1, -500, "5.00", bank_type="fee")))
+    assert "L2: sign mismatch (line shows 5.00, amount is -5.00)" in typed
+    # Split-out fee rows ("L2#fee") are covered by test_one_line_may_give_two_rows.
