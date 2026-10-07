@@ -44,7 +44,7 @@ class PrivacyLog:
         marks = ", ".join("?" for _ in _COLS)
         with self.db.transaction() as conn:
             conn.execute(
-                f"INSERT INTO privacy_log ({cols}) VALUES ({marks})",  # noqa: S608
+                f"INSERT INTO privacy_log ({cols}) VALUES ({marks})",  # noqa: S608  (column names come from PrivacyEvent.model_fields, values are bound)
                 [data[c] for c in _COLS],
             )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +14,7 @@ from tuppence.net.hosts import is_local_host
 from tuppence.net.privacy_log import PrivacyEvent, PrivacyLog, Purpose
 
 GUARDED_PURPOSES = {"llm", "research"}
+_log = logging.getLogger("tuppence.privacy")
 
 
 class LocalOnlyBlocked(Exception):
@@ -28,6 +30,11 @@ class CallContext:
     connection_id: str | None = None
     local: bool = False
     redactions: int = 0
+
+
+def _wire_host(request: httpx.Request) -> str:
+    """The IDNA/ASCII host httpcore connects to, not httpx's decoded Unicode form."""
+    return request.url.raw_host.decode("ascii")
 
 
 class GuardedTransport(httpx.BaseTransport):
@@ -46,7 +53,7 @@ class GuardedTransport(httpx.BaseTransport):
             "purpose": self.ctx.purpose,
             "task": self.ctx.task,
             "connection_id": self.ctx.connection_id,
-            "destination": request.url.host,
+            "destination": _wire_host(request),
             "method": request.method,
             "path": request.url.path,
             "bytes_out": 0,
@@ -60,7 +67,7 @@ class GuardedTransport(httpx.BaseTransport):
         return PrivacyEvent.model_validate(base)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        host = request.url.host
+        host = _wire_host(request)
         if (
             self.ctx.purpose in GUARDED_PURPOSES
             and self.local_only()
@@ -73,10 +80,12 @@ class GuardedTransport(httpx.BaseTransport):
             response = self.inner.handle_request(request)
             response.read()
         except Exception as exc:
-            note = f"{type(exc).__name__}: {exc}"[:300]
-            self.log.record(self._event(request, bytes_out=len(body), outcome="error", note=note))
+            # Class name only: exception text can echo header values (API keys).
+            self._record_after_send(
+                self._event(request, bytes_out=len(body), outcome="error", note=type(exc).__name__)
+            )
             raise
-        self.log.record(
+        self._record_after_send(
             self._event(
                 request,
                 bytes_out=len(body),
@@ -85,6 +94,13 @@ class GuardedTransport(httpx.BaseTransport):
             )
         )
         return response
+
+    def _record_after_send(self, event: PrivacyEvent) -> None:
+        # The request has already left; a log failure must not turn it into a failed call.
+        try:
+            self.log.record(event)
+        except Exception as exc:
+            _log.error("privacy log write failed after send: %s", type(exc).__name__)
 
     def close(self) -> None:
         self.inner.close()
@@ -103,5 +119,6 @@ def make_client(
         transport=GuardedTransport(inner, ctx, privacy_log, local_only),
         timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
         follow_redirects=False,
-        trust_env=not ctx.local,
+        # No trust_env: env proxies are intentionally unused because the guard owns the transport.
+        # Proxy support, if ever added, belongs on the inner HTTPTransport.
     )
