@@ -248,3 +248,45 @@ def test_page_labels_come_from_the_same_page():
         skipped=[SkippedLine(ref="P1L1", reason="column headings")],
     )
     assert check_document(d, p) == ['P2L1: sign_from "Paid out" not on page']
+
+
+# --- R-M3-6: NaN amounts and UK sign notations -----------------------------------------
+
+
+def test_non_finite_amount_text_is_a_row_error_not_a_crash():
+    for text in ("NaN", "Infinity", "-Infinity", "sNaN"):
+        d = doc(f"01/10/2026,Shop,{text}")
+        errors = check_document(d, statement(row("L2", 1, -1230, text)))
+        assert f'L2: amount_text "{text}" is not a number' in errors
+
+
+NOTATIONS = [
+    # (printed figure, household amount, card amount)
+    ("(12.30)", -1230, 1230),
+    ("12.30-", -1230, 1230),
+    ("12.30 DR", -1230, -1230),
+    ("12.30,DR", -1230, -1230),
+    ("12.30 CR", 1230, 1230),
+    ("12.30,CR", 1230, 1230),
+]
+
+
+def test_uk_sign_notations_in_both_perspectives():
+    for printed, household, card in NOTATIONS:
+        d = doc(f"02/10/2026,Shop,{printed},100.00", header=False)
+        for perspective, amount in (("household", household), ("card", card)):
+            ok = statement(row("L2", 2, amount, printed), perspective=perspective)
+            assert check_document(d, ok) == [], (printed, perspective)
+            bad = statement(row("L2", 2, -amount, printed), perspective=perspective)
+            assert any("sign mismatch" in e for e in check_document(d, bad)), (printed, perspective)
+
+
+def test_dr_and_cr_are_sign_labels():
+    p = statement(
+        row("L2", 2, -1230, "12.30", sign_from="DR"), row("L3", 3, 500, "5.00", sign_from="CR")
+    )
+    d2 = doc("02/10/2026,Shop,12.30,DR", "03/10/2026,Refund,5.00,CR")
+    d2.lines[0] = Line(ref="L1", text="Date,Description,Amount,DR,CR")
+    assert check_document(d2, p) == []
+    wrong = statement(row("L2", 2, 1230, "12.30", sign_from="DR"))
+    assert any("requires negative" in e for e in check_document(d2, wrong))

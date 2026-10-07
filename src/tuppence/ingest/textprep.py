@@ -15,8 +15,18 @@ from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel
 
+from tuppence.core.errors import UserFacing
 from tuppence.ingest.models import Document, FileKind, Line
 from tuppence.ingest.textnum import decode_text, parse_date, parse_money
+
+# One field may be up to 1 MB (the csv default of 128 KB crashes on a long note). This
+# is process-wide and set once at import, so it is not racy.
+csv.field_size_limit(1 << 20)
+
+
+class UnreadableFile(UserFacing, ValueError):
+    """A statement file we can't turn into lines."""
+
 
 _DELIMITERS = (",", ";", "\t", "|")
 _HEADING_WORDS = (
@@ -43,12 +53,36 @@ _HEADING_WORDS = (
     "category",
     "counter party",
 )
-_DATE_TOKEN = re.compile(
-    r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b"
-    r"|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?(?:\s+\d{2,4})?\b",
+_MONTH = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?"
+    r"|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+_NUMERIC_DATE = re.compile(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b")
+_NAMED_DATE = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{_MONTH}\b\.?", re.IGNORECASE)
+_MONEY_TOKEN = re.compile(r"(?<![\w.])[-−]?[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d)")
+_STREET = (
+    r"road|rd|street|st|lane|ln|avenue|ave|close|drive|way|gardens|court|place|terrace"
+    r"|crescent|square|hill|grove|mews|walk"
+)
+# Lines that identify the holder or the account. Never data, wherever they appear.
+_SENSITIVE = re.compile(
+    r"\b(?:account|acct|a/c)\s*(?:no\.?|num(?:ber)?|name|holder|type)\b"
+    r"|\bsort\s*code\b|\b\d{2}-\d{2}-\d{2}\b"
+    r"|\bcard\s+(?:ending|number|no\.?)\b|\bending\s+(?:in\s+)?\d{4}\b|\b(?:\*{2,}|x{2,})\s*\d{4}\b"
+    r"|\biban\b|\bbic\b|\b[A-Z]{2}\d{2}\s?[A-Z0-9]{4}(?:\s?\d{4}){2,}(?:\s?[A-Z0-9]{1,4})?\b"
+    r"|\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b"
+    rf"|(?<![\d/.-])\d{{1,3}}[a-z]?,?\s+(?:[A-Za-z']+\s+){{1,2}}(?:{_STREET})\b"
+    r"|^\s*(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+[A-Za-z]"
+    r"|^\s*(?:statement\s+for|prepared\s+for|holder)\b",
     re.IGNORECASE,
 )
-_MONEY_TOKEN = re.compile(r"(?<![\w.])[-−]?[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d)")
+# "Opening balance 1,000.00", "Money in 1,200.00 Money out 800.00": figures, not rows.
+_SUMMARY = re.compile(
+    r"\b(?:opening|closing|start|end)\s+balance\b|\bmoney\s+(?:in|out)\b"
+    r"|\bpaid\s+(?:in|out)\b|\btotal\b|\bpayments?\s+(?:in|out)\b|\bsummary\b",
+    re.IGNORECASE,
+)
+_PAGE_NO = re.compile(r"\bpage\s+\d+(?:\s+of\s+\d+)?\b", re.IGNORECASE)
 
 
 class Chunk(BaseModel):
@@ -81,11 +115,14 @@ def csv_records(text: str) -> list[tuple[int, str, list[str]]]:
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     out: list[tuple[int, str, list[str]]] = []
     start = 1
-    for cells in reader:
-        end = reader.line_num
-        raw = " ".join(physical[start - 1 : end])
-        out.append((start, raw, [c.strip() for c in cells]))
-        start = end + 1
+    try:
+        for cells in reader:
+            end = reader.line_num
+            raw = " ".join(physical[start - 1 : end])
+            out.append((start, raw, [c.strip() for c in cells]))
+            start = end + 1
+    except csv.Error:
+        raise UnreadableFile("This file has a value that's too long to read.") from None
     return out
 
 
@@ -153,20 +190,79 @@ def csv_document(
     return table_document(csv_records(decode_text(data)), sha256=sha256, kind="csv", known=known)
 
 
+def _has_date(text: str) -> bool:
+    if any(parse_date(m.group(0)) is not None for m in _NUMERIC_DATE.finditer(text)):
+        return True
+    return any(1 <= int(m.group(1)) <= 31 for m in _NAMED_DATE.finditer(text))
+
+
+def is_sensitive(text: str) -> bool:
+    """Account numbers, sort codes, card endings, IBANs, addresses and holder names."""
+    return _SENSITIVE.search(text) is not None
+
+
+def is_summary(text: str) -> bool:
+    """A balance or totals line: it has figures but is not a transaction."""
+    return (
+        _SUMMARY.search(text) is not None
+        and _MONEY_TOKEN.search(text) is not None
+        and not re.match(
+            r"\s*(?:\d{1,2}[/.-]\d|\d{4}-|\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3})", text
+        )
+    )
+
+
+def is_heading(text: str) -> bool:
+    lowered = text.casefold()
+    return (
+        sum(1 for word in _HEADING_WORDS if re.search(rf"\b{re.escape(word)}\b", lowered)) >= 2
+        and not _MONEY_TOKEN.search(text)
+        and ":" not in text  # "Payment type: Direct debit" is a label, not column headings
+        and not is_sensitive(text)
+    )
+
+
 def is_anchor(text: str) -> bool:
     """The first line of the transaction area: a dated amount, or a row of column headings."""
-    if _DATE_TOKEN.search(text) and _MONEY_TOKEN.search(text):
+    if is_sensitive(text) or is_summary(text):
+        return False
+    if _has_date(text) and _MONEY_TOKEN.search(text):
         return True
-    lowered = text.casefold()
-    return sum(1 for word in _HEADING_WORDS if re.search(rf"\b{re.escape(word)}\b", lowered)) >= 2
+    return is_heading(text)
+
+
+def _normal(text: str) -> str:
+    return " ".join(_PAGE_NO.sub(" ", text).casefold().split())
 
 
 def split_preamble(lines: Sequence[Line]) -> tuple[list[str], list[str]]:
-    """(preamble refs, data refs). With no anchor at all, everything is data."""
+    """(withheld refs, data refs).
+
+    Withheld lines never go to an AI reader: everything before the first anchor, and, after
+    it, any account or address line, balance summary, or running header (a line with no
+    figures that appears two or more times).
+    """
+    counts: dict[str, int] = {}
+    for line in lines:
+        counts[_normal(line.text)] = counts.get(_normal(line.text), 0) + 1
+    first = next((i for i, ln in enumerate(lines) if is_anchor(ln.text)), None)
+    withheld: list[str] = []
+    data: list[str] = []
     for i, line in enumerate(lines):
-        if is_anchor(line.text):
-            return [ln.ref for ln in lines[:i]], [ln.ref for ln in lines[i:]]
-    return [], [ln.ref for ln in lines]
+        text = line.text
+        running_header = (
+            counts[_normal(text)] > 1 and not _MONEY_TOKEN.search(text) and not is_heading(text)
+        )
+        if (
+            (first is not None and i < first)
+            or is_sensitive(text)
+            or is_summary(text)
+            or running_header
+        ):
+            withheld.append(line.ref)
+        else:
+            data.append(line.ref)
+    return withheld, data
 
 
 def text_document(text: str, *, sha256: str) -> Document:
@@ -199,27 +295,31 @@ def render(lines: Sequence[Line]) -> str:
     return "\n".join(f"{line.ref}: {line.text}" for line in lines)
 
 
-def _heading_like(text: str) -> bool:
-    return not _MONEY_TOKEN.search(text) and is_anchor(text)
-
-
 def plan_chunks(doc: Document, *, rows_per_chunk: int) -> list[Chunk]:
     """Data lines in slices of `rows_per_chunk`, each with the headings it needs."""
     by_ref = doc.by_ref()
     order = {line.ref: i for i, line in enumerate(doc.lines)}
     data = [by_ref[r] for r in doc.data_refs]
+    step = max(1, rows_per_chunk)
+    # last heading-like data line before each slice start, found in one pass
+    last_heading: dict[int, Line | None] = {}
+    current: Line | None = None
+    for i, line in enumerate(data):
+        if i % step == 0:
+            last_heading[i] = current
+        if is_heading(line.text):
+            current = line
     chunks: list[Chunk] = []
-    for start in range(0, len(data), max(1, rows_per_chunk)):
-        part = data[start : start + rows_per_chunk]
+    for start in range(0, len(data), step):
+        part = data[start : start + step]
         context: list[Line] = [by_ref[r] for r in doc.header_refs]
         if not context and start > 0:
             # Page text: the last column-heading line, and the line just before the
             # chunk so the reader can see the previous running balance.
-            first = order[part[0].ref]
-            earlier = [
-                ln for ln in doc.lines[:first] if ln.ref in doc.data_refs and _heading_like(ln.text)
-            ]
-            context = list({ln.ref: ln for ln in [*earlier[-1:], data[start - 1]]}.values())
+            heading = last_heading[start]
+            context = list(
+                {ln.ref: ln for ln in [*([heading] if heading else []), data[start - 1]]}.values()
+            )
         merged = {ln.ref: ln for ln in [*context, *part]}
         chunk_lines = sorted(merged.values(), key=lambda ln: order[ln.ref])
         chunks.append(

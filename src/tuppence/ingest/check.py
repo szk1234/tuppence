@@ -30,7 +30,8 @@ MAX_PERIOD_DAYS = 400
 DATE_SLACK = timedelta(days=3)
 _PAGE = re.compile(r"P(\d+)L\d+")
 _LINE_REF = re.compile(r"L(\d+)")
-_CREDIT_MARKER = re.compile(r"\s*CR\b", re.IGNORECASE)
+_CREDIT_MARKER = re.compile(r"[\s,;|]*CR\b", re.IGNORECASE)
+_DEBIT_MARKER = re.compile(r"[\s,;|]*DR\b", re.IGNORECASE)
 
 
 def base_ref(ref: str) -> str:
@@ -241,9 +242,10 @@ def _numeric(amount_text: str) -> Decimal | None:
         cleaned = cleaned[:-2]
     cleaned = cleaned.strip("+").strip("-")
     try:
-        return Decimal(cleaned)
+        value = Decimal(cleaned)
     except InvalidOperation:
         return None
+    return value if value.is_finite() else None
 
 
 def _evidence(row: ParsedRow, line: Line) -> list[str]:
@@ -279,7 +281,9 @@ def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence
     by_ref: dict[str, Line] = {}
     for line in lines:
         by_ref.setdefault(line.ref, line)
-    context_text = "\n".join(line.text for line in lines if line.ref in set(context_refs))
+    context_set = set(context_refs)
+    context_text = "\n".join(line.text for line in lines if line.ref in context_set)
+    page_cache: dict[str, str] = {}
     start, end = parsed.period_start, parsed.period_end
     errors: list[str] = []
     for row in parsed.rows:
@@ -295,7 +299,10 @@ def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence
             errors.extend(_card_sign(row, line.text))
         else:
             errors.extend(_sign(row, line.text, label))
-        where = _page_text(row.ref, lines) if _PAGE.fullmatch(base_ref(row.ref)) else context_text
+        page = _PAGE.fullmatch(base_ref(row.ref))
+        if page and page.group(1) not in page_cache:
+            page_cache[page.group(1)] = _page_text(row.ref, lines)
+        where = page_cache[page.group(1)] if page else context_text
         errors.extend(
             _sign_from(
                 row, label, where, "page" if _PAGE.fullmatch(base_ref(row.ref)) else "header"
@@ -313,7 +320,7 @@ def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence
 
 def _sign(row: ParsedRow, text: str, sign_from: str) -> list[str]:
     amount = row.amount_pence
-    found = _occurrences(text, amount)
+    found = _occurrences(text, amount, debit_is_negative=True)
     negatives = [shown for negative, shown in found if negative]
     positives = [shown for negative, shown in found if not negative]
     if negatives and amount >= 0:
@@ -340,7 +347,7 @@ def _card_sign(row: ParsedRow, text: str) -> list[str]:
                 f"amount is {pounds(amount)})"
             ]
         return []
-    found = _occurrences(text, amount)
+    found = _occurrences(text, amount, debit_is_negative=False)
     negatives = [shown for negative, shown in found if negative]
     positives = [shown for negative, shown in found if not negative]
     if negatives and amount <= 0:
@@ -376,7 +383,12 @@ def _credit_showing(text: str, pence: int) -> str | None:
     return None
 
 
-def _occurrences(text: str, pence: int) -> list[tuple[bool, str]]:
+def _occurrences(text: str, pence: int, *, debit_is_negative: bool) -> list[tuple[bool, str]]:
+    """(negative?, as printed) for each place the amount shows.
+
+    Negative means a leading minus, brackets, a trailing minus or, on a current account,
+    DR. On a card, DR is a plain purchase, so it counts as printed positive.
+    """
     found: list[tuple[bool, str]] = []
     for rendering in sorted(amount_renderings(pence), key=len, reverse=True):
         start = 0
@@ -389,8 +401,17 @@ def _occurrences(text: str, pence: int) -> list[tuple[bool, str]]:
             if cursor > 0 and text[cursor - 1] in "£$":
                 cursor -= 1
             negative = cursor > 0 and text[cursor - 1] in "-−"
+            bracketed = cursor > 0 and text[cursor - 1] == "(" and text[end : end + 1] == ")"
+            trailing = text[end : end + 1] in ("-", "−") and not text[end + 1 : end + 2].isalnum()
+            debit = _DEBIT_MARKER.match(text[end:])
             if negative:
                 shown = text[cursor - 1 : end]
+            elif bracketed:
+                negative, shown = True, text[cursor - 1 : end + 1]
+            elif trailing:
+                negative, shown = True, text[index : end + 1]
+            elif debit and debit_is_negative:
+                negative, shown = True, text[index:end] + debit.group(0)
             elif index > 0 and text[index - 1] in "£$":
                 shown = text[index - 1 : end]
             else:
@@ -414,7 +435,13 @@ def _bounded(text: str, start: int, end: int) -> bool:
 def _sign_from(row: ParsedRow, label: str, where: str, place: str) -> list[str]:
     if not label:
         return []
-    if label.casefold() not in where.casefold():
+    short = len(label) <= 3  # "DR" must not match inside "Address"
+    present = (
+        re.search(rf"\b{re.escape(label)}\b", where, re.IGNORECASE) is not None
+        if short
+        else label.casefold() in where.casefold()
+    )
+    if not present:
         return [f'{row.ref}: sign_from "{label}" not on {place}']
     direction = _label_sign(label)
     if direction is None:
@@ -435,6 +462,8 @@ def _sign_from(row: ParsedRow, label: str, where: str, place: str) -> list[str]:
 def _label_sign(label: str) -> int | None:
     text = label.casefold()
     rules = (
+        (r"^\W*dr\W*$", -1),
+        (r"^\W*cr\W*$", 1),
         (r"paid\s+out|money\s+out|withdrawal", -1),
         (r"paid\s+in|money\s+in|deposit", 1),
         (r"\bdebit\b|\bdbit\b", -1),

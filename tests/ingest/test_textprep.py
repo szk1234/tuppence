@@ -1,9 +1,14 @@
 import codecs
+import time
+
+import pytest
 
 from tuppence.ingest.models import Line
 from tuppence.ingest.textprep import (
+    UnreadableFile,
     csv_document,
     csv_records,
+    is_anchor,
     pages_document,
     plan_chunks,
     render,
@@ -107,3 +112,129 @@ def test_chunks_carry_the_headings_and_the_previous_line():
     )
     assert all(c.context_refs == ["L1"] for c in plan_chunks(csv, rows_per_chunk=2))
     assert render(chunks[2].lines).splitlines()[-1] == "P1L11: 09 Oct 2026   Shop   9.00   891.00"
+
+
+# --- R-M3-6: sensitive lines, running headers, robustness -----------------------------
+
+
+def _split(rows):
+    d = pages_document([rows], sha256="x", kind="pdf")
+    return d, {ln.ref: ln.text for ln in d.lines}
+
+
+def _data_texts(doc):
+    by = doc.by_ref()
+    return [by[r].text for r in doc.data_refs]
+
+
+def test_account_lines_after_a_summary_line_are_still_withheld():
+    d, _ = _split(
+        [
+            "Statement date 01 Oct 2026",
+            "Mr Alex Example",
+            "12 Marlborough Road",
+            "London SW1A 1AA",
+            "Opening balance on 1 Oct 2026 £1,000.00",
+            "Account number 12345678 Sort code 12-34-56",
+            "Date Description Paid out Paid in Balance",
+            "02 Oct 2026 Shop 4.00 996.00",
+        ]
+    )
+    assert _data_texts(d) == [
+        "Date Description Paid out Paid in Balance",
+        "02 Oct 2026 Shop 4.00 996.00",
+    ]
+
+
+def test_money_in_out_box_is_not_an_anchor_and_not_data():
+    d, _ = _split(
+        [
+            "Mr Alex Example",
+            "Your account summary Money in £1,200.00 Money out £800.00",
+            "Account number 12345678 Sort code 12-34-56",
+            "Date Description Paid out Paid in Balance",
+            "02 Oct 2026 Shop 4.00 996.00",
+        ]
+    )
+    assert len(d.data_refs) == 2
+
+
+def test_address_with_a_month_word_is_not_a_date_row():
+    d, _ = _split(["Alex Example", "Flat 3, 12 Mar Road 10.00", "Date Description"])
+    assert _data_texts(d) == ["Date Description"] or _data_texts(d) == []
+    assert "Flat 3, 12 Mar Road 10.00" not in _data_texts(d)
+    assert not is_anchor("12 Mar Road 10.00")
+    assert is_anchor("12 Mar 2026 Shop 10.00")
+
+
+def test_account_type_and_card_ending_are_withheld_anywhere():
+    d, _ = _split(
+        [
+            "Alex Example",
+            "Account type: Credit card",
+            "Payment type: Direct debit",
+            "Date Description Amount",
+            "02 Oct 2026 Shop 4.00",
+            "Card ending 4242",
+            "IBAN GB29 NWBK 6016 1331 9268 19",
+            "Alex Example, 1 High Street, London E1 6AN",
+            "03 Oct 2026 Cafe 3.00",
+        ]
+    )
+    assert _data_texts(d) == [
+        "Date Description Amount",
+        "02 Oct 2026 Shop 4.00",
+        "03 Oct 2026 Cafe 3.00",
+    ]
+
+
+def test_running_headers_never_reach_a_chunk():
+    pages = [
+        [
+            "Alex Example",
+            "Date Description Paid out Paid in Balance",
+            "02 Oct 2026 Shop 4.00 996.00",
+        ]
+        if n == 1
+        else [
+            f"Alex Example  Account 12345678  Sort code 12-34-56  Page {n} of 3",
+            "Alex Example Account holder statement",
+            "Date Description Paid out Paid in Balance",
+            f"0{n} Oct 2026 Shop 4.00 {990 - n}.00",
+        ]
+        for n in (1, 2, 3)
+    ]
+    pages[0].insert(1, "Alex Example Account holder statement")
+    doc = pages_document(pages, sha256="x", kind="pdf")
+    sent = "\n".join(render(c.lines) for c in plan_chunks(doc, rows_per_chunk=2))
+    for secret in ("Alex Example", "12345678", "12-34-56"):
+        assert secret not in sent
+    assert "Date Description Paid out Paid in Balance" in sent
+
+
+def test_identical_rows_are_kept():
+    d = pages_document(
+        [["Date Description Amount", "02 Oct 2026 Coffee 3.40", "02 Oct 2026 Coffee 3.40"]],
+        sha256="x",
+        kind="pdf",
+    )
+    assert len(d.data_refs) == 3
+
+
+def test_oversized_csv_field_is_a_plain_error():
+    big = b"a" * 200_000
+    assert csv_document(b"Date,Desc\n01/10/2026," + big + b"\n", sha256="x").data_refs
+    assert csv_document(b'Date,Desc\n01/10/2026,"' + big + b'"\n', sha256="x").data_refs
+    with pytest.raises(UnreadableFile, match="value that's too long to read"):
+        csv_document(b"Date,Desc\n01/10/2026," + b"a" * 1_100_000 + b"\n", sha256="x")
+
+
+def test_planning_twenty_thousand_lines_is_fast():
+    rows = ["Date Description Paid out Paid in Balance"] + [
+        f"{1 + i % 28:02d} Oct 2026 Shop {i}.00 {900000 - i}.00" for i in range(20_000)
+    ]
+    doc = pages_document([rows], sha256="x", kind="pdf")
+    started = time.perf_counter()
+    chunks = plan_chunks(doc, rows_per_chunk=20)
+    assert time.perf_counter() - started < 1.0
+    assert len(chunks) == 1001
