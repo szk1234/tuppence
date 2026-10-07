@@ -32,6 +32,7 @@ _PLAIN = {
     "promo_apr": "Enter an APR from 0 to 100 with at most 2 decimal places.",
     "statement_day": "The statement day must be between 1 and 31.",
     "promo_end": "Enter the promotional end date as YYYY-MM-DD.",
+    "credit_limit": "Enter the credit limit as pounds, like 2500.00.",
 }
 
 

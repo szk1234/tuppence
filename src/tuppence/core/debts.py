@@ -151,6 +151,9 @@ def _store_details(kind: str, details: dict[str, Any]) -> dict[str, Any]:
                 raise InputError("'via_broker' must be yes or no.")
             out[key] = value
         elif key in ("balloon", "total_payable"):
+            if not isinstance(value, str):
+                what = "balloon payment" if key == "balloon" else "total amount payable"
+                raise InputError(f"Enter the {what} as pounds, like 1450.00.")
             out[f"{key}_pence"] = parse_pounds(value)
         elif key == "annual_mileage":
             if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 1_000_000:
