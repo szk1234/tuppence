@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 import webbrowser
@@ -14,9 +15,17 @@ from tuppence.settings import RuntimeSettings
 
 
 def port_available(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    try:
+        family, _type, _proto, _canon, sockaddr = socket.getaddrinfo(
+            host, port, type=socket.SOCK_STREAM
+        )[0]
+    except (socket.gaierror, IndexError):
+        return False
+    with socket.socket(family, socket.SOCK_STREAM) as s:
+        if os.name != "nt":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            s.bind((host, port))
+            s.bind(sockaddr)
         except OSError:
             return False
     return True
