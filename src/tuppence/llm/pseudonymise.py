@@ -10,12 +10,26 @@ ALL CAPS, so a lower-case "will" stays an ordinary word while "Will" and "WILL" 
 Text is NFKC-normalised first and both accented and unaccented spellings match; restore
 always returns the configured spelling.
 
-Numbers: cards (contiguous 13+ digits; separated runs shaped like cards, or Luhn-valid) run
-before accounts so a card is never split, and overlapping candidates are masked together so
-no digits are left beside a stand-in; any whitespace run or Unicode dash separates groups. A
-sort code (2-2-2, or six bare digits leading) next to an 8-digit account on the same line is
-masked as a pair with no keyword (R-M1b-17/18). Otherwise a date-shaped 2-2-2 group is a sort
-code only near a sort-code keyword (R-M1b-16/17).
+Numbers: cards (contiguous 13+ digits; separated runs shaped like cards, or Luhn-valid; and
+4-4-4-4(-3) joined by one "." "/" or "_") run before accounts so a card is never split, and
+overlapping candidates are masked together so no digits are left beside a stand-in; any
+whitespace run or Unicode dash separates groups. A sort code (2-2-2 with spaces or dashes,
+or six bare digits leading) next to an 8-digit account on the same line is masked as a pair
+with no keyword (R-M1b-17/18). Otherwise a date-shaped 2-2-2 group (also written with dots)
+is a sort code only near a sort-code keyword (R-M1b-16/17/19), and a group touching a
+decimal amount never is.
+
+Known limits (best-effort masking). Masking is opt-in and regex-based, so it cannot be
+complete (R-M1b-19). These are left as they are on purpose:
+- digits spelled out in words ("four one one one ...") are not recognised;
+- a sort code glued to its account with no separator ("60-74-4058877453") is not split out;
+- a sort code and its account on different lines are not paired (lines are treated as
+  separate fields, so a date at the end of one line is not masked);
+- a one-word name written in lower case in free text ("will", "bob") is left alone;
+- a date directly followed by an 8-digit number ("07-10-26 12345678") is masked as a sort
+  code + account, so that date is hidden from the model;
+- separated digit groups that pass the card checksum by chance (about 1 run in 10), such as
+  two 8-digit dates side by side, are masked as a card number.
 """
 
 from __future__ import annotations
@@ -62,12 +76,16 @@ _IBAN_DIGITS = str.maketrans({c: str(int(c, 36)) for c in string.digits + string
 _IBAN_STRIP = str.maketrans("", "", " \t-")
 _IBAN_SEP = re.compile(r"[ \t-]+")
 
-_SORT_WORD = re.compile(
-    r"(?<!\w)(?:sort[ \t-]{0,2}code|sort/acc(?:ount)?|s/c|sc)(?!\w)", re.IGNORECASE
-)
+# Sort-code keywords; a bare "sort" counts too ("pay 12345678 sort 09-01-28").
+_KW = r"(?:sort[ \t-]{0,2}code|sort/acc(?:ount)?|sort|s/c|sc)"
+_SORT_WORD = re.compile(rf"(?<!\w){_KW}(?!\w)", re.IGNORECASE)
 # A number rule never starts inside one of our own stand-ins ("IBAN_12 34 56 ...").
 _NOT_IN_STAND_IN = r"(?<!IBAN_)(?<!ACCT_)(?<!SORTCODE_)"
 _SORT_FORM = rf"\d{{2}}{_SEP}\d{{2}}{_SEP}\d{{2}}"
+# Dotted sort codes ("40.47.84"): masked when not a plausible date, or with a keyword; never
+# after a letter ("v14.22.33"). Dotted dates are not paired with a following account
+# number, so "17.03.20 20201210" stays (R-M1b-19).
+_SORT_DOT = r"(?<![A-Za-z])\d{2}\.\d{2}\.\d{2}"
 # An account number: 8 digits, or 4 + 4 with any separator. Never the integer part of an
 # amount ("12345678.00"); a comma after it is a list or CSV separator, not a decimal point.
 _ACCT_FORM = rf"(?:\d{{4}}{_SEP}\d{{4}}|\d{{8}})(?!\d)(?!\.\d)"
@@ -79,26 +97,38 @@ _JOIN = r"(?:[ \t]++|[ \t]*+[-,;/&+|][ \t]*+)(?:(?i:and)[ \t]++)?"
 _PAIR = re.compile(
     rf"{_NOT_IN_STAND_IN}(?<![\d£$€.•])(?:"
     rf"(?P<sc>{_SORT_FORM}|\d{{6}})(?!\d)(?P<j1>{_JOIN})(?P<ac>{_ACCT_FORM})"
-    rf"|(?P<ac2>{_ACCT_FORM})(?P<j2>{_JOIN})(?P<sc2>{_SORT_FORM})(?!\d)(?!\.\d))"
+    rf"|(?P<ac2>{_ACCT_FORM})(?P<j2>{_JOIN})(?P<sc2>{_SORT_FORM})(?!\d)(?![.:]\d))"
 )
+# Digits next to a decimal amount or a time: "45.12 ..." starts, "... 1789.80" / "... 03:39" ends.
+_AMOUNT_BEFORE = re.compile(r"\d\.$")
+_AMOUNT_AFTER = re.compile(r"[.:]\d")
 # Every 2-2-2 group, overlapping ones included; ``_mask_sort_codes`` decides which are codes.
-_SORT_AT = re.compile(rf"{_NOT_IN_STAND_IN}(?<![\d•])(?=({_SORT_FORM})(?!\d))")
-# Neighbouring digit pairs with the same kind of separator make a column (dates, tables).
-_COL_SPACE_BEFORE = re.compile(r"(?<![\w.,£$€•])\d\d[ \t]++$")
-_COL_SPACE_AFTER = re.compile(r"[ \t]++\d{2}(?!\d)")
-_COL_DASH_BEFORE = re.compile(r"(?<![\w.,£$€•])\d\d[ \t]*+-[ \t]*+$")
-_COL_DASH_AFTER = re.compile(r"[ \t]*+-[ \t]*+\d")
-# "2026-12-31 14:22": the tail of an ISO date is never a sort code.
-_ISO_YEAR_BEFORE = re.compile(r"(?<!\d)(?:19|20)\d\d[ \t]*+-[ \t]*+$")
+# Never part of a decimal amount: not after "5." ("5.79 09 08") and not into ".89" ("-66.89").
+# Nor running into a time ("08 07 16 02:52").
+_SORT_AT = re.compile(
+    rf"{_NOT_IN_STAND_IN}(?<![\d•.])(?=({_SORT_FORM}|{_SORT_DOT})(?!\d)(?![.:]\d))"
+)
+# Neighbouring digit groups joined like the code's separator on that side make a column
+# (dates, tables). An amount after the code ("-66.89", "66.89") is not a column.
+_COLUMN_GUARDS = {
+    "space": (r"\d\d[ \t]++$", r"[ \t]++\d{2}(?!\d)(?!\.\d)"),
+    "dash": (r"\d\d-$", r"-\d++(?!\.\d)"),
+    "spaced dash": (r"\d\d[ \t]*+-[ \t]*+$", r"[ \t]*+-[ \t]*+\d++(?!\.\d)"),
+}
+_COLUMN = {
+    mode: (re.compile(r"(?<![\w.,£$€•])" + before), re.compile(after))
+    for mode, (before, after) in _COLUMN_GUARDS.items()
+}
+# A year joined to the code like the code's own groups starts a year-first date
+# ("2026-12-31 14:22", "2022 03 19"): the code is the rest of that date.
+_YEAR_BEFORE = re.compile(r"(?<!\d)(?:19|20)\d\d([ \t]*+-[ \t]*+|[ \t]++)$")
 _SORT_KEYWORD = re.compile(
-    r"(?<!\w)(sort[ \t-]{0,2}code|sort/acc(?:ount)?|s/c|sc)(?!\w)"
-    r"([^\n\d]{0,40})(?<![\d£$€.])(\d{6})(?!\d)(?!\.\d)",
+    rf"(?<!\w)({_KW})(?!\w)([^\n\d]{{0,40}})(?<![\d£$€.])(\d{{6}})(?!\d)(?!\.\d)",
     re.IGNORECASE,
 )
 # Six bare digits followed, on the same line, by a sort-code keyword ("090128 is my sort code").
 _SORT_KEYWORD_AFTER = re.compile(
-    r"(?<![\d£$€.])(\d{6})(?!\d)(?!\.\d)(?=[^\n\d]{0,20}"
-    r"(?<!\w)(?:sort[ \t-]{0,2}code|sort/acc(?:ount)?|s/c|sc)(?!\w))",
+    rf"(?<![\d£$€.])(\d{{6}})(?!\d)(?!\.\d)(?=[^\n\d]{{0,20}}(?<!\w){_KW}(?!\w))",
     re.IGNORECASE,
 )
 _ACCOUNT = re.compile(
@@ -107,10 +137,16 @@ _ACCOUNT = re.compile(
 )
 _ACCOUNT_NUMBER_WORD = re.compile(r"(?:number|num|no)\.?[\s:#.]*$", re.IGNORECASE)
 _ACCT_AFTER_SORT = re.compile(rf"(SORTCODE_\d+{_JOIN})({_ACCT_FORM})")
-_ACCT_BEFORE_SORT = re.compile(rf"(?<![\d£$€.•])({_ACCT_FORM})({_JOIN}SORTCODE_\d+)")
+_ACCT_BEFORE_SORT = re.compile(
+    rf"(?<![\d£$€.•])({_ACCT_FORM})({_JOIN}(?:(?i:{_KW})[ \t:]*+)?SORTCODE_\d+)"
+)
 # Any contiguous run of 13 or more digits: over-long runs are masked whole, never skipped.
 _CARD_RUN = re.compile(r"(?<!\d)\d{13,}(?!\d)")
 _CARD_SEPARATED = re.compile(rf"{_NOT_IN_STAND_IN}(?<!\d)\d{{1,19}}(?:{_SEP}\d{{1,19}})+(?!\d)")
+# Cards written 4.4.4.4, 4/4/4/4 or 4_4_4_4 (optionally a 3-digit fifth group), with one
+# consistent separator: masked without a Luhn check. Kept apart from ``_SEP`` so dates and
+# amounts with dots or slashes are never read as digit groups.
+_CARD_PUNCT = re.compile(r"(?<!\d)\d{4}([./_])\d{4}\1\d{4}\1\d{4}(?:\1\d{3})?(?!\d)")
 # Group sizes of real card layouts: masked without a Luhn check.
 _CARD_SHAPES = {(4, 4, 4, 4), (4, 6, 5), (4, 6, 4), (4, 4, 4, 4, 3)}
 # Start only at the beginning of a run and never backtrack into it: linear on long inputs.
@@ -247,6 +283,13 @@ def _line_finder(text: str) -> Callable[[int], tuple[int, int]]:
         return start, end
 
     return bounds
+
+
+def _column_mode(sep: str) -> str:
+    """Which column guard a separator between digit groups calls for."""
+    if "-" not in sep:
+        return "space"
+    return "dash" if sep == "-" else "spaced dash"
 
 
 def _clean_people(people: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -401,57 +444,77 @@ class Pseudonymiser:
     def _mask_sort_codes(self, text: str) -> str:
         """Mask 2-2-2 groups that are sort codes.
 
-        Candidates overlap, so a rejected group ("12 40-47" in "£45.12 40-47-84") never
-        hides the real code after it. A group that is not date-shaped is a sort code unless
-        it sits in a column of digit pairs joined the same way, or ends an ISO date. A
-        date-shaped group is a sort code only with a sort-code keyword earlier on its line or
-        within 20 characters after it. (Groups next to an account number were already
-        masked as pairs.)
+        Candidates overlap, so a group rejected as part of a column ("12 40-47" in
+        "12 40-47-84") never hides the real code after it; a group read as a date keeps its
+        digits, so "08 07 16 02" never becomes "08 SORTCODE". A group touching a decimal
+        amount or a time is never a candidate. A group that is not date-shaped is a sort code
+        unless it sits in a column of digit groups joined like its neighbouring separator, or
+        ends a year-first date. A date-shaped group is a sort code only with a sort-code
+        keyword earlier on its line or within 20 characters after it. (Groups next to an
+        account number were already masked as pairs.)
         """
         kws = [(k.start(), k.end()) for k in _SORT_WORD.finditer(text)]
         kw_starts = [k[0] for k in kws]
         kw_ends = [k[1] for k in kws]
         line_bounds = _line_finder(text)
 
-        def is_sort_code(start: int, end: int, code: str) -> bool:
-            if _ISO_YEAR_BEFORE.search(text, max(0, start - 12), start):
-                return False
+        def verdict(start: int, end: int, code: str) -> str:
+            """Return "code", "date" (its digits stay a date) or "no"."""
+            first_sep, last_sep = re.findall(r"\D+", code)
+            year = _YEAR_BEFORE.search(text, max(0, start - 12), start)
+            if year and first_sep != "." and _column_mode(year.group(1)) == _column_mode(first_sep):
+                return "date"
             line_start, line_end = line_bounds(start)
             i = bisect_right(kw_ends, start) - 1
             if i >= 0 and kw_ends[i] > line_start:
-                return True
+                return "code"
             j = bisect_right(kw_starts, end - 1)
             if j < len(kws) and kws[j][0] - end <= 20 and kws[j][0] < line_end:
-                return True
+                return "code"
             first, second = (int(n) for n in re.findall(r"\d+", code)[:2])
             if 1 <= first <= 31 and 1 <= second <= 12:
-                return False  # date-shaped
-            before, after = (
-                (_COL_DASH_BEFORE, _COL_DASH_AFTER)
-                if "-" in code
-                else (_COL_SPACE_BEFORE, _COL_SPACE_AFTER)
-            )
-            return (
-                before.search(text, max(0, start - 12), start) is None
-                and after.match(text, end) is None
-            )
+                return "date"
+            if first_sep == ".":
+                return "code"  # dotted groups never sit in a column (see _SORT_AT)
+            # Each side's column guard follows the separator on that side: the FIRST one
+            # before the code ("10 26 -66" is a spaced group), the last one after it
+            # ("12 40-47" continues as "-84").
+            before = _COLUMN[_column_mode(first_sep)][0]
+            after = _COLUMN[_column_mode(last_sep)][1]
+            if before.search(text, max(0, start - 12), start) or after.match(text, end):
+                return "no"
+            return "code"
 
         out: list[str] = []
-        last = 0
+        last = claimed = 0
         for m in _SORT_AT.finditer(text):
             start = m.start()
-            if start < last:
-                continue
+            if start < last or start < claimed:
+                continue  # inside a code already masked, or inside a date
             code = m.group(1)
             end = start + len(code)
-            if is_sort_code(start, end, code):
+            kind = verdict(start, end, code)
+            if kind == "code":
                 out.append(text[last:start])
                 out.append(self._token("SORTCODE", code))
                 last = end
+            elif kind == "date":
+                claimed = end
         out.append(text[last:])
         return "".join(out)
 
+    @staticmethod
+    def _pair_ok(m: re.Match[str]) -> bool:
+        """False when the "account" is two years ("2015 2022 05 07 14"): a run of dates."""
+        account = m.group("ac") if m.group("sc") is not None else m.group("ac2")
+        if account.isdigit():
+            return True
+        years = [int(g) for g in re.findall(r"\d+", account)]
+        return not all(1990 <= y <= date.today().year + 1 for y in years)
+
     def _pair(self, m: re.Match[str]) -> str:
+        if not self._pair_ok(m):
+            return m.group(0)
         if m.group("sc") is not None:
             return self._token("SORTCODE", m.group("sc")) + m.group("j1") + self._acct(m["ac"])
         return self._acct(m["ac2"]) + m.group("j2") + self._token("SORTCODE", m.group("sc2"))
@@ -488,10 +551,11 @@ class Pseudonymiser:
         """Mask the card numbers in a run of separated digit groups.
 
         Windows of real card layouts (with or without Luhn) and Luhn-valid windows of other
-        card-like layouts are candidates. Windows that pass Luhn in a card layout win; any
-        other candidate overlapping one of them is dropped, and the remaining overlapping
-        candidates are masked together, so no card digits are ever left beside a stand-in.
-        A sort code + account pair that passes Luhn by chance is left to the pair rule.
+        card-like layouts are candidates. Windows that pass Luhn in a card layout, or that
+        cover the whole run, win; any other candidate overlapping one of them is dropped, and
+        the remaining overlapping candidates are masked together, so no card digits (and no
+        trailing group of a Luhn-valid run) are left beside a stand-in. A sort code + account
+        pair that passes Luhn by chance is left to the pair rule.
         """
         text = m.group(0)
         pieces = [(g.start(), g.end()) for g in re.finditer(r"\d+", text)]
@@ -499,10 +563,15 @@ class Pseudonymiser:
             # Too long to window-scan cheaply: fail closed and mask the whole run.
             return self._acct(text)
         lens = [b - a for a, b in pieces]
+        # Luhn-only windows never take a group that belongs to an amount or a time, and a run
+        # touching one has no whole-run window.
+        source = m.string
+        lo = 1 if _AMOUNT_BEFORE.search(source, max(0, m.start() - 2), m.start()) else 0
+        hi = len(pieces) - (1 if _AMOUNT_AFTER.match(source, m.end()) else 0)
         strong: list[tuple[int, int]] = []
         weak: list[tuple[int, int]] = []
         for i in range(len(pieces)):
-            if i and lens[i] < 4:
+            if i != lo and lens[i] < 4:
                 continue
             total = 0
             for end in range(i + 1, len(pieces) + 1):
@@ -511,12 +580,13 @@ class Pseudonymiser:
                     break
                 window = tuple(lens[i:end])
                 card_shape = window in _CARD_SHAPES
+                whole_run = i == 0 and end == len(pieces) and (lo, hi) == (0, len(pieces))
                 if not card_shape:
                     # Other layouts need card-like groups (or the whole run), and Luhn.
-                    if total < 13:
+                    if total < 13 or i < lo or end > hi:
                         continue
                     shaped = all(n >= 4 for n in window[:-1]) and window[-1] >= 3
-                    if not (shaped or (i == 0 and end == len(pieces))):
+                    if not (shaped or whole_run):
                         continue
                 digits = "".join(text[a:b] for a, b in pieces[i:end])
                 if not _luhn(digits):
@@ -526,9 +596,13 @@ class Pseudonymiser:
                 if card_shape:
                     strong.append((i, end))
                     continue
-                pair = _PAIR.match(m.string, m.start() + pieces[i][0])
-                if pair is None or pair.end() != m.start() + pieces[end - 1][1]:
-                    weak.append((i, end))
+                pair = _PAIR.match(source, m.start() + pieces[i][0])
+                if (
+                    pair is None
+                    or not self._pair_ok(pair)
+                    or pair.end() != m.start() + pieces[end - 1][1]
+                ):
+                    (strong if whole_run else weak).append((i, end))
         spans = strong + [w for w in weak if not any(w[0] < e and s < w[1] for s, e in strong)]
         merged: list[tuple[int, int]] = []
         for s, e in sorted(spans):
@@ -551,6 +625,7 @@ class Pseudonymiser:
         text = self._ibans(text)
         # Cards first, so an account or sort-code rule can never take half of one.
         text = _CARD_RUN.sub(lambda m: self._acct(m.group(0)), text)
+        text = _CARD_PUNCT.sub(lambda m: self._acct(m.group(0)), text)
         text = _CARD_SEPARATED.sub(self._cards_separated, text)
         text = _PAIR.sub(self._pair, text)
         text = self._mask_sort_codes(text)

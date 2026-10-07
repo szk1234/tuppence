@@ -507,3 +507,92 @@ def test_date_like_account_beside_a_sort_code_is_still_an_account():
     assert _r("Account number (please quote on all payments): 91350877") == (
         "Account number (please quote on all payments): ACCT_1 ending ••77"
     )
+
+
+def test_dates_and_amounts_beside_digit_pairs_are_never_masked():
+    for text in [
+        "Paid 07 10 26 -66.89",
+        "07 10 26 -12.50",
+        "Ref 13 10 26 -45.12",
+        "20 12 26 -50.00",
+        "Paid 14 10 26 66.89",
+        "Paid 07 10 26 -66 GBP",
+        "Paid 5.79 09 08 2026",
+        "-82.70 41 02 Apr 2025",
+    ]:
+        assert _r(text) == text, text
+    # a sort code followed by an amount is still a sort code
+    assert _r("TO 40-47-84 -66.89") == "TO SORTCODE_1 -66.89"
+    assert _r("TO 40 47 84 66.89") == "TO SORTCODE_1 66.89"
+
+
+def test_cards_with_dot_slash_or_underscore_separators():
+    for text in [
+        "4111.1111.1111.1111",
+        "4111/1111/1111/1111",
+        "4111_1111_1111_1111",
+        "card 4111.1111.1111.1111.123 exp",
+    ]:
+        out = _r(text)
+        assert "ACCT_1 ending" in out and "1111" not in out, (text, out)
+    for text in ["07.10.2026", "£1.234.56", "2026/10/07", "1.2.3.4", "v1.2026.10.07"]:
+        assert _r(text) == text, text
+
+
+def test_dotted_sort_codes_follow_the_dashed_rules():
+    assert _r("sort code 09.01.28") == "sort code SORTCODE_1"
+    assert _r("pay 40.47.84") == "pay SORTCODE_1"
+    assert _r("40.47.84 12345678") == "SORTCODE_1 ACCT_1 ending ••78"
+    # dotted dates are dates: not paired with a following 8-digit number (R-M1b-19)
+    for text in [
+        "Paid 07.10.26 £12.00",
+        "07.10.26",
+        "17.03.20\t20201210\tSAINSBURYS 0456\t-48.00",
+        "20161013 08.05.23 SHELL 7781 40.93 GBP",
+        "v14.22.33",
+        "192.168.10.12",
+        "12.34.56.78",
+    ]:
+        assert _r(text) == text, text
+
+
+def test_bare_sort_is_a_keyword():
+    assert _r("pay 12345678 sort 09-01-28") == "pay ACCT_1 ending ••78 sort SORTCODE_1"
+    assert _r("sort 090128") == "sort SORTCODE_1"
+    assert _r("09-01-28 sort") == "SORTCODE_1 sort"
+
+
+def test_luhn_valid_whole_run_is_masked_whole():
+    # the 16-digit card and the whole 18-digit run both pass Luhn: no group is left over
+    assert _r("ref 3280 5465 1959 4458 34") == "ref ACCT_1 ending ••34"
+
+
+def test_dates_with_times_and_year_first_dates_are_never_masked():
+    for text in [
+        "SHELL 7781,08 08 26 03:48,+7.69",
+        "+92.30,04 11 21 07:10,SAINSBURYS 0456",
+        "BOOTS 1204,£290.17,30.18 GBP,08-12-20 12:58:25",
+        "24 Nov 23:37,12-01-17 12:19:45,NETFLIX.COM",
+        "2022 03 19  22-12-23  BOOTS 1204  -£7201.98",
+        "2016 02 21 01:14:50,05-08-15 05:23:39,SHELL 7781",
+        "2025 12 18 08:05\tAMAZON",
+        "08 07 16 02 TESCO",
+    ]:
+        assert _r(text) == text, text
+    # a year before a code joined differently does not hide it
+    assert _r("Paid 2026 40-47-84") == "Paid 2026 SORTCODE_1"
+    assert _r("12 40-47-84") == "12 SORTCODE_1"
+
+
+def test_luhn_and_pair_rules_never_take_amounts_times_or_year_pairs():
+    for text in [
+        "TESCO STORES 3123  16 09 20  1789.80 GBP",
+        "SHELL 7781 09-11-2019 03:39 £8337.53",
+        "07-05-2018\t20-06-17 21:50:18\tAMAZON\t632.47 GBP",
+        "17/09/2015\t2022 05 07 14:47:50\tPRET A MANGER",
+        "18/05/2020  2021-07-16 16:41:16  BOOTS 1204",
+    ]:
+        assert _r(text) == text, text
+    # card layouts are still masked next to amounts and times
+    assert _r("4111 1111 1111 1111 12:30") == "ACCT_1 ending ••11 12:30"
+    assert _r("£45.12 4111 1111 1111 1111") == "£45.12 ACCT_1 ending ••11"
