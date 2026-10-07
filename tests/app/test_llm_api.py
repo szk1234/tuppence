@@ -222,7 +222,7 @@ def auth_headers(req):
 
 
 def test_retargeting_a_connection_drops_its_saved_credentials(client, scripted):
-    conn = make_conn(client, headers={"X-Org": "hdrsecret-777"})
+    conn = make_conn(client, preset="custom", headers={"X-Org": "hdrsecret-777"})
     seen = []
 
     def handler(req):
@@ -241,9 +241,27 @@ def test_retargeting_a_connection_drops_its_saved_credentials(client, scripted):
     moved = r.json()
     assert moved["has_key"] is False
     assert moved["headers"] == [{"name": "X-Org", "has_value": False}]
+    # Header names stay but their values are gone, so the test stops until they're re-entered.
+    assert client.post(f"/api/llm/connections/{conn['id']}/test").status_code == 409
+    assert seen == []
+    fixed = client.patch(
+        f"/api/llm/connections/{conn['id']}",
+        json={"changes": {"headers": {}}, "expected_version": moved["version"]},
+    ).json()
+    assert fixed["headers"] == []
     client.post(f"/api/llm/connections/{conn['id']}/test")
     assert seen and all(h == {} for _, h in seen)
     assert "sk-secret" not in str(seen) and "hdrsecret" not in str(seen)
+
+
+def test_retargeted_key_required_connection_asks_for_the_key_again(client, scripted):
+    conn = make_conn(client)
+    client.patch(
+        f"/api/llm/connections/{conn['id']}",
+        json={"changes": {"base_url": "http://evil.example.com"}, "expected_version": 1},
+    )
+    scripted.handler = lambda req: pytest.fail("nothing may be sent without the key")
+    assert client.post(f"/api/llm/connections/{conn['id']}/test").status_code == 409
 
 
 def test_retargeting_with_a_new_key_keeps_the_new_key(client, scripted):
