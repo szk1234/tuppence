@@ -60,3 +60,37 @@ def test_different_folders_do_not_conflict(tmp_path):
     la, lb = acquire_instance_lock(a), acquire_instance_lock(b)
     la.release()
     lb.release()
+
+
+def test_other_lock_failures_are_not_reported_as_running(tmp_path, monkeypatch):
+    import errno
+    import fcntl
+
+    import pytest
+
+    from tuppence.paths import InstanceLockError
+
+    def nolock(*_a):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(fcntl, "flock", nolock)
+    with pytest.raises(InstanceLockError, match="couldn't lock its data folder"):
+        acquire_instance_lock(tmp_path)
+
+
+def test_unreadable_lock_file_exits_cleanly(tmp_path, capsys):
+    import os
+
+    import pytest
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    lock = tmp_path / "tuppence.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0)
+    try:
+        code = main(["serve", "--mode", "server", "--data-dir", str(tmp_path), "--port", "0"])
+    finally:
+        lock.chmod(0o600)
+    assert code == 2
+    assert "couldn't lock its data folder" in capsys.readouterr().err

@@ -8521,8 +8521,7 @@ def enqueue_analysis(queue: Any, statement_id: str) -> int:
         scope_key=ANALYSIS_SCOPE,
         payload={"statement_ids": [statement_id]},
         debounce_s=DEBOUNCE_S,
-        merge=merge_statement_ids,
-    )
+    )  # ids are merged by the registry: JobQueue(db, merges={ANALYSIS_JOB: merge_statement_ids})
 
 
 def analysis_placeholder(job: Any) -> dict[str, Any]:
@@ -9101,7 +9100,7 @@ How the LangGraph pieces behave (verified against langgraph 1.2.14 and langgraph
 
 - [ ] **Step 5: Wire it into `Services`**
 
-In `src/tuppence/app/services.py` add the imports (`sqlite3`; `from langgraph.checkpoint.sqlite import SqliteSaver`; `StatementFiles`; `analysis_placeholder`, `enqueue_analysis`; `IngestDeps`, `IngestGraph`; `BankPack`, `LayoutRegistry`, `LearnedLayouts`, `load_bank_pack`; `IngestService`; `StatementStore`; `vision_factory`; `RunBudget` from `tuppence.llm.budget`) and the six fields listed under Interfaces. In `build_services`, collect the worker's handlers in a dict named `handlers` (M1a's `maintenance.daily_backup` entry stays), then, after `accounts`, `config`, `router` and `llm` exist and before the `Worker` is created:
+In `src/tuppence/app/services.py` add the imports (`sqlite3`; `from langgraph.checkpoint.sqlite import SqliteSaver`; `StatementFiles`; `ANALYSIS_JOB`, `analysis_placeholder`, `enqueue_analysis`, `merge_statement_ids`; `IngestDeps`, `IngestGraph`; `BankPack`, `LayoutRegistry`, `LearnedLayouts`, `load_bank_pack`; `IngestService`; `StatementStore`; `vision_factory`; `RunBudget` from `tuppence.llm.budget`) and the six fields listed under Interfaces. In `build_services`, construct the queue with the analysis merge registered — `queue = JobQueue(db, merges={ANALYSIS_JOB: merge_statement_ids})` (M1a's `JobQueue` has no per-call `merge=`; the registry is what keeps merged statement ids when a retried or recovered job is superseded) — collect the worker's handlers in a dict named `handlers` (M1a's maintenance entries stay), then, after `accounts`, `config`, `router` and `llm` exist and before the `Worker` is created:
 
 ```python
 # --- in build_services(), after `accounts`, `config`, `router` and `llm` exist and before the

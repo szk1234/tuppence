@@ -14,6 +14,7 @@ from tuppence import __version__
 from tuppence.paths import (
     DataDirError,
     InstanceLocked,
+    InstanceLockError,
     acquire_instance_lock,
     resolve_data_dir,
 )
@@ -49,7 +50,7 @@ def _serve(args: argparse.Namespace) -> int:
         return 2
     try:
         lock = acquire_instance_lock(data_dir)
-    except InstanceLocked as exc:
+    except (InstanceLocked, InstanceLockError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     launch_token = secrets.token_urlsafe(32) if args.mode == "local" else None

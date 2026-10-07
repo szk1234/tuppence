@@ -19,6 +19,7 @@ from tuppence import __version__
 from tuppence.paths import (
     DataDirError,
     InstanceLocked,
+    InstanceLockError,
     acquire_instance_lock,
     resolve_data_dir,
 )
@@ -138,7 +139,7 @@ def run_desktop(
         return 2
     try:
         lock = acquire_instance_lock(root)
-    except InstanceLocked as exc:
+    except (InstanceLocked, InstanceLockError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     try:

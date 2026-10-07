@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
 from dataclasses import dataclass
@@ -70,6 +71,17 @@ class InstanceLocked(RuntimeError):
     """Another Tuppence process already holds this data folder."""
 
 
+class InstanceLockError(RuntimeError):
+    """The data folder can't be locked for a reason other than another instance holding it."""
+
+
+def _is_contention(exc: OSError) -> bool:
+    if isinstance(exc, BlockingIOError):
+        return True
+    codes = {errno.EACCES} if sys.platform == "win32" else {errno.EWOULDBLOCK, errno.EAGAIN}
+    return exc.errno in codes
+
+
 class InstanceLock:
     """An exclusive OS lock on `<data>/tuppence.lock`, held until released or the process exits."""
 
@@ -100,8 +112,10 @@ _held_locks: list[InstanceLock] = []  # keeps every lock alive for the process l
 
 
 def acquire_instance_lock(data_dir: str | os.PathLike[str]) -> InstanceLock:
-    handle = open(Path(data_dir) / "tuppence.lock", "a+b")  # noqa: SIM115 - held on purpose
+    path = Path(data_dir) / "tuppence.lock"
+    handle: IO[bytes] | None = None
     try:
+        handle = open(path, "a+b")  # noqa: SIM115 - held on purpose
         if sys.platform == "win32":
             import msvcrt
 
@@ -112,8 +126,14 @@ def acquire_instance_lock(data_dir: str | os.PathLike[str]) -> InstanceLock:
 
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
-        handle.close()
-        raise InstanceLocked("Tuppence is already running with this data folder.") from exc
+        if handle is not None:
+            handle.close()
+        if handle is not None and _is_contention(exc):
+            raise InstanceLocked("Tuppence is already running with this data folder.") from exc
+        reason = exc.strerror or str(exc)
+        raise InstanceLockError(
+            f"Tuppence couldn't lock its data folder {Path(data_dir)}: {reason}"
+        ) from exc
     lock = InstanceLock(handle)
     _held_locks.append(lock)
     return lock

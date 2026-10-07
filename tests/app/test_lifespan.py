@@ -49,3 +49,27 @@ def test_running_job_is_recovered_on_startup(make_app):
         ):
             time.sleep(0.1)
         assert any(j.scope_key == "orphan" and j.status == "done" for j in q.list())
+
+
+def test_raising_merge_does_not_block_startup(make_app):
+    from tuppence.core.clock import to_iso, utcnow
+
+    app = make_app("server")
+    services = app.state.services
+
+    def boom(old, new):
+        raise KeyError("old shape")
+
+    services.queue.merges["analysis"] = boom
+    now = to_iso(utcnow())
+    with services.db.transaction() as conn:
+        for status in ("running", "queued"):
+            conn.execute(
+                "INSERT INTO job (kind, scope_key, status, attempts, run_after, created_at)"
+                " VALUES ('analysis', 's', ?, 1, ?, ?)",
+                [status, now, now],
+            )
+    with TestClient(app):
+        pass
+    jobs = {j.status: j for j in services.queue.list() if j.kind == "analysis"}
+    assert jobs["cancelled"].error == "Superseded; its work couldn't be merged"

@@ -74,10 +74,9 @@ class JobQueue:
         payload: dict[str, Any] | None = None,
         debounce_s: float = 0.0,
         max_attempts: int = 3,
-        merge: Merge | None = None,
     ) -> int:
         payload = payload or {}
-        merge = merge or self.merges.get(kind)
+        merge = self.merges.get(kind)
         now = self.clock()
         run_after = to_iso(now + timedelta(seconds=debounce_s))
         with self.db.transaction() as conn:
@@ -172,6 +171,7 @@ class JobQueue:
         old = conn.execute(
             "SELECT kind, scope_key, payload FROM job WHERE id = ?", [job_id]
         ).fetchone()
+        note = "Superseded by a newer queued job"
         merge = self.merges.get(old["kind"])
         if merge is not None:
             queued = conn.execute(
@@ -180,14 +180,22 @@ class JobQueue:
                 [old["kind"], old["scope_key"]],
             ).fetchone()
             if queued is not None:
-                merged = merge(json.loads(old["payload"]), json.loads(queued["payload"]))
-                conn.execute(
-                    "UPDATE job SET payload = ?, run_after = ? WHERE id = ?",
-                    [json.dumps(merged), min(queued["run_after"], run_after), queued["id"]],
-                )
+                try:
+                    merged = merge(json.loads(old["payload"]), json.loads(queued["payload"]))
+                    merged_json = json.dumps(merged)
+                except Exception:  # noqa: BLE001 - a bad merge must never block requeueing
+                    log.exception(
+                        "merge failed for job %s (%s); cancelling it", job_id, old["kind"]
+                    )
+                    note = "Superseded; its work couldn't be merged"
+                else:
+                    conn.execute(
+                        "UPDATE job SET payload = ?, run_after = ? WHERE id = ?",
+                        [merged_json, min(queued["run_after"], run_after), queued["id"]],
+                    )
         conn.execute(
             "UPDATE job SET status = 'cancelled', finished_at = ?, error = ? WHERE id = ?",
-            [to_iso(self.clock()), "Superseded by a newer queued job", job_id],
+            [to_iso(self.clock()), note, job_id],
         )
 
     def recover_running(self) -> int:

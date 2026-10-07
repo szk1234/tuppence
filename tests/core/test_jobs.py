@@ -38,9 +38,11 @@ def test_enqueue_coalesces_same_scope(env):
 
 def test_merge_function_combines_payloads(env):
     q, _ = env
-    merge = lambda old, new: {"merchants": sorted(set(old["merchants"]) | set(new["merchants"]))}  # noqa: E731
-    jid = q.enqueue("rereview", payload={"merchants": ["a"]}, merge=merge)
-    q.enqueue("rereview", payload={"merchants": ["b"]}, merge=merge)
+    q.merges["rereview"] = lambda old, new: {
+        "merchants": sorted(set(old["merchants"]) | set(new["merchants"]))
+    }
+    jid = q.enqueue("rereview", payload={"merchants": ["a"]})
+    q.enqueue("rereview", payload={"merchants": ["b"]})
     assert q.get(jid).payload == {"merchants": ["a", "b"]}
 
 
@@ -328,3 +330,23 @@ def test_worker_gives_up_bookkeeping_after_retries(env):
     w.retry_delays = (0, 0)
     assert w.run_once()
     assert q.get(jid).status == "running"  # recover_running handles it on next start
+
+
+@pytest.mark.parametrize("path", ["fail", "defer", "recover"])
+def test_raising_merge_cancels_old_job_and_keeps_queued_payload(tmp_path, path, caplog):
+    def boom(old, new):
+        raise KeyError("old shape")
+
+    q, _ = _merging_env(tmp_path)
+    q.merges["analysis"] = boom
+    first, newer = _running_then_newer(q, [1], [2])
+    if path == "fail":
+        q.fail(first, "boom")
+    elif path == "defer":
+        q.defer(first, "wait", delay_s=60)
+    else:
+        assert q.recover_running() == 1
+    old = q.get(first)
+    assert old.status == "cancelled" and old.error == "Superseded; its work couldn't be merged"
+    assert q.get(newer).status == "queued" and q.get(newer).payload == {"ids": [2]}
+    assert "[1]" not in caplog.text and "[2]" not in caplog.text
