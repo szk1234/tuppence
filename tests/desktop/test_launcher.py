@@ -51,6 +51,7 @@ def test_falls_back_to_browser_when_no_gui(tmp_path):
     )
     assert rc == 0
     assert len(opened) == 1 and opened[0].startswith("http://127.0.0.1:")
+    assert "/auth/launch?token=" in opened[0]
 
 
 def test_smoke_reports_prebound_port(tmp_path, monkeypatch):
@@ -119,3 +120,19 @@ def test_entry_ensure_std_streams(monkeypatch):
     sys.stderr.write("x")
     sys.stdout.close()
     sys.stderr.close()
+
+
+def test_desktop_launch_url_signs_in_once(tmp_path):
+    seen = []
+
+    def fake_window(url):
+        with httpx.Client(trust_env=False, follow_redirects=False) as c:
+            first = c.get(url)
+            seen.append(
+                (first.status_code, c.get(url.split("auth/")[0] + "api/settings").status_code)
+            )
+            seen.append(httpx.get(url, trust_env=False, follow_redirects=False).status_code)
+        return True
+
+    assert launcher.run_desktop(data_dir=str(tmp_path / "data"), open_window=fake_window) == 0
+    assert seen == [(303, 200), 403]

@@ -81,3 +81,32 @@ def test_port_available_after_time_wait():
 
 def test_port_available_false_for_unresolvable_host():
     assert not port_available("no-such-host.invalid", 8040)
+
+
+def test_local_serve_prints_and_opens_launch_url(tmp_path, capsys, monkeypatch):
+    import uvicorn
+
+    from tuppence import cli
+
+    opened = []
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    assert main(["serve", "--port", str(port), "--data-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert f"http://127.0.0.1:{port}/auth/launch?token=" in out
+    assert len(opened) == 1 and opened[0] in out
+
+
+def test_server_mode_prints_plain_url(tmp_path, capsys, monkeypatch):
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    args = ["serve", "--mode", "server", "--port", str(port), "--data-dir", str(tmp_path)]
+    assert main(args) == 0
+    assert "auth/launch" not in capsys.readouterr().out

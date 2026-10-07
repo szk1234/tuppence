@@ -21,6 +21,7 @@ dependencies = [
   "httpx>=0.28",
   "pydantic>=2.13",
   "platformdirs>=4.12",
+  "argon2-cffi>=25.1.0",
 ]
 
 [project.optional-dependencies]

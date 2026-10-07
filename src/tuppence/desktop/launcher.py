@@ -133,9 +133,8 @@ def run_desktop(
         return 2
     sock = bind_loopback_socket()
     port = int(sock.getsockname()[1])
-    settings = RuntimeSettings.for_mode(
-        "desktop", data_dir=root, port=port, launch_token=new_launch_token()
-    )
+    token = new_launch_token()
+    settings = RuntimeSettings.for_mode("desktop", data_dir=root, port=port, launch_token=token)
     server = ServerThread(create_app(settings), "127.0.0.1", port, sock)
     server.start()
     try:
@@ -151,9 +150,10 @@ def run_desktop(
                 Path(smoke_out).write_text(text, encoding="utf-8")
             print(text)
             return 0
-        if not (open_window or open_webview_window)(server.url):
-            print(f"No desktop window available; opening Tuppence in your browser at {server.url}")
-            (open_browser or webbrowser.open)(server.url)
+        launch_url = f"{server.url}auth/launch?token={token}"
+        if not (open_window or open_webview_window)(launch_url):
+            print("No desktop window available; opening Tuppence in your browser.")
+            (open_browser or webbrowser.open)(launch_url)
             (wait_forever or _wait_forever)()
         return 0
     finally:

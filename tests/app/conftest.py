@@ -19,5 +19,14 @@ def make_app(tmp_path):
 
 
 @pytest.fixture
-def client(make_app):
+def anon_client(make_app):
     return TestClient(make_app())
+
+
+@pytest.fixture
+def client(make_app):
+    c = TestClient(make_app("server"))
+    r = c.post("/api/auth/setup", json={"username": "admin", "password": "correct-horse-battery"})
+    assert r.status_code == 200, r.text
+    c.headers["X-CSRF-Token"] = r.json()["csrf_token"]
+    return c

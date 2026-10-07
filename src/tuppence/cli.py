@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import socket
 import sys
 import webbrowser
@@ -41,8 +42,9 @@ def _serve(args: argparse.Namespace) -> int:
     except DataDirError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    launch_token = secrets.token_urlsafe(32) if args.mode == "local" else None
     settings = RuntimeSettings.for_mode(
-        args.mode, data_dir=data_dir, host=args.host, port=args.port
+        args.mode, data_dir=data_dir, host=args.host, port=args.port, launch_token=launch_token
     )
     if not port_available(settings.host, settings.port):
         print(
@@ -53,9 +55,10 @@ def _serve(args: argparse.Namespace) -> int:
         return 2
     shown_host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host  # noqa: S104
     url = f"http://{shown_host}:{settings.port}/"
-    print(f"Tuppence {__version__} running at {url}  (data: {data_dir})")
+    open_url = f"{url}auth/launch?token={launch_token}" if launch_token else url
+    print(f"Tuppence {__version__} running at {open_url}  (data: {data_dir})")
     if settings.mode == "local" and not args.no_browser:
-        webbrowser.open(url)
+        webbrowser.open(open_url)
     uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="warning")
     return 0
 
