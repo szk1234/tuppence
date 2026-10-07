@@ -1,0 +1,11 @@
+.git
+.venv
+**/__pycache__
+web/node_modules
+web/dist
+src/tuppence/web_dist
+dist
+build
+*.db*
+docs
+tests
