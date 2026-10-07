@@ -409,6 +409,7 @@ it('the welcome step reloads the household after a conflict, so Continue can suc
   expect(await screen.findByText('This was changed somewhere else. Reload and try again.')).toBeInTheDocument()
   await waitFor(() => expect(calls.filter((c) => c.url === '/api/household' && c.method === 'GET')).toHaveLength(2))
   expect(screen.getByLabelText('Nation')).toHaveValue('wales')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled())
   await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
   expect(await screen.findByRole('heading', { level: 1, name: "Who's in your household" })).toBeInTheDocument()
   expect(patches).toBe(2)
