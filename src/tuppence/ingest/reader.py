@@ -10,9 +10,10 @@ read from it locally are passed as a short summary.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import threading
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from decimal import Decimal
 from typing import Annotated, Any, Protocol
 
@@ -24,6 +25,7 @@ from tuppence.ingest.identify import HeaderFacts
 from tuppence.ingest.models import (
     CheckLevel,
     Document,
+    Line,
     ParsedRow,
     ParsedStatement,
     Perspective,
@@ -32,7 +34,7 @@ from tuppence.ingest.models import (
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.textnum import to_pence
 from tuppence.ingest.textprep import Chunk, plan_chunks, render
-from tuppence.llm.types import LLMBadResponse, Message
+from tuppence.llm.types import BudgetExceeded, LLMBadResponse, Message
 
 MAX_ERROR_LINES = 40
 PROMPT_TOKENS = 1700  # the read prompt plus the JSON-schema instruction, roughly
@@ -105,6 +107,7 @@ class LockedBudget:
 
     def __init__(self, budget: Any) -> None:
         self._budget, self._lock = budget, threading.RLock()
+        self._held: dict[int, tuple[int, float]] = {}
 
     @property
     def max_seconds(self) -> float:
@@ -135,12 +138,27 @@ class LockedBudget:
             self._budget.check_limits()
 
     def over_cap(self, estimated_tokens: int, projected_gbp: float) -> str | None:
+        """Why this call doesn't fit. When it does fit, its estimate is held for this thread
+        until it records its usage, so parallel calls can't each pass the check and then
+        together overshoot the token or £ cap."""
+        me = threading.get_ident()
         with self._lock:
-            return self._budget.over_cap(estimated_tokens, projected_gbp)
+            self._held.pop(me, None)
+            others_tokens = sum(t for t, _ in self._held.values())
+            others_gbp = sum(g for _, g in self._held.values())
+            reason = self._budget.over_cap(
+                estimated_tokens + others_tokens, projected_gbp + others_gbp
+            )
+            if reason is None:
+                self._held[me] = (estimated_tokens, projected_gbp)
+            return reason
 
     def check(self, estimated_tokens: int, projected_gbp: float = 0.0) -> None:
         with self._lock:
-            self._budget.check(estimated_tokens, projected_gbp)
+            self._budget.check_limits()
+        reason = self.over_cap(estimated_tokens, projected_gbp)
+        if reason:
+            raise BudgetExceeded(reason)
 
     def start_call(self) -> None:
         with self._lock:
@@ -148,7 +166,13 @@ class LockedBudget:
 
     def record(self, tokens: int, gbp: float | None) -> None:
         with self._lock:
+            self._held.pop(threading.get_ident(), None)
             self._budget.record(tokens, gbp)
+
+    def release(self) -> None:
+        """Drop this thread's hold (a call that failed and recorded nothing)."""
+        with self._lock:
+            self._held.pop(threading.get_ident(), None)
 
 
 def rows_per_chunk_for(context_window: int, configured: int) -> int:
@@ -173,6 +197,29 @@ def retry_message(
     return message
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_REF = re.compile(r"\b(?:P\d+)?L\d+\b")
+
+
+def tidy(text: str, limit: int = 200) -> str:
+    """Text that came from a model, made safe to store: no control characters, capped."""
+    return _CONTROL.sub(" ", text)[:limit]
+
+
+def ref_aliases(doc: Document) -> dict[str, str]:
+    """Dense opaque ids (D1, D2, ...) for the lines that may be sent, in file order, so the
+    model never sees where withheld lines sit between them."""
+    sendable = {*doc.data_refs, *doc.header_refs}
+    return {
+        line.ref: f"D{n}"
+        for n, line in enumerate((ln for ln in doc.lines if ln.ref in sendable), start=1)
+    }
+
+
+def _in_aliases(text: str, aliases: dict[str, str]) -> str:
+    return _REF.sub(lambda m: aliases.get(m.group(0), m.group(0)), text)
+
+
 def _iso(value: str | None) -> dt.date | None:
     if not value:
         return None
@@ -195,6 +242,9 @@ def to_parsed(out: ReadOut, *, perspective: Perspective) -> tuple[ParsedStatemen
         errors.append(f"statement period_start {out.statement.period_start} not ISO")
     if out.statement.period_end and end is None:
         errors.append(f"statement period_end {out.statement.period_end} not ISO")
+    currency = (out.statement.currency or "GBP").strip().upper()
+    if currency != "GBP":
+        errors.append(f"statement currency is {tidy(currency, 8)}, not GBP")
     parsed = ParsedStatement(
         importer="ai-read",
         perspective=perspective,
@@ -202,7 +252,7 @@ def to_parsed(out: ReadOut, *, perspective: Perspective) -> tuple[ParsedStatemen
         period_end=end,
         opening_balance_pence=_pence(out.statement.opening_balance),
         closing_balance_pence=_pence(out.statement.closing_balance),
-        currency=out.statement.currency or "GBP",
+        currency="GBP",
         skipped=[SkippedLine(ref=s.ref, reason=s.reason) for s in out.skipped],
     )
     for row in out.transactions:
@@ -240,15 +290,23 @@ def context_block(*, today: dt.date, account: str, facts: HeaderFacts, level: Ch
     return "\n".join(lines) + "\n"
 
 
-def user_message(context: str, chunk: Chunk, doc: Document) -> str:
+def user_message(
+    context: str, chunk: Chunk, doc: Document, aliases: dict[str, str] | None = None
+) -> str:
+    ids = aliases if aliases is not None else ref_aliases(doc)
     by_ref = doc.by_ref()
     heading = [by_ref[r] for r in chunk.context_refs]
-    data = [line for line in chunk.lines if line.ref in set(chunk.data_refs)]
+    data_set = set(chunk.data_refs)
+    data = [line for line in chunk.lines if line.ref in data_set]
     parts = [context]
     if heading:
-        parts.append("CONTEXT:\n" + render(heading))
-    parts.append("FILE:\n" + render(data))
+        parts.append("CONTEXT:\n" + render(_renamed(heading, ids)))
+    parts.append("FILE:\n" + render(_renamed(data, ids)))
     return "\n".join(parts)
+
+
+def _renamed(lines: Sequence[Line], ids: dict[str, str]) -> list[Line]:
+    return [Line(ref=ids[line.ref], text=line.text) for line in lines]
 
 
 class _ChunkOutcome(BaseModel):
@@ -270,43 +328,75 @@ def _read_chunk(
     level: CheckLevel,
     max_attempts: int,
     context_window: int,
+    aliases: dict[str, str],
+    stop: threading.Event,
 ) -> _ChunkOutcome:
-    base = user_message(context, chunk, doc)
+    """Read one chunk. The reply is checked against the lines that were sent, and nothing
+    else, so the feedback can't tell the model anything about the lines that were withheld;
+    the whole-file check runs once, afterwards, on this device."""
+    base = user_message(context, chunk, doc, aliases)
+    real = {alias: ref for ref, alias in aliases.items()}
     errors: list[str] = []
     previous: str | None = None
     last: ParsedStatement | None = None
+    done = 0
     max_tokens = min(8192, 600 + OUT_PER_ROW * len(chunk.data_refs))
-    for attempt in range(1, max_attempts + 1):
-        user = (
-            base
-            if attempt == 1
-            else retry_message(base, errors, previous, context_window=context_window)
-        )
-        try:
-            out = llm.structured(
-                "read",
-                [Message(role="system", content=prompt), Message(role="user", content=user)],
-                ReadOut,
-                max_tokens=max_tokens,
-                run=run,
+    try:
+        for attempt in range(1, max_attempts + 1):
+            if stop.is_set():
+                break
+            done = attempt
+            user = (
+                base
+                if attempt == 1
+                else retry_message(base, errors, previous, context_window=context_window)
             )
-        except LLMBadResponse as exc:
-            errors, previous = [safe_error_text(exc)], None
-            continue
-        parsed, conversion = to_parsed(out, perspective=perspective)
-        errors = conversion + check_rows(
-            chunk.lines,
-            all_lines=doc.lines,
-            context_refs=chunk.context_refs,
-            data_refs=chunk.data_refs,
-            parsed=parsed,
-            level=level,
-        )
-        last = parsed
-        if not errors:
-            return _ChunkOutcome(ok=True, parsed=parsed, errors=[], attempts=attempt)
-        previous = out.model_dump_json()
-    return _ChunkOutcome(ok=False, parsed=last, errors=errors, attempts=max_attempts)
+            try:
+                out = llm.structured(
+                    "read",
+                    [Message(role="system", content=prompt), Message(role="user", content=user)],
+                    ReadOut,
+                    max_tokens=max_tokens,
+                    run=run,
+                )
+            except LLMBadResponse as exc:
+                errors, previous = [tidy(safe_error_text(exc))], None
+                continue
+            parsed, conversion = to_parsed(_with_real_refs(out, real), perspective=perspective)
+            checked = conversion + check_rows(
+                chunk.lines,
+                all_lines=chunk.lines,
+                context_refs=chunk.context_refs,
+                data_refs=chunk.data_refs,
+                parsed=parsed,
+                level=level,
+            )
+            errors = [tidy(_in_aliases(e, aliases)) for e in checked]
+            last = parsed
+            if not errors:
+                return _ChunkOutcome(ok=True, parsed=parsed, errors=[], attempts=attempt)
+            previous = out.model_dump_json()
+    except BaseException:
+        stop.set()  # a fatal error ends the whole read: no other chunk starts a new call
+        raise
+    finally:
+        if isinstance(run, LockedBudget):
+            run.release()
+    return _ChunkOutcome(ok=False, parsed=last, errors=errors, attempts=done)
+
+
+def _with_real_refs(out: ReadOut, real: dict[str, str]) -> ReadOut:
+    """The reply with the model's ids turned back into the file's own refs. An id the model
+    made up stays as written, and is then reported as a ref that isn't in the chunk."""
+    return ReadOut(
+        statement=out.statement,
+        transactions=[
+            row.model_copy(update={"ref": real.get(row.ref, row.ref)}) for row in out.transactions
+        ],
+        skipped=[
+            skip.model_copy(update={"ref": real.get(skip.ref, skip.ref)}) for skip in out.skipped
+        ],
+    )
 
 
 def merge(parts: Sequence[ParsedStatement], *, perspective: Perspective) -> ParsedStatement:
@@ -354,26 +444,44 @@ def read_document(
     shared = LockedBudget(run) if run is not None else None
     text = prompt or load_prompt("read")
     context = context_block(today=today, account=account, facts=facts, level=level)
-    with ThreadPoolExecutor(max_workers=max(1, min(parallel, len(chunks)))) as pool:
-        futures = [
-            pool.submit(
-                _read_chunk,
-                doc,
-                chunk,
-                llm=llm,
-                run=shared,
-                prompt=text,
-                context=context,
-                perspective=perspective,
-                level=level,
-                max_attempts=max_attempts,
-                context_window=context_window,
-            )
-            for chunk in chunks
-        ]
-        outcomes = [f.result() for f in futures]
+    aliases = ref_aliases(doc)
+    stop = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=max(1, min(parallel, len(chunks))))
+    futures = [
+        pool.submit(
+            _read_chunk,
+            doc,
+            chunk,
+            llm=llm,
+            run=shared,
+            prompt=text,
+            context=context,
+            perspective=perspective,
+            level=level,
+            max_attempts=max(1, max_attempts),
+            context_window=context_window,
+            aliases=aliases,
+            stop=stop,
+        )
+        for chunk in chunks
+    ]
+    wait(futures, return_when=FIRST_EXCEPTION)
+    failed = next((f for f in futures if f.done() and f.exception() is not None), None)
+    if failed is not None:  # a fatal error ends the read: nothing queued is sent
+        stop.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        error = failed.exception()
+        assert error is not None
+        raise error
+    pool.shutdown()
+    outcomes = [f.result() for f in futures]
     parsed = merge([o.parsed for o in outcomes if o.parsed is not None], perspective=perspective)
-    errors = [e for o in outcomes for e in o.errors]
+    real = {alias: ref for ref, alias in aliases.items()}
+    errors = [
+        tidy(re.sub(r"\bD\d+\b", lambda m: real.get(m.group(0), m.group(0)), e))
+        for o in outcomes
+        for e in o.errors
+    ]
     return ReadOutcome(
         ok=not errors and all(o.ok for o in outcomes),
         parsed=parsed,

@@ -26,7 +26,10 @@ def oracle_handler(scripted: Scripted):
         body = json.loads(request.content)
         scripted.requests.append(body)
         if scripted.replies:
-            content = scripted.replies.pop(0)["content"]
+            reply = scripted.replies.pop(0)
+            if isinstance(reply, httpx.Response):  # a scripted HTTP failure
+                return reply
+            content = reply["content"]
         else:
             content = oracle.reply(body["messages"])
         return httpx.Response(

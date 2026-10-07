@@ -1,6 +1,6 @@
 You are transcribing a UK bank or card statement exactly as written (TUPPENCE-READ-V1). Do not categorise, do not decide who spent the money, and do not guess a column from habit.
 
-The FILE section is the only source. Each line starts with its ref (L12: or P2L4:). Lines under CONTEXT are column headings repeated from an earlier part of the statement: they are not transactions and must not appear in your answer. Every line under FILE must appear exactly once, either in transactions or in skipped. Do not invent a line and do not drop one.
+The FILE section is the only source. Each line starts with its ref (D12:). Lines under CONTEXT are column headings repeated from an earlier part of the statement: they are not transactions and must not appear in your answer. Every line under FILE must appear exactly once, either in transactions or in skipped. Do not invent a line and do not drop one.
 
 Dates on UK statements are DD/MM/YYYY, DD Mon YYYY (01 Oct 2026) or a full month (1 October 2026). Convert each transaction date to YYYY-MM-DD. When a date leaves out the year, take the year from the statement period, or from TODAY for a screenshot. Set period_start and period_end to the period under STATEMENT HEADER; if there is none, use the earliest and latest transaction dates. period_start must not be after period_end.
 
@@ -18,5 +18,5 @@ merchant is the clean payee name: strip store numbers, towns and card references
 
 Reply with one JSON object and nothing else, shaped like this:
 {"statement": {"period_start": "2026-10-01", "period_end": "2026-10-31", "opening_balance": null, "closing_balance": null, "currency": "GBP"},
- "transactions": [{"ref": "L2", "date": "2026-10-01", "amount": -12.5, "amount_text": "-12.50", "sign_from": null, "raw_desc": "GREENBASKET STORES 0873", "merchant": "Greenbasket Stores", "bank_category": null, "bank_type": null, "running_balance": null}],
- "skipped": [{"ref": "L3", "reason": "column headings"}]}
+ "transactions": [{"ref": "D2", "date": "2026-10-01", "amount": -12.5, "amount_text": "-12.50", "sign_from": null, "raw_desc": "GREENBASKET STORES 0873", "merchant": "Greenbasket Stores", "bank_category": null, "bank_type": null, "running_balance": null}],
+ "skipped": [{"ref": "D3", "reason": "column headings"}]}

@@ -22,7 +22,7 @@ _DATE = re.compile(
     re.IGNORECASE,
 )
 _MONEY = re.compile(r"(?<![\w.,])([+\-−]?£?\d{1,3}(?:,\d{3})*\.\d{2}(?: ?CR)?)(?![\d])")
-_REF = re.compile(r"^((?:P\d+)?L\d+): (.*)$")
+_REF = re.compile(r"^((?:P\d+)?L\d+|D\d+): (.*)$")
 _WEEKDAY = re.compile(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\b", re.IGNORECASE)
 _SKIP_WORDS = (
     "brought forward",
@@ -188,7 +188,7 @@ def _find(headings: list[str], *words: str) -> str | None:
 
 def mapping(user: str) -> dict[str, Any]:
     headings: list[str] = json.loads(_section(user, "HEADINGS")[0])
-    rows = [json.loads(r) for r in _section(user, "ROWS")]
+    rows = [json.loads(r) for r in _section(user, "ROWS") if r.startswith("[")]
     date_column = _find(headings, "transaction date", "date") or headings[0]
     index = headings.index(date_column)
     samples = [r[index] for r in rows if len(r) > index and r[index]]
