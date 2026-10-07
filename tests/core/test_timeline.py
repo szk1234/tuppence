@@ -12,6 +12,11 @@ from tuppence.core.timeline import Timeline
 def tl(tmp_path):
     db = Database(tmp_path / "t.db")
     migrate(db, tmp_path / "b")
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO person (id, display_name, role, created_at, updated_at)"
+            " VALUES ('p1', 'Alex', 'adult', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+        )
     return Timeline(db)
 
 
@@ -68,3 +73,20 @@ def test_rejects_unknown_attribute_and_bad_value(tl):
         tl.set("person", "p1", "shoe_size", 9, date(2026, 1, 1))
     with pytest.raises(InputError):
         tl.set("person", "p1", "employment_status", "astronaut", date(2026, 1, 1))
+
+
+def test_household_district_normalised_and_full_postcode_rejected(tl):
+    e = tl.set("household", "1", "postcode_district", "ls6", date(2026, 1, 1))
+    assert e.value == "LS6"
+    with pytest.raises(InputError, match="first part of your postcode"):
+        tl.set("household", "1", "postcode_district", "LS6 2AB", date(2026, 2, 1))
+    assert [h.value for h in tl.history("household", "1", "postcode_district")] == ["LS6"]
+
+
+def test_subject_must_exist(tl):
+    from tuppence.core.records import NotFound
+
+    with pytest.raises(NotFound):
+        tl.set("person", "p_nobody", "household_member", True, date(2026, 1, 1))
+    with pytest.raises(NotFound):
+        tl.set("household", "2", "nation", "wales", date(2026, 1, 1))

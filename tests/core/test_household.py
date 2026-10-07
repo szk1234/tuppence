@@ -65,3 +65,27 @@ def test_person_validation():
         PersonIn(display_name="", role="adult")
     with pytest.raises(ValueError):
         PersonIn(display_name="Kid", role="child", birth_year=1800)
+
+
+def test_explicit_null_on_required_fields_rejected(hh):
+    p = hh.create_person(PersonIn(display_name="Alex", role="adult"))
+    with pytest.raises(InputError, match="display_name can't be empty"):
+        hh.update_person(p.id, PersonPatch(display_name=None), expected_version=1)
+    with pytest.raises(InputError, match="role can't be empty"):
+        hh.update_person(p.id, PersonPatch(role=None), expected_version=1)
+    with pytest.raises(InputError, match="period_mode can't be empty"):
+        hh.update(HouseholdPatch(period_mode=None), expected_version=1)
+    hh.update(HouseholdPatch(nation="wales"), expected_version=1)
+    cleared = hh.update(HouseholdPatch(nation=None), expected_version=2)
+    assert cleared.nation is None
+
+
+def test_empty_changes_with_stale_version_conflicts(hh):
+    p = hh.create_person(PersonIn(display_name="Alex", role="adult"))
+    hh.update_person(p.id, PersonPatch(role="child"), expected_version=1)
+    with pytest.raises(VersionConflict):
+        hh.update_person(p.id, PersonPatch(), expected_version=1)
+    assert hh.update_person(p.id, PersonPatch(), expected_version=2).version == 2
+    hh.get()
+    with pytest.raises(VersionConflict):
+        hh.update(HouseholdPatch(), expected_version=5)

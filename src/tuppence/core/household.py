@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 import secrets
+import sqlite3
 from datetime import date
 from typing import Annotated, Literal
 
@@ -12,29 +12,33 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.errors import InputError
-from tuppence.core.records import NotFound, update_versioned
+from tuppence.core.postcode import normalise_district
+from tuppence.core.records import NotFound, VersionConflict, update_versioned
 
 Nation = Literal["england", "wales", "scotland", "northern_ireland"]
 Role = Literal["adult", "child", "dependent_adult"]
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
-
-_DISTRICT = re.compile(r"^[A-Z]{1,2}[0-9][A-Z0-9]?$")
-_FULL = re.compile(r"^[A-Z]{1,2}[0-9][A-Z0-9]?\s*[0-9][A-Z]{2}$")
-
-
-def normalise_district(value: str) -> str:
-    v = value.strip().upper()
-    if _FULL.match(v):
-        raise InputError("Just the first part of your postcode, please (for example LS6).")
-    if not _DISTRICT.match(v):
-        raise InputError("That doesn't look like a UK postcode district (for example LS6).")
-    return v
 
 
 def _birth_year_ok(v: int | None) -> int | None:
     if v is not None and not (1900 <= v <= date.today().year):
         raise ValueError("Birth year must be between 1900 and this year.")
     return v
+
+
+def _reject_nulls(data: dict[str, object], required: tuple[str, ...]) -> None:
+    for field in required:
+        if field in data and data[field] is None:
+            raise InputError(f"{field} can't be empty.")
+
+
+def _check_version(conn: sqlite3.Connection, table: str, key: object, expected: int) -> None:
+    """Version check for an edit that changes nothing (a stale tab must still get a 409)."""
+    row = conn.execute(f"SELECT version FROM {table} WHERE id = ?", [key]).fetchone()  # noqa: S608
+    if row is None:
+        raise NotFound(table, key)
+    if int(row[0]) != expected:
+        raise VersionConflict(table, key, expected, int(row[0]))
 
 
 class PersonIn(BaseModel):
@@ -104,11 +108,15 @@ class HouseholdService:
     def update(self, changes: HouseholdPatch, expected_version: int) -> Household:
         self.get()
         data = changes.model_dump(exclude_unset=True)
+        _reject_nulls(data, ("period_mode",))
         if data.get("postcode_district") is not None:
             data["postcode_district"] = normalise_district(data["postcode_district"])
         if data.get("period_anchor_person_id") is not None:
             self.get_person(data["period_anchor_person_id"])
-        if data:
+        if not data:
+            with self.db.connection() as conn:
+                _check_version(conn, "household", 1, expected_version)
+        else:
             with self.db.transaction() as conn:
                 update_versioned(
                     conn, "household", "id", 1, expected_version, data, now=to_iso(utcnow())
@@ -145,7 +153,11 @@ class HouseholdService:
 
     def update_person(self, person_id: str, changes: PersonPatch, expected_version: int) -> Person:
         data = changes.model_dump(exclude_unset=True)
-        if data:
+        _reject_nulls(data, ("display_name", "role"))
+        if not data:
+            with self.db.connection() as conn:
+                _check_version(conn, "person", person_id, expected_version)
+        else:
             with self.db.transaction() as conn:
                 update_versioned(
                     conn, "person", "id", person_id, expected_version, data, now=to_iso(utcnow())

@@ -14,6 +14,8 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.errors import InputError
+from tuppence.core.postcode import normalise_district
+from tuppence.core.records import NotFound
 
 SubjectType = Literal["household", "person", "account", "income_source"]
 
@@ -50,9 +52,12 @@ def _validate(subject_type: str, attribute: str, value: Any) -> Any:
     if attribute not in adapters:
         raise InputError(f"'{attribute}' can't be recorded for a {subject_type}.")
     try:
-        return adapters[attribute].validate_python(value)
+        clean = adapters[attribute].validate_python(value)
     except ValidationError as exc:
         raise InputError(f"{attribute}: {exc.errors()[0]['msg']}") from exc
+    if subject_type == "household" and attribute == "postcode_district":
+        clean = normalise_district(clean)
+    return clean
 
 
 def _row(row: Any) -> TimelineEntry:
@@ -72,6 +77,16 @@ class Timeline:
     def __init__(self, db: Database) -> None:
         self.db = db
 
+    def _require_subject(self, subject_type: str, subject_id: str) -> None:
+        if subject_type == "household":
+            if subject_id != "1":
+                raise NotFound("household", subject_id)
+        elif subject_type == "person":
+            with self.db.connection() as conn:
+                row = conn.execute("SELECT 1 FROM person WHERE id = ?", [subject_id]).fetchone()
+            if row is None:
+                raise NotFound("person", subject_id)
+
     def set(
         self,
         subject_type: str,
@@ -83,6 +98,7 @@ class Timeline:
         source: str = "user",
     ) -> TimelineEntry:
         clean = _validate(subject_type, attribute, value)
+        self._require_subject(subject_type, subject_id)
         start = valid_from.isoformat()
         payload = json.dumps(clean)
         key = [subject_type, subject_id, attribute]
