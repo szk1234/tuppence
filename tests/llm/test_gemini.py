@@ -80,8 +80,9 @@ def test_request_shape_and_parse():
         "role": "user",
         "parts": [{"functionResponse": {"name": "lookup", "response": {"result": '{"r": 2}'}}}],
     }
-    assert b["generationConfig"]["responseMimeType"] == "application/json"
-    assert b["generationConfig"]["responseJsonSchema"] == {"type": "object", "properties": {}}
+    # tools + schema together: structured output is dropped (separate calls by design)
+    assert "responseMimeType" not in b["generationConfig"]
+    assert "responseJsonSchema" not in b["generationConfig"]
     assert b["generationConfig"]["maxOutputTokens"] == 50
     assert b["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"] == {
         "type": "object",
@@ -108,6 +109,7 @@ def test_schema_rejected_retries_without_schema():
         )
     )
     assert len(calls) == 2 and r.text == "Hello"
+    assert "responseJsonSchema" not in calls[1]["generationConfig"]
     assert calls[1]["generationConfig"]["responseMimeType"] == "application/json"
 
 
@@ -223,7 +225,7 @@ def test_odd_but_acceptable_replies():
     assert r.text == "ok" and r.finish_reason is None and r.model == "g"
     assert (r.usage.input_tokens, r.usage.output_tokens) == (0, 4)
     empty = _chat({"candidates": [{"finishReason": "MAX_TOKENS"}]})
-    assert empty.text == "" and empty.finish_reason == "MAX_TOKENS"
+    assert empty.text == "" and empty.finish_reason == "length"
     nocalls = _chat(_cand([{"functionCall": {"name": "f"}}]))
     assert nocalls.tool_calls == [ToolCall(id="call_0", name="f", arguments={})]
 
@@ -332,3 +334,120 @@ def test_error_body_never_leaks_key_echoes(echo):
     for secret in ("AIzaSyAbcdefghijklmnop", "qqqqqqqqrrrrrrrr", "wwwwwwwwxxxxxxxx"):
         assert secret not in exc.value.body and secret not in str(exc.value)
     assert "[redacted]" in exc.value.body
+
+
+def _ids(base="https://generativelanguage.googleapis.com", model="g"):
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json=OK)
+
+    GeminiProvider(httpx.Client(transport=httpx.MockTransport(handler)), base, "k").chat(
+        ChatRequest(model=model, messages=[Message(role="user", content="x")])
+    )
+    return seen["url"]
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "https://generativelanguage.googleapis.com",
+        "https://generativelanguage.googleapis.com/",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "https://generativelanguage.googleapis.com/v1beta/",
+        "https://generativelanguage.googleapis.com/v1",
+        "  https://generativelanguage.googleapis.com/v1/  ",
+    ],
+)
+def test_base_url_variants(base):
+    assert _ids(base) == "https://generativelanguage.googleapis.com/v1beta/models/g:generateContent"
+
+
+@pytest.mark.parametrize(
+    ("model", "path"),
+    [
+        ("models/gemini-x", "gemini-x"),
+        ("gemini-x", "gemini-x"),
+        ("../x", "..%2Fx"),
+        ("a/b", "a%2Fb"),
+        ("a?b=1", "a%3Fb%3D1"),
+    ],
+)
+def test_model_id_is_one_path_segment(model, path):
+    assert _ids(model=model).endswith(f"/v1beta/models/{path}:generateContent")
+
+
+def test_usage_counts_tool_use_prompt_and_thoughts():
+    r = _chat(
+        {
+            "candidates": [{"content": {"parts": [{"text": "x"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "toolUsePromptTokenCount": 4,
+                "candidatesTokenCount": 3,
+                "thoughtsTokenCount": 2,
+            },
+        }
+    )
+    assert (r.usage.input_tokens, r.usage.output_tokens) == (14, 5)
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (_cand([{"text": "x"}], finishReason="STOP"), "stop"),
+        (_cand([{"text": "x"}], finishReason="MAX_TOKENS"), "length"),
+        (_cand([{"functionCall": {"name": "f"}}], finishReason="STOP"), "tool_calls"),
+    ],
+)
+def test_finish_reason_normalised(body, expected):
+    assert _chat(body).finish_reason == expected
+
+
+def test_empty_messages_dropped_and_nothing_left_raises():
+    seen = {}
+
+    def handler(req):
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=OK)
+
+    make(handler).chat(
+        ChatRequest(
+            model="g",
+            messages=[
+                Message(role="user", content=""),
+                Message(role="user", content="q"),
+                Message(role="assistant", content=""),
+            ],
+        )
+    )
+    assert seen["body"]["contents"] == [{"role": "user", "parts": [{"text": "q"}]}]
+    with pytest.raises(ValueError):
+        make(handler).chat(ChatRequest(model="g", messages=[Message(role="user", content="")]))
+
+
+def test_thought_signature_round_trips():
+    reply = _cand([{"functionCall": {"name": "f", "args": {}}, "thoughtSignature": "SIG=="}])
+    first = _chat(reply)
+    call = first.tool_calls[0]
+    assert call.provider_meta == {"thoughtSignature": "SIG=="}
+    assert "SIG==" not in repr(call)
+    seen = {}
+
+    def handler(req):
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=OK)
+
+    make(handler).chat(
+        ChatRequest(
+            model="g",
+            messages=[
+                Message(role="user", content="q"),
+                Message(role="assistant", content="", tool_calls=[call]),
+                Message(role="tool", content="r", name="f"),
+            ],
+        )
+    )
+    part = seen["body"]["contents"][1]["parts"][0]
+    assert part["thoughtSignature"] == "SIG==" and part["functionCall"]["name"] == "f"

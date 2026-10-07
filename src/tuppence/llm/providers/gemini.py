@@ -35,10 +35,19 @@ def _convert(messages: list[Message]) -> tuple[list[str], list[dict[str, Any]]]:
         if m.role == "system":
             system.append(m.content)
         elif m.role == "user":
+            if not m.content:
+                continue
             contents.append({"role": "user", "parts": [{"text": m.content}]})
         elif m.role == "assistant":
             parts: list[dict[str, Any]] = [{"text": m.content}] if m.content else []
-            parts += [{"functionCall": {"name": c.name, "args": c.arguments}} for c in m.tool_calls]
+            for c in m.tool_calls:
+                call_part: dict[str, Any] = {"functionCall": {"name": c.name, "args": c.arguments}}
+                signature = (c.provider_meta or {}).get("thoughtSignature")
+                if isinstance(signature, str):
+                    call_part["thoughtSignature"] = signature
+                parts.append(call_part)
+            if not parts:
+                continue  # the API rejects empty parts
             contents.append({"role": "model", "parts": parts})
         else:
             part = {
@@ -52,7 +61,25 @@ def _convert(messages: list[Message]) -> tuple[list[str], list[dict[str, Any]]]:
                 contents[-1]["parts"].append(part)
             else:
                 contents.append({"role": "user", "parts": [part]})
+    if not contents:
+        raise ValueError("There is no message content to send")
     return system, contents
+
+
+_FINISH = {"STOP": "stop", "MAX_TOKENS": "length"} | dict.fromkeys(BLOCKED, "content_filter")
+
+
+def _base(url: str) -> str:
+    url = url.strip().rstrip("/")
+    for suffix in ("/v1beta", "/v1"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+            break
+    return url.rstrip("/")
+
+
+def _model_path(model: str) -> str:
+    return quote(model.strip().removeprefix("models/"), safe="")
 
 
 def _count(value: Any) -> int:
@@ -119,7 +146,15 @@ def _parse_chat(data: dict[str, Any], requested_model: str) -> ChatResponse:
                 args = {}
             if not isinstance(args, dict):
                 raise LLMBadResponse(f"Function call args weren't an object for {fc['name']}")
-            calls.append(ToolCall(id=f"call_{i}", name=fc["name"], arguments=args))
+            sig = part.get("thoughtSignature")
+            calls.append(
+                ToolCall(
+                    id=f"call_{i}",
+                    name=fc["name"],
+                    arguments=args,
+                    provider_meta={"thoughtSignature": sig} if isinstance(sig, str) else None,
+                )
+            )
     usage = data.get("usageMetadata")
     if not isinstance(usage, dict):
         usage = {}
@@ -127,9 +162,16 @@ def _parse_chat(data: dict[str, Any], requested_model: str) -> ChatResponse:
         text="".join(texts),
         tool_calls=calls,
         model=requested_model,
-        finish_reason=finish if isinstance(finish, str) else None,
+        finish_reason=(
+            "tool_calls"
+            if calls
+            else _FINISH.get(finish, finish.lower())
+            if isinstance(finish, str)
+            else None
+        ),
         usage=Usage(
-            input_tokens=_count(usage.get("promptTokenCount")),
+            input_tokens=_count(usage.get("promptTokenCount"))
+            + _count(usage.get("toolUsePromptTokenCount")),
             output_tokens=_count(usage.get("candidatesTokenCount"))
             + _count(usage.get("thoughtsTokenCount")),
         ),
@@ -147,7 +189,7 @@ class GeminiProvider:
         *,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
-        self.client, self.base_url = client, base_url
+        self.client, self.base_url = client, _base(base_url)
         self.headers = {"Accept": "application/json", **(extra_headers or {})}
         if api_key:
             self.headers["x-goog-api-key"] = api_key
@@ -189,7 +231,8 @@ class GeminiProvider:
         config: dict[str, Any] = {"maxOutputTokens": req.max_tokens}
         if req.temperature is not None:
             config["temperature"] = req.temperature
-        if req.json_schema is not None:
+        # Structured output and tool calling are separate calls; some models reject both together.
+        if req.json_schema is not None and not req.tools:
             config["responseMimeType"] = "application/json"
             if with_schema:
                 config["responseJsonSchema"] = req.json_schema
@@ -212,7 +255,7 @@ class GeminiProvider:
         return body
 
     def chat(self, req: ChatRequest) -> ChatResponse:
-        url = join_url(self.base_url, f"v1beta/models/{quote(req.model, safe='/')}:generateContent")
+        url = join_url(self.base_url, f"v1beta/models/{_model_path(req.model)}:generateContent")
         try:
             data = post_json(
                 self.client, url, headers=self.headers, body=self._body(req, with_schema=True)
@@ -221,7 +264,7 @@ class GeminiProvider:
             schema_rejected = exc.status == 400 and (
                 "responseJsonSchema" in exc.body or "response_json_schema" in exc.body
             )
-            if req.json_schema is None or not schema_rejected:
+            if req.json_schema is None or req.tools or not schema_rejected:
                 raise
             # Fall back to JSON mime type only; the client's validate-and-repair path takes over.
             data = post_json(

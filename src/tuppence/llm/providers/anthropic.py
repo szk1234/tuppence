@@ -36,6 +36,8 @@ def _convert(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
         if m.role == "system":
             system_parts.append(m.content)
             continue
+        if m.role in ("user", "assistant") and not m.content and not m.tool_calls:
+            continue  # the API rejects empty text blocks
         if m.role == "tool":
             pending_results.append(
                 {"type": "tool_result", "tool_use_id": m.tool_call_id, "content": m.content}
@@ -54,9 +56,25 @@ def _convert(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
         else:
             out.append({"role": m.role, "content": m.content})
     flush()
-    if out and out[-1]["role"] == "assistant":
+    if not out:
+        raise ValueError("There is no message content to send")
+    if out[-1]["role"] == "assistant":
         raise ValueError("Anthropic models don't accept a trailing assistant message (prefill)")
     return "\n\n".join(p for p in system_parts if p), out
+
+
+_FINISH = {
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "pause_turn": "stop",
+    "max_tokens": "length",
+    "tool_use": "tool_calls",
+}
+
+
+def _base(url: str) -> str:
+    url = url.strip().rstrip("/")
+    return url.removesuffix("/v1").rstrip("/")
 
 
 def _count(value: Any) -> int:
@@ -126,10 +144,13 @@ def _parse_chat(data: dict[str, Any], requested_model: str) -> ChatResponse:
         tool_calls=calls,
         model=model if isinstance(model, str) and model else requested_model,
         usage=Usage(
-            input_tokens=_count(usage.get("input_tokens")),
+            # Cache reads/writes are billed input too; count them to keep budgets conservative.
+            input_tokens=_count(usage.get("input_tokens"))
+            + _count(usage.get("cache_creation_input_tokens"))
+            + _count(usage.get("cache_read_input_tokens")),
             output_tokens=_count(usage.get("output_tokens")),
         ),
-        finish_reason=stop if isinstance(stop, str) else None,
+        finish_reason=_FINISH.get(stop, stop) if isinstance(stop, str) else None,
     )
 
 
@@ -144,7 +165,7 @@ class AnthropicProvider:
         *,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
-        self.client, self.base_url = client, base_url
+        self.client, self.base_url = client, _base(base_url)
         self.headers = {
             "anthropic-version": ANTHROPIC_VERSION,
             "Accept": "application/json",

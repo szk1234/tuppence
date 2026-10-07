@@ -14,6 +14,8 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any]
+    # Opaque provider round-trip data (e.g. Gemini thought signatures). Never log it.
+    provider_meta: dict[str, Any] | None = Field(default=None, repr=False)
 
 
 class Message(BaseModel):

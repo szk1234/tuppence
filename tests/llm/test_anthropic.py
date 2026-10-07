@@ -93,7 +93,7 @@ def test_request_shape():
         {"name": "lookup", "description": "d", "input_schema": {"type": "object", "properties": {}}}
     ]
     assert body["output_config"]["format"]["type"] == "json_schema"
-    assert r.text == '{"a": "b"}' and r.usage.input_tokens == 20 and r.finish_reason == "end_turn"
+    assert r.text == '{"a": "b"}' and r.usage.input_tokens == 20 and r.finish_reason == "stop"
 
 
 def test_tool_use_response_and_consecutive_tool_results_merge():
@@ -331,3 +331,100 @@ def test_retry_after_and_status_mapping():
     with pytest.raises(LLMHTTPError) as exc:
         make(handler).chat(ChatRequest(model="m", messages=[Message(role="user", content="x")]))
     assert exc.value.retry_after == 7 and exc.value.retryable
+
+
+def _url(base):
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json={"data": []})
+
+    AnthropicProvider(httpx.Client(transport=httpx.MockTransport(handler)), base, "k").list_models()
+    return seen["url"].split("?")[0]
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "https://api.anthropic.com",
+        "https://api.anthropic.com/",
+        "https://api.anthropic.com/v1",
+        "https://api.anthropic.com/v1/",
+        "  https://api.anthropic.com/v1/  ",
+    ],
+)
+def test_base_url_variants(base):
+    assert _url(base) == "https://api.anthropic.com/v1/models"
+
+
+def test_proxy_path_prefix_kept():
+    assert _url("http://localhost:8080/anthropic/v1") == "http://localhost:8080/anthropic/v1/models"
+
+
+def test_cached_tokens_count_as_input():
+    r = _chat(
+        {
+            "content": [],
+            "usage": {
+                "input_tokens": 5,
+                "cache_creation_input_tokens": 100,
+                "cache_read_input_tokens": 20,
+                "output_tokens": 3,
+            },
+        }
+    )
+    assert (r.usage.input_tokens, r.usage.output_tokens) == (125, 3)
+
+
+@pytest.mark.parametrize(
+    ("stop", "expected"),
+    [
+        ("end_turn", "stop"),
+        ("stop_sequence", "stop"),
+        ("pause_turn", "stop"),
+        ("max_tokens", "length"),
+        ("tool_use", "tool_calls"),
+        ("something_new", "something_new"),
+    ],
+)
+def test_finish_reason_normalised(stop, expected):
+    assert _chat({"content": [], "stop_reason": stop}).finish_reason == expected
+
+
+def test_529_is_retryable():
+    with pytest.raises(LLMHTTPError) as exc:
+        make(lambda req: httpx.Response(529, text="overloaded")).chat(
+            ChatRequest(model="m", messages=[Message(role="user", content="x")])
+        )
+    assert exc.value.status == 529 and exc.value.retryable
+
+
+def test_empty_messages_dropped_but_tool_messages_kept():
+    seen = {}
+
+    def handler(req):
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"content": []})
+
+    make(handler).chat(
+        ChatRequest(
+            model="m",
+            messages=[
+                Message(role="user", content="q"),
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[ToolCall(id="a", name="f", arguments={})],
+                ),
+                Message(role="tool", content="", tool_call_id="a", name="f"),
+                Message(role="user", content=""),
+            ],
+        )
+    )
+    msgs = seen["body"]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    assert msgs[1]["content"] == [{"type": "tool_use", "id": "a", "name": "f", "input": {}}]
+    assert msgs[2]["content"][0]["content"] == ""
+    with pytest.raises(ValueError):
+        make(handler).chat(ChatRequest(model="m", messages=[Message(role="user", content="")]))
