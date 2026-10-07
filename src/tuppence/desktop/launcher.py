@@ -9,8 +9,9 @@ import sys
 import threading
 import time
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
+from typing import Any
 
 import httpx
 import uvicorn
@@ -24,6 +25,7 @@ from tuppence.paths import (
     resolve_data_dir,
 )
 from tuppence.settings import RuntimeSettings
+from tuppence.startup import STARTUP_ERRORS, clear_report, report, startup_failure
 
 
 def find_free_port(host: str = "127.0.0.1") -> int:
@@ -100,12 +102,20 @@ class ServerThread:
             self._sock.close()
 
 
+def _allow_downloads(webview: Any) -> None:
+    """Let "Export settings" save its file: pywebview cancels downloads by default."""
+    settings = getattr(webview, "settings", None)
+    if isinstance(settings, MutableMapping) and "ALLOW_DOWNLOADS" in settings:
+        settings["ALLOW_DOWNLOADS"] = True
+
+
 def open_webview_window(url: str) -> bool:
     try:
         import webview  # type: ignore[import-not-found,unused-ignore]
     except Exception:  # noqa: BLE001 - any import failure means "no GUI available"
         return False
     try:
+        _allow_downloads(webview)
         webview.create_window("Tuppence", url, width=1280, height=820, min_size=(900, 600))
         webview.start()
     except Exception:  # noqa: BLE001 - missing GTK/WebView2 etc.
@@ -135,26 +145,33 @@ def run_desktop(
     try:
         root = resolve_data_dir(data_dir)
     except DataDirError as exc:
-        print(str(exc), file=sys.stderr)
+        report(str(exc), None)  # the data folder is the problem: nowhere to leave a note
         return 2
     try:
         lock = acquire_instance_lock(root)
     except (InstanceLocked, InstanceLockError) as exc:
-        print(str(exc), file=sys.stderr)
+        report(str(exc), root)
         return 2
     try:
         sock = bind_loopback_socket()
         port = int(sock.getsockname()[1])
         token = new_launch_token()
         settings = RuntimeSettings.for_mode("desktop", data_dir=root, port=port, launch_token=token)
-        server = ServerThread(create_app(settings), "127.0.0.1", port, sock)
+        try:
+            app = create_app(settings)  # opens and migrates the database
+        except STARTUP_ERRORS as exc:
+            sock.close()
+            report(startup_failure(root, exc), root)
+            return 2
+        server = ServerThread(app, "127.0.0.1", port, sock)
         server.start()
         try:
             try:
                 server.wait_until_healthy()
             except (TimeoutError, RuntimeError) as exc:
-                print(f"Tuppence could not start: {exc}", file=sys.stderr)
+                report(f"Tuppence could not start: {exc}", root)
                 return 1
+            clear_report(root)
             if smoke:
                 result = {"ok": True, "url": server.url, "version": __version__, "mode": "desktop"}
                 text = json.dumps(result)

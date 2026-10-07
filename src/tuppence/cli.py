@@ -8,6 +8,7 @@ import secrets
 import socket
 import sys
 import webbrowser
+from pathlib import Path
 from typing import NoReturn
 
 from tuppence import __version__
@@ -44,10 +45,6 @@ def env_flag(name: str) -> bool:
 
 
 def _serve(args: argparse.Namespace) -> int:
-    import uvicorn
-
-    from tuppence.app import create_app
-
     try:
         data_dir = resolve_data_dir(args.data_dir)
     except DataDirError as exc:
@@ -58,6 +55,18 @@ def _serve(args: argparse.Namespace) -> int:
     except (InstanceLocked, InstanceLockError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    try:
+        return _serve_locked(args, data_dir)
+    finally:
+        lock.release()
+
+
+def _serve_locked(args: argparse.Namespace, data_dir: Path) -> int:
+    import uvicorn
+
+    from tuppence.app import create_app
+    from tuppence.startup import STARTUP_ERRORS, startup_failure
+
     launch_token = secrets.token_urlsafe(32) if args.mode == "local" else None
     settings = RuntimeSettings.for_mode(
         args.mode,
@@ -73,7 +82,11 @@ def _serve(args: argparse.Namespace) -> int:
             f"Try another with --port, e.g. --port {settings.port + 1}.",
             file=sys.stderr,
         )
-        lock.release()
+        return 2
+    try:
+        app = create_app(settings)  # opens and migrates the database
+    except STARTUP_ERRORS as exc:
+        print(startup_failure(data_dir, exc), file=sys.stderr)
         return 2
     shown_host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host  # noqa: S104
     url = f"http://{shown_host}:{settings.port}/"
@@ -81,12 +94,7 @@ def _serve(args: argparse.Namespace) -> int:
     print(f"Tuppence {__version__} running at {open_url}  (data: {data_dir})")
     if settings.mode == "local" and not args.no_browser:
         webbrowser.open(open_url)
-    try:
-        uvicorn.run(
-            create_app(settings), host=settings.host, port=settings.port, log_level="warning"
-        )
-    finally:
-        lock.release()
+    uvicorn.run(app, host=settings.host, port=settings.port, log_level="warning")
     return 0
 
 

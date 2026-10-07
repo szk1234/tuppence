@@ -136,3 +136,92 @@ def test_desktop_launch_url_signs_in_once(tmp_path):
 
     assert launcher.run_desktop(data_dir=str(tmp_path / "data"), open_window=fake_window) == 0
     assert seen == [(303, 200), 403]
+
+
+def _corrupt(root):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "tuppence.db").write_bytes(b"not a database at all " * 200)
+
+
+def test_run_desktop_corrupt_database_is_friendly(tmp_path, capsys):
+    root = tmp_path / "data"
+    _corrupt(root)
+    assert launcher.run_desktop(data_dir=str(root), smoke=True) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and str(root / "backups") in err
+    assert not (root / "startup-error.txt").exists()  # console run: stderr is enough
+
+
+def _windowed(monkeypatch):
+    import os
+    import sys
+
+    sink = open(os.devnull, "w")  # noqa: SIM115 - what desktop/entry.py does
+    monkeypatch.setattr(sys, "stderr", sink)
+    return sink
+
+
+def test_windowed_startup_failure_writes_error_file(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    _corrupt(root)
+    sink = _windowed(monkeypatch)
+    try:
+        assert launcher.run_desktop(data_dir=str(root), smoke=True) == 2
+    finally:
+        sink.close()
+    text = (root / "startup-error.txt").read_text(encoding="utf-8")
+    assert "Tuppence couldn't start" in text and str(root / "backups") in text
+
+
+def test_windowed_already_running_writes_error_file(tmp_path, monkeypatch):
+    from tuppence.paths import acquire_instance_lock
+
+    root = tmp_path / "data"
+    root.mkdir()
+    held = acquire_instance_lock(root)
+    sink = _windowed(monkeypatch)
+    try:
+        assert launcher.run_desktop(data_dir=str(root), smoke=True) == 2
+    finally:
+        sink.close()
+        held.release()
+    assert "already running" in (root / "startup-error.txt").read_text(encoding="utf-8")
+
+
+def test_successful_start_removes_stale_error_file(tmp_path):
+    root = tmp_path / "data"
+    root.mkdir()
+    (root / "startup-error.txt").write_text("old problem", encoding="utf-8")
+    assert launcher.run_desktop(data_dir=str(root), smoke=True) == 0
+    assert not (root / "startup-error.txt").exists()
+
+
+def test_webview_window_allows_downloads(monkeypatch):
+    import sys
+    import types
+
+    class Settings(dict):
+        def __setitem__(self, key, value):
+            if key not in self:
+                raise KeyError(key)
+            super().__setitem__(key, value)
+
+    fake = types.ModuleType("webview")
+    fake.settings = Settings(ALLOW_DOWNLOADS=False)
+    calls = []
+    fake.create_window = lambda *a, **k: calls.append("window")
+    fake.start = lambda *a, **k: calls.append("start")
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    assert launcher.open_webview_window("http://127.0.0.1:1/") is True
+    assert fake.settings["ALLOW_DOWNLOADS"] is True and calls == ["window", "start"]
+
+
+def test_webview_window_without_download_setting_still_opens(monkeypatch):
+    import sys
+    import types
+
+    fake = types.ModuleType("webview")
+    fake.create_window = lambda *a, **k: None
+    fake.start = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    assert launcher.open_webview_window("http://127.0.0.1:1/") is True

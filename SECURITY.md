@@ -25,3 +25,9 @@ internet.
   you couldn't sign in.
 
 Both are shown, commented out, in `compose.yaml`.
+
+### Data folder
+
+Tuppence creates its data folder readable only by your user (`0700` on Linux
+and macOS). If you point `TUPPENCE_DATA_DIR` or `--data-dir` at a folder that
+already exists, its permissions are left as they are, so check them yourself.

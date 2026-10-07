@@ -18,13 +18,25 @@ class DataDirError(RuntimeError):
     """The data folder can't be created or written."""
 
 
+def make_private_dir(path: Path) -> None:
+    """Create `path` (and missing parents). A folder created here is private to this user
+    (0700 on POSIX); an existing folder's permissions are left as they are."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        return
+    if os.name != "nt":
+        path.chmod(0o700)  # mkdir's mode is filtered through the umask
+
+
 def resolve_data_dir(override: str | os.PathLike[str] | None = None) -> Path:
     raw = (
         override or os.environ.get("TUPPENCE_DATA_DIR") or user_data_dir(APP_NAME, appauthor=False)
     )
     path = Path(raw).expanduser().resolve()
     try:
-        path.mkdir(parents=True, exist_ok=True)
+        make_private_dir(path)
         probe = path / ".write-test"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
@@ -62,7 +74,8 @@ class DataPaths:
         return self.root / "config"
 
     def ensure(self) -> DataPaths:
-        for directory in (self.root, self.files, self.backups, self.config):
+        make_private_dir(self.root)
+        for directory in (self.files, self.backups, self.config):
             directory.mkdir(parents=True, exist_ok=True)
         return self
 

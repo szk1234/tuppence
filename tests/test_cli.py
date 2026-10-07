@@ -138,3 +138,70 @@ def test_secure_cookies_flag_turns_them_on(tmp_path, monkeypatch):
 def test_secure_cookies_env_var(tmp_path, monkeypatch, value, expected):
     monkeypatch.setenv("TUPPENCE_SECURE_COOKIES", value)
     assert _serve_capturing_app(monkeypatch, tmp_path).secure_cookies is expected
+
+
+def _serve_server(tmp_path):
+    return main(
+        ["serve", "--mode", "server", "--port", str(_free_port()), "--data-dir", str(tmp_path)]
+    )
+
+
+def _assert_friendly_failure(rc, err, data_dir):
+    assert rc == 2
+    assert "Traceback" not in err
+    assert "Tuppence couldn't start" in err
+    assert str(data_dir / "backups") in err
+
+
+def test_serve_with_corrupt_database_exits_2_naming_backups(tmp_path, capsys, monkeypatch):
+    import uvicorn
+
+    from tuppence.paths import acquire_instance_lock
+
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("must not serve"))
+    (tmp_path / "tuppence.db").write_bytes(b"this is not a database, " * 200)
+    rc = _serve_server(tmp_path)
+    out = capsys.readouterr()
+    _assert_friendly_failure(rc, out.err, tmp_path)
+    assert "running at" not in out.out
+    acquire_instance_lock(tmp_path).release()  # the lock was released
+
+
+@pytest.mark.parametrize("kind", ["database", "migration", "oserror"])
+def test_serve_startup_errors_are_friendly(tmp_path, capsys, monkeypatch, kind):
+    import sqlite3
+
+    import uvicorn
+
+    from tuppence.app import services
+    from tuppence.core.migrate import MigrationError
+
+    errors = {
+        "database": sqlite3.DatabaseError("database disk image is malformed"),
+        "migration": MigrationError("Migration 0005_x failed: boom"),
+        "oserror": OSError(28, "No space left on device"),
+    }
+
+    def broken(*_a, **_k):
+        raise errors[kind]
+
+    monkeypatch.setattr(services, "migrate", broken)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("must not serve"))
+    _assert_friendly_failure(_serve_server(tmp_path), capsys.readouterr().err, tmp_path)
+
+
+def test_serve_refuses_data_from_a_newer_version(tmp_path, capsys, monkeypatch):
+    import uvicorn
+
+    from tuppence.core.db import Database
+    from tuppence.core.migrate import migrate
+
+    db = Database(tmp_path / "tuppence.db")
+    migrate(db, tmp_path / "backups")
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO schema_migrations VALUES ('9999_future', 'x')")
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("must not serve"))
+    rc = _serve_server(tmp_path)
+    err = capsys.readouterr().err
+    _assert_friendly_failure(rc, err, tmp_path)
+    assert "newer version of Tuppence" in err
