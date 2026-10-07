@@ -9,12 +9,16 @@ answered before for the same layout.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
+import secrets
 from collections.abc import Sequence
 from datetime import date
 
 from pydantic import BaseModel, Field
 
+from tuppence.core.clock import to_iso, utcnow
+from tuppence.core.db import Database
 from tuppence.ingest.models import AccountKind, Document
 from tuppence.ingest.registry import (
     BankPack,
@@ -43,12 +47,23 @@ _CLOSING = re.compile(
     + _AMOUNT,
     re.IGNORECASE,
 )
+_MASK = r"[*xX•]"
+# The number's own token only: a full 16-digit card (4x4, masks allowed), an Amex 4-6-5, a
+# masked number, a sort code plus account number, or a plain digit run. Never the date or
+# amount that happens to follow it on the line.
+_NUMBER_TOKEN = (
+    rf"(?:[*xX•\d]{{4}}(?:[ \-][*xX•\d]{{4}}){{3}}(?!\d)"
+    r"|\d{4} \d{6} \d{5}(?!\d)"
+    rf"|{_MASK}{{2,}}(?:[ \-]{_MASK}{{2,}})*[ \-]?\d{{4,}}(?!\d)"
+    r"|\d{2}-\d{2}-\d{2}[ \-]\d{6,8}(?!\d)"
+    r"|\d{4,}(?!\d))"
+)
 _LABELLED_NUMBER = re.compile(
     r"(?:account\s*(?:number|no\.?)|card\s*(?:number|no\.?)|ending(?:\s+in)?)"
-    r"\s*[:#]?\s*([*xX•\d][*xX•\d \-]{3,30})",
+    rf"\s*[:#]?\s*({_NUMBER_TOKEN})",
     re.IGNORECASE,
 )
-_MASKED = re.compile(r"[*xX•]{2,}[ \-]?(\d{4,})")
+_MASKED = re.compile(rf"{_MASK}{{2,}}[ \-]?(\d{{4,}})(?!\d)")
 _CARD_WORDS = re.compile(r"minimum payment|credit limit|card ending|card statement", re.IGNORECASE)
 
 
@@ -119,8 +134,28 @@ def header_facts(text: str) -> HeaderFacts:
     return facts
 
 
-def _short_hash(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()[:8]
+_KEY_SETTING = "ingest.fingerprint_key"
+
+
+def fingerprint_key(db: Database) -> bytes:
+    """This install's random key for account fingerprints. It is created once, stays in the
+    local database, and is never exported or logged, so a stored fingerprint can't be turned
+    back into an account number by trying them all."""
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value, version, updated_at) "
+            "VALUES (?, ?, 1, ?)",
+            [_KEY_SETTING, secrets.token_hex(32), to_iso(utcnow())],
+        )
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?", [_KEY_SETTING]
+        ).fetchone()
+    return bytes.fromhex(row["value"])
+
+
+def _short_hash(value: str, key: bytes) -> str:
+    normalised = re.sub(r"\s+", "", value).upper()
+    return hmac.new(key, normalised.encode(), hashlib.sha256).hexdigest()[:12]
 
 
 def _sort_code_provider(pack: BankPack, bankid: str) -> str | None:
@@ -132,7 +167,7 @@ def _sort_code_provider(pack: BankPack, bankid: str) -> str | None:
     )
 
 
-def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry) -> Evidence:
+def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry, key: bytes) -> Evidence:
     by_ref = doc.by_ref()
     preamble_text = "\n".join(by_ref[r].text for r in doc.preamble_refs if r in by_ref)
     if doc.kind in ("csv", "xlsx"):
@@ -144,7 +179,7 @@ def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry) -> Evid
         accttype = doc.meta.get("accttype", "").upper()
         provider = _sort_code_provider(pack, doc.meta.get("bankid", ""))
         return Evidence(
-            layout_fingerprint=f"ofx:{doc.meta.get('bankid') or '-'}:{_short_hash(acctid)}",
+            layout_fingerprint=f"ofx:{doc.meta.get('bankid') or '-'}:{_short_hash(acctid, key)}",
             providers=[provider] if provider else [],
             provider_hint=provider,
             kind="credit_card"
@@ -158,7 +193,7 @@ def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry) -> Evid
         digits = re.sub(r"\D", "", iban[4:]) if iban else ""
         provider = pack.bics.get(bic[:8].upper()) if bic else None
         return Evidence(
-            layout_fingerprint=f"camt:{bic or '-'}:{_short_hash(iban)}",
+            layout_fingerprint=f"camt:{bic or '-'}:{_short_hash(iban, key)}",
             providers=[provider] if provider else [],
             provider_hint=provider,
             last4=digits[-4:] if len(digits) >= 4 else None,
@@ -174,11 +209,12 @@ def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry) -> Evid
     if doc.kind == "image":
         return Evidence(layout_fingerprint="image", label="screenshot")
     # PDF or plain text: a bank's legal name is printed somewhere on the statement.
-    all_text = "\n".join(line.text for line in doc.lines)
     first_lines = "\n".join(line.text for line in doc.lines[:60])
+    # The bank's name and the account facts are in the header, not in payee names further down.
+    top = f"{preamble_text}\n{first_lines}".casefold()
     facts = header_facts(preamble_text or first_lines)
     for marker in pack.pdf_markers:
-        if any(needle.casefold() in all_text.casefold() for needle in marker.any):
+        if any(needle.casefold() in top for needle in marker.any):
             kind = marker.kind or ("credit_card" if facts.looks_like_card else None)
             return Evidence(
                 layout_fingerprint=f"{doc.kind}:{marker.provider}:{kind or '-'}",
@@ -278,10 +314,14 @@ def match_account(
         if (not evidence.providers or a.provider in evidence.providers)
         and (not evidence.kind or a.kind == evidence.kind)
     ]
+    # Bank evidence, or an OFX/CAMT fingerprint (tied to one account), is what lets a match
+    # decide. Without it a last 4 or an earlier answer only suggests an account.
+    specific = evidence.layout_fingerprint.startswith(("ofx:", "camt:"))
+    trusted = bool(evidence.providers) or specific
     last4_unmatched = False
     if evidence.last4:
         exact = [a for a in pool if a.last4 == evidence.last4]
-        if len(exact) == 1:
+        if len(exact) == 1 and trusted:
             return strong(exact[0], "The bank, account type and last 4 digits match.")
         if not exact:
             last4_unmatched = True
@@ -293,7 +333,14 @@ def match_account(
     distinct = list(dict.fromkeys(remembered))
     if len(distinct) == 1 and not last4_unmatched:
         chosen = next((a for a in pool if a.id == distinct[0]), None)
-        if chosen is not None and not has_sibling(chosen):
+        if (
+            chosen is not None
+            and not has_sibling(chosen)
+            and (
+                specific
+                or (evidence.providers and evidence.last4 and evidence.last4 == chosen.last4)
+            )
+        ):
             return strong(chosen, "You chose this account for this kind of file before.")
     candidates = [a.id for a in (pool or active)]
     in_memory = [r for r in reversed(distinct) if r in candidates]
@@ -311,6 +358,8 @@ def match_account(
         reason = "You haven't added any accounts yet."
     elif not pool:
         reason = "None of your accounts match this statement."
+    elif len(candidates) == 1:
+        reason = "This looks like one of your accounts. Please confirm."
     else:
         reason = "More than one of your accounts could match."
     return AccountMatch(
