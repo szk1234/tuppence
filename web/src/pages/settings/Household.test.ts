@@ -16,6 +16,7 @@ async function renderLoaded() {
 it('lists people and adds a new person', async () => {
   const people: unknown[] = [{ id: 'p_1', display_name: 'Alex Example', role: 'adult', birth_year: null, status: 'active', version: 1 }]
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/household/timeline')) return json({ entries: [] })
     if (url === '/api/household') return json({ nation: null, postcode_district: null, currency: 'GBP', period_mode: 'calendar_month', period_anchor_person_id: null, version: 1 })
     if (url.startsWith('/api/household/people') && (!init || !init.method || init.method === 'GET')) return json({ people })
     if (url === '/api/household/people' && init?.method === 'POST') {
@@ -37,6 +38,7 @@ it('lists people and adds a new person', async () => {
 
 it('shows the friendly error for a full postcode', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/household/timeline')) return json({ entries: [] })
     if (url === '/api/household' && init?.method === 'PATCH')
       return json({ detail: 'Just the first part of your postcode, please (for example LS6).' }, 422)
     if (url === '/api/household') return json({ nation: null, postcode_district: null, currency: 'GBP', period_mode: 'calendar_month', period_anchor_person_id: null, version: 1 })
@@ -50,6 +52,7 @@ it('shows the friendly error for a full postcode', async () => {
 
 it('rejects an invalid birth year without sending it', async () => {
   const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url.startsWith('/api/household/timeline')) return json({ entries: [] })
     if (url === '/api/household') return json({ nation: null, postcode_district: null, currency: 'GBP', period_mode: 'calendar_month', period_anchor_person_id: null, version: 1 })
     return json({ people: [] })
   })
@@ -65,6 +68,7 @@ it('rejects an invalid birth year without sending it', async () => {
 it('locks the add-person form until the new person is saved', async () => {
   let release: (r: Response) => void = () => {}
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/household/timeline')) return json({ entries: [] })
     if (url === '/api/household') return json({ nation: null, postcode_district: null, currency: 'GBP', period_mode: 'calendar_month', period_anchor_person_id: null, version: 1 })
     if (url.startsWith('/api/household/people') && (!init || !init.method || init.method === 'GET')) return json({ people: [] })
     if (url === '/api/household/people' && init?.method === 'POST') {
@@ -89,6 +93,7 @@ it('locks the add-person form until the new person is saved', async () => {
 it('keeps the forms locked until the household has loaded', async () => {
   let release: (r: Response) => void = () => {}
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.startsWith('/api/household/timeline')) return json({ entries: [] })
     if (url === '/api/household') return new Promise<Response>((resolve) => { release = resolve })
     if (url.startsWith('/api/household/people')) return json({ people: [] })
     return json({ detail: 'unexpected' }, 500)

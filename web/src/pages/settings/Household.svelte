@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Notice from '../../components/Notice.svelte'
+  import HomeDetailsForm from '../../components/forms/HomeDetailsForm.svelte'
+  import PersonForm from '../../components/forms/PersonForm.svelte'
   import { api, ApiError } from '../../lib/api'
 
   type Person = { id: string; display_name: string; role: 'adult' | 'child' | 'dependent_adult'; birth_year: number | null; status: string; version: number }
@@ -13,13 +15,8 @@
   let people = $state<Person[]>([])
   let nation = $state('')
   let district = $state('')
-  let name = $state('')
-  let role = $state<Person['role']>('adult')
-  let birthYear = $state('')
   let error = $state('')
   let saved = $state('')
-  let yearError = $state('')
-  let adding = $state(false)
   let loaded = $state(false)
 
   const fail = (err: unknown) => { saved = ''; error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
@@ -45,17 +42,14 @@
     } catch (err) { fail(err) }
   }
 
-  async function addPerson(e: SubmitEvent) {
-    e.preventDefault(); error = ''; yearError = ''
-    if (birthYear && !/^\d{4}$/.test(birthYear.trim())) { yearError = 'Enter a 4-digit year'; return }
-    adding = true
+  async function addPerson(body: { display_name: string; role: Person['role']; birth_year?: number }): Promise<boolean> {
+    error = ''
     try {
-      const body: Record<string, unknown> = { display_name: name, role }
-      if (birthYear) body.birth_year = Number(birthYear.trim())
       const p = await api<Person>('/api/household/people', { method: 'POST', body })
-      people = [...people, p]; name = ''; birthYear = ''; role = 'adult'
+      people = [...people, p]
       saved = `${p.display_name} added.`
-    } catch (err) { fail(err) } finally { adding = false }
+      return true
+    } catch (err) { fail(err); return false }
   }
 
   async function retire(p: Person) {
@@ -100,18 +94,8 @@
         </li>
       {/each}
     </ul>
-    <form onsubmit={addPerson} aria-busy={adding}>
-      <fieldset disabled={adding || !loaded} class="row bare">
-      <div><label for="np-name">Name</label><input id="np-name" required maxlength="60" bind:value={name} /></div>
-      <div>
-        <label for="np-role">Role</label>
-        <select id="np-role" bind:value={role}>
-          {#each Object.entries(ROLES) as [value, label]}<option {value}>{label}</option>{/each}
-        </select>
-      </div>
-      <div><label for="np-year">Birth year (children)</label><input id="np-year" inputmode="numeric" bind:value={birthYear} aria-invalid={yearError ? 'true' : undefined} aria-describedby={yearError ? 'np-year-err' : undefined} />{#if yearError}<span id="np-year-err" class="warn" role="alert">{yearError}</span>{/if}</div>
-      <button type="submit">Add person</button>
-      </fieldset>
-    </form>
+    <PersonForm disabled={!loaded} onsubmit={addPerson} />
   </div>
+
+  <HomeDetailsForm />
 </section>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { fetchHealth, type Health } from '../lib/health'
+  import CompletenessCard from '../components/CompletenessCard.svelte'
   import { link } from '../lib/router.svelte'
   let health = $state<Health | null>(null)
   let error = $state(false)
@@ -13,5 +14,6 @@
   {#if health}<p class="status ok">Connected · v{health.version} · {health.mode}</p>
   {:else if error}<p class="status err">Can't reach the Tuppence service. Is it running?</p>
   {:else}<p class="status">Connecting…</p>{/if}
+  <CompletenessCard />
   <p>Start by adding the people in your household in <a href="/settings/household" onclick={link}>Household</a>.</p>
 </section>

@@ -36,3 +36,11 @@ th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(-
 .badge.cloud { background: var(--danger-bg); color: var(--danger); }
 textarea { font: inherit; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); width: 100%; box-sizing: border-box; }
 .table-wrap { overflow-x: auto; }
+.items { list-style: none; padding: 0; margin: 0; }
+.items li { display: flex; gap: .5rem 1rem; align-items: baseline; flex-wrap: wrap; padding: .5rem 0; border-bottom: 1px solid var(--line); }
+.items li > form { flex: 1 1 100%; }
+.items .name { font-weight: 600; }
+.items .actions { margin-left: auto; display: inline-flex; gap: 1rem; }
+.stack label { margin-top: .75rem; }
+.suggestion { border-color: var(--accent); }
+progress { width: 100%; height: .8rem; accent-color: var(--accent); }

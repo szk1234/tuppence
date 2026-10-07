@@ -10,11 +10,17 @@
   import Setup from './pages/Setup.svelte'
   import Agents from './pages/settings/Agents.svelte'
   import AI from './pages/settings/AI.svelte'
+  import Accounts from './pages/settings/Accounts.svelte'
+  import Debts from './pages/settings/Debts.svelte'
+  import Goals from './pages/settings/Goals.svelte'
   import Household from './pages/settings/Household.svelte'
+  import Income from './pages/settings/Income.svelte'
   import Privacy from './pages/settings/Privacy.svelte'
+  import Timeline from './pages/settings/Timeline.svelte'
   import Usage from './pages/Usage.svelte'
 
-  const routes: Record<string, typeof Home> = { '/': Home, '/login': Home, '/setup': Home, '/settings/household': Household, '/settings/agents': Agents,
+  const routes: Record<string, typeof Home> = { '/': Home, '/login': Home, '/setup': Home, '/settings/household': Household, '/settings/accounts': Accounts,
+    '/settings/income': Income, '/settings/debts': Debts, '/settings/goals': Goals, '/settings/timeline': Timeline, '/settings/agents': Agents,
     '/settings/ai': AI, '/settings/privacy': Privacy, '/usage': Usage }
   let failed = $state(false)
   onMount(() => { loadSession().catch(() => { failed = true }) })
