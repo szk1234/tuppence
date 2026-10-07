@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Nav from './components/Nav.svelte'
-  import { router } from './lib/router.svelte'
+  import { api } from './lib/api'
+  import { navigate, router } from './lib/router.svelte'
   import { loadSession, session } from './lib/session.svelte'
   import Home from './pages/Home.svelte'
   import LaunchExpired from './pages/LaunchExpired.svelte'
@@ -18,12 +19,27 @@
   import Privacy from './pages/settings/Privacy.svelte'
   import Timeline from './pages/settings/Timeline.svelte'
   import Usage from './pages/Usage.svelte'
+  import Welcome from './pages/Welcome.svelte'
 
   const routes: Record<string, typeof Home> = { '/': Home, '/login': Home, '/setup': Home, '/settings/household': Household, '/settings/accounts': Accounts,
     '/settings/income': Income, '/settings/debts': Debts, '/settings/goals': Goals, '/settings/timeline': Timeline, '/settings/agents': Agents,
-    '/settings/ai': AI, '/settings/privacy': Privacy, '/usage': Usage }
+    '/settings/ai': AI, '/settings/privacy': Privacy, '/usage': Usage, '/welcome': Welcome }
   let failed = $state(false)
   onMount(() => { loadSession().catch(() => { failed = true }) })
+
+  // Once per sign-in: a household that hasn't started onboarding lands on the wizard, but only when it arrives at Home
+  // (a deep link stays put, and a failed lookup leaves the user where they asked to be).
+  let gateChecked = false
+  $effect(() => {
+    if (!session.authenticated) { gateChecked = false; return }
+    const path = router.path
+    if (gateChecked || path === '/login' || path === '/setup') return
+    gateChecked = true
+    if (path !== '/') return
+    api<{ started?: unknown }>('/api/onboarding')
+      .then((o) => { if (o?.started === false && router.path === '/') navigate('/welcome') })
+      .catch(() => {})
+  })
   const Page = $derived(routes[router.path] ?? NotFound)
 </script>
 

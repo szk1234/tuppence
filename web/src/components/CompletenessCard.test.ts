@@ -17,7 +17,7 @@ it('shows the percentage, the top three prompts and Continue setup', async () =>
   expect(screen.getAllByRole('listitem')).toHaveLength(3)
   expect(screen.queryByText('Do thing 4')).toBeNull()
   expect(screen.getByRole('link', { name: 'Do thing 1' })).toHaveAttribute('href', '/settings/x1')
-  expect(screen.getByRole('link', { name: 'Continue setup' })).toHaveAttribute('href', '/setup')
+  expect(screen.getByRole('link', { name: 'Continue setup' })).toHaveAttribute('href', '/welcome')
 })
 
 it('renders nothing when the request fails or the JSON is unexpected', async () => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.svelte'
 import Home from './pages/Home.svelte'
@@ -96,5 +96,65 @@ describe('App', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
     expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([u]) => u === '/api/auth/session')).toHaveLength(2)
+  })
+})
+
+describe('onboarding redirect', () => {
+  const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status })
+
+  /** Sign in at `path`; `onboarding` is what GET /api/onboarding answers (a number is an HTTP error). */
+  async function signInAt(path: string, onboarding: unknown) {
+    window.history.pushState({}, '', path)
+    const { router } = await import('./lib/router.svelte')
+    router.path = path
+    const { session } = await import('./lib/session.svelte')
+    session.loaded = false
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === '/api/auth/session') return json({ authenticated: false, mode: 'server', needs_setup: false, user: null, csrf_token: null })
+      if (url === '/api/auth/login') return json({ authenticated: true, mode: 'server', needs_setup: false, user: { username: 'alex', is_admin: true }, csrf_token: 't' })
+      if (url === '/api/onboarding') return typeof onboarding === 'number' ? json({ detail: 'nope' }, onboarding) : json(onboarding)
+      if (url === '/api/household') return json({ nation: null, postcode_district: null, version: 1 })
+      if (url.startsWith('/api/household/people')) return json({ people: [] })
+      if (url.startsWith('/api/household/timeline')) return json({ entries: [] })
+      return json({ status: 'ok', version: '1', mode: 'server' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(App)
+    await fireEvent.input(await screen.findByLabelText('Username'), { target: { value: 'alex' } })
+    await fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'long-enough-pass' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    return { router, fetchMock }
+  }
+  const fresh = { steps: [], next_step: 'welcome', started: false, finished: false, completeness: 0, prompts: [] }
+
+  it('opens the wizard after sign-in when onboarding has not started and the path is /', async () => {
+    const { router } = await signInAt('/', { ...fresh, steps: [{ id: 'welcome', title: 'Welcome', status: 'todo' }] })
+    await waitFor(() => expect(router.path).toBe('/welcome'))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Welcome' })).toBeInTheDocument()
+  })
+
+  it('leaves /login for the wizard too (post-login path is /)', async () => {
+    const { router } = await signInAt('/login', { ...fresh, steps: [{ id: 'welcome', title: 'Welcome', status: 'todo' }] })
+    await waitFor(() => expect(router.path).toBe('/welcome'))
+  })
+
+  it('keeps a deep link even when onboarding has not started', async () => {
+    const { router, fetchMock } = await signInAt('/settings/household', fresh)
+    expect(await screen.findByRole('heading', { name: 'Household', level: 1 })).toBeInTheDocument()
+    expect(router.path).toBe('/settings/household')
+    expect(fetchMock.mock.calls.some(([u]) => u === '/api/onboarding')).toBe(false)
+  })
+
+  it('stays on Home once onboarding has started', async () => {
+    const { router } = await signInAt('/', { ...fresh, started: true })
+    expect(await screen.findByRole('heading', { name: 'Tuppence' })).toBeInTheDocument()
+    expect(router.path).toBe('/')
+  })
+
+  it('stays on Home when the onboarding lookup fails', async () => {
+    const { router } = await signInAt('/', 500)
+    expect(await screen.findByRole('heading', { name: 'Tuppence' })).toBeInTheDocument()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(router.path).toBe('/')
   })
 })

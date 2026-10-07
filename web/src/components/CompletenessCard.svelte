@@ -33,6 +33,6 @@
         {/each}
       </ul>
     {/if}
-    {#if !finished}<p><a href="/setup" onclick={link}>Continue setup</a></p>{/if}
+    {#if !finished}<p><a href="/welcome" onclick={link}>Continue setup</a></p>{/if}
   </section>
 {/if}

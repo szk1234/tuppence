@@ -10,6 +10,10 @@ test('first run asks for an admin account, then signs in', async ({ page }) => {
   // browser-side minlength blocks submission; type a real password
   await page.getByLabel('Password').fill(ADMIN.password)
   await page.getByRole('button', { name: 'Create account' }).click()
+  // A household that hasn't started onboarding lands on the wizard; Home is one click away.
+  await expect(page.getByRole('heading', { name: 'Welcome', level: 1 })).toBeVisible()
+  await expect(page.getByText('Step 1 of 9')).toBeVisible()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Tuppence', level: 1 })).toBeVisible()
   await expect(page.getByText(/Connected · v.* · server/)).toBeVisible()
 })

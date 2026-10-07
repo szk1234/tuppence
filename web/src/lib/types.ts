@@ -37,3 +37,10 @@ export function valueOn(entries: TimelineEntry[], attribute: string, day: string
     .sort((a, b) => (a.valid_from < b.valid_from ? 1 : -1))[0]
   return hit ? hit.value : null
 }
+
+export type OnboardingStep = { id: string; title: string; status: 'todo' | 'done' | 'skipped' }
+export type OnboardingState = {
+  steps: OnboardingStep[]; next_step: string | null; started: boolean; finished: boolean; completeness: number
+  prompts: Array<{ id: string; text: string; unlocks: string; link: string }>
+}
+export type Household = { nation: string | null; postcode_district: string | null; version: number }
