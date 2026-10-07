@@ -51,7 +51,8 @@ CREATE TABLE llm_usage (
   output_tokens INTEGER NOT NULL DEFAULT 0,
   cost_gbp REAL,
   ok INTEGER NOT NULL,
-  error TEXT
+  error TEXT,
+  estimated INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX ix_llm_usage_ts ON llm_usage (ts);
 

@@ -105,6 +105,9 @@ class TaskRouter:
             )
         return self.view()
 
+    def is_pinned_local(self, task: str) -> bool:
+        return self._routes().get(task, TaskRoute(chain=[], local_only=False, version=0)).local_only
+
     def chain_for(self, task: str) -> list[tuple[Connection, ModelInfo]]:
         routes = self._routes()
         route = routes.get(task, TaskRoute(chain=[], local_only=False, version=0))
@@ -126,5 +129,10 @@ class TaskRouter:
                 continue
             resolved.append((conn, model))
         if not resolved:
+            if route.local_only:
+                raise NoModelConfigured(
+                    "This task is set to use only models on your own computer or network, "
+                    "and none is configured."
+                )
             raise NoModelConfigured("Choose an AI model in Settings › AI.")
         return resolved

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from tuppence.config.models import Budgets
@@ -27,6 +28,25 @@ def estimate_tokens(messages: Iterable[Message], tools: Iterable[ToolSpec] = ())
         )
     chars += sum(len(json.dumps(t.model_dump())) for t in tools)
     return math.ceil(chars / 4) + 8 * count
+
+
+# Prices Tuppence uses for a cloud model it has no price for, so spending caps never treat
+# unknown spend as free. Deliberately on the high side (a mid-range frontier model); the user
+# can set the real price on the model. Rows priced this way are marked `estimated`.
+FALLBACK_PRICE_IN_USD_PER_MTOK = 5.0
+FALLBACK_PRICE_OUT_USD_PER_MTOK = 15.0
+
+
+def priced_cost(model: ModelInfo, usage: Usage, usd_to_gbp: float) -> tuple[float, bool]:
+    """Cost in pounds and whether a fallback price was used for an unknown price."""
+    price_in, price_out = model.price_in_usd_per_mtok, model.price_out_usd_per_mtok
+    fallback = price_in is None or price_out is None
+    if price_in is None:
+        price_in = FALLBACK_PRICE_IN_USD_PER_MTOK
+    if price_out is None:
+        price_out = FALLBACK_PRICE_OUT_USD_PER_MTOK
+    usd = (usage.input_tokens * price_in + usage.output_tokens * price_out) / 1e6
+    return round(usd * usd_to_gbp, 6), fallback
 
 
 def cost_gbp(model: ModelInfo, usage: Usage, usd_to_gbp: float) -> float | None:
@@ -56,18 +76,29 @@ class RunBudget:
             self.started = self.monotonic()
 
     @classmethod
-    def from_manifest(cls, budgets: Budgets, run_cap_gbp: float | None = None) -> RunBudget:
+    def from_manifest(cls, budgets: Budgets, run_cap_gbp: float) -> RunBudget:
         """The agent's own budget, with its £ limit lowered to the user's per-run cap if smaller."""
-        gbp = budgets.max_gbp if run_cap_gbp is None else min(budgets.max_gbp, run_cap_gbp)
+        gbp = min(budgets.max_gbp, run_cap_gbp)
         return cls(budgets.max_llm_calls, budgets.max_tokens, gbp, budgets.max_seconds)
 
-    def check(self, estimated_tokens: int) -> None:
+    def remaining_seconds(self) -> float:
+        return self.max_seconds - (self.monotonic() - self.started)
+
+    def check_time(self) -> None:
+        if self.remaining_seconds() <= 0:
+            raise BudgetExceeded(
+                f"This run reached its time limit of {self.max_seconds:.0f} seconds."
+            )
+
+    def check(self, estimated_tokens: int, projected_gbp: float = 0.0) -> None:
         if self.calls + 1 > self.max_calls:
             raise BudgetExceeded(f"This run reached its limit of {self.max_calls} AI calls.")
         if self.tokens + estimated_tokens > self.max_tokens:
             raise BudgetExceeded(f"This run reached its limit of {self.max_tokens:,} tokens.")
-        if self.gbp >= self.max_gbp:
-            raise BudgetExceeded(f"This run reached its £{self.max_gbp:.2f} spending limit.")
+        if self.gbp + projected_gbp > self.max_gbp:
+            raise BudgetExceeded(
+                f"This call could take this run past its £{self.max_gbp:.2f} spending limit."
+            )
         if self.monotonic() - self.started > self.max_seconds:
             raise BudgetExceeded(
                 f"This run reached its time limit of {self.max_seconds:.0f} seconds."
@@ -80,8 +111,8 @@ class RunBudget:
 
 
 class UsageLedger:
-    def __init__(self, db: Database) -> None:
-        self.db = db
+    def __init__(self, db: Database, clock: Callable[[], datetime] = utcnow) -> None:
+        self.db, self.clock = db, clock
 
     def record(
         self,
@@ -93,14 +124,15 @@ class UsageLedger:
         ok: bool,
         error: str | None = None,
         run_id: str | None = None,
+        estimated: bool = False,
     ) -> None:
         with self.db.transaction() as conn:
             conn.execute(
                 "INSERT INTO llm_usage (ts, run_id, task, connection_id, model_id,"
-                " input_tokens, output_tokens, cost_gbp, ok, error)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " input_tokens, output_tokens, cost_gbp, ok, error, estimated)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
-                    to_iso(utcnow()),
+                    to_iso(self.clock()),
                     run_id,
                     task,
                     connection_id,
@@ -110,6 +142,7 @@ class UsageLedger:
                     cost,
                     int(ok),
                     (error or "")[:500] or None,
+                    int(estimated),
                 ],
             )
 
@@ -129,7 +162,9 @@ class UsageLedger:
         rows = self._month_rows(year, month)
         out: dict[str, Any] = {
             "total_gbp": 0.0,
-            "calls": len(rows),
+            "calls": sum(1 for r in rows if r["ok"]),
+            "failed_calls": sum(1 for r in rows if not r["ok"]),
+            "estimated_calls": sum(1 for r in rows if r["estimated"]),
             "by_task": {},
             "by_model": {},
             "by_day": {},
@@ -143,8 +178,10 @@ class UsageLedger:
                 ("by_model", r["model_id"]),
                 ("by_day", r["ts"][:10]),
             ):
-                agg = out[bucket].setdefault(key, {"calls": 0, "tokens": 0, "gbp": 0.0})
-                agg["calls"] += 1
+                agg = out[bucket].setdefault(
+                    key, {"calls": 0, "failed_calls": 0, "tokens": 0, "gbp": 0.0}
+                )
+                agg["failed_calls" if not r["ok"] else "calls"] += 1
                 agg["tokens"] += tokens
                 agg["gbp"] += gbp
         out["total_gbp"] = round(out["total_gbp"], 4)
@@ -152,6 +189,8 @@ class UsageLedger:
 
 
 class BreakerBoard:
+    """Opens a connection after consecutive health failures (thread-safe)."""
+
     def __init__(
         self,
         threshold: int = 3,
@@ -162,22 +201,26 @@ class BreakerBoard:
         self.threshold, self.reset_s, self.monotonic = threshold, reset_s, monotonic
         self.failures: dict[str, int] = {}
         self.opened_at: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def allow(self, key: str) -> bool:
-        opened = self.opened_at.get(key)
-        if opened is None:
-            return True
-        if self.monotonic() - opened >= self.reset_s:
-            del self.opened_at[key]
-            self.failures[key] = self.threshold - 1  # half-open: one more failure re-opens
-            return True
-        return False
+        with self._lock:
+            opened = self.opened_at.get(key)
+            if opened is None:
+                return True
+            if self.monotonic() - opened >= self.reset_s:
+                self.opened_at.pop(key, None)
+                self.failures[key] = self.threshold - 1  # half-open: one more failure re-opens
+                return True
+            return False
 
     def success(self, key: str) -> None:
-        self.failures.pop(key, None)
-        self.opened_at.pop(key, None)
+        with self._lock:
+            self.failures.pop(key, None)
+            self.opened_at.pop(key, None)
 
     def failure(self, key: str) -> None:
-        self.failures[key] = self.failures.get(key, 0) + 1
-        if self.failures[key] >= self.threshold:
-            self.opened_at[key] = self.monotonic()
+        with self._lock:
+            self.failures[key] = self.failures.get(key, 0) + 1
+            if self.failures[key] >= self.threshold:
+                self.opened_at[key] = self.monotonic()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
@@ -11,11 +12,10 @@ from typing import Any, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from tuppence.config.models import Budgets
-from tuppence.core.clock import utcnow
 from tuppence.core.household import HouseholdService
 from tuppence.core.settings_store import SettingsStore
-from tuppence.llm.budget import BreakerBoard, RunBudget, UsageLedger, cost_gbp, estimate_tokens
-from tuppence.llm.connections import ConnectionRegistry
+from tuppence.llm.budget import BreakerBoard, RunBudget, UsageLedger, estimate_tokens, priced_cost
+from tuppence.llm.connections import Connection, ConnectionRegistry, ModelInfo
 from tuppence.llm.jsonextract import extract_json, to_strict_schema
 from tuppence.llm.pseudonymise import Pseudonymiser
 from tuppence.llm.routing import TaskRouter, timeout_for
@@ -27,6 +27,7 @@ from tuppence.llm.types import (
     ContextTooLarge,
     LLMBadResponse,
     LLMError,
+    LLMHTTPError,
     Message,
     NoticeRequired,
     ToolSpec,
@@ -50,6 +51,17 @@ def _redact_value(value: Any, pseudo: Pseudonymiser) -> Any:
     return value
 
 
+def _problem(exc: ValueError | ValidationError) -> str:
+    """What was wrong with a reply, in a form a model can act on."""
+    if isinstance(exc, ValidationError):
+        found = [
+            f"{'.'.join(str(p) for p in e['loc']) or 'reply'}: {e['msg']}"
+            for e in exc.errors(include_input=False)
+        ]
+        return "; ".join(found)[:300]
+    return str(exc).splitlines()[0][:300] if str(exc) else "not valid JSON"
+
+
 class ChatResult(ChatResponse):
     connection_id: str
     model_id: str
@@ -70,6 +82,8 @@ class LLMClient:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.connections, self.router, self.usage = connections, router, usage
+        self._spend_lock = threading.Lock()
+        self._reserved = 0.0  # £ projected for calls in flight
         self.settings, self.household, self.breakers, self.sleep = (
             settings,
             household,
@@ -87,21 +101,50 @@ class LLMClient:
         """A run budget limited by the agent manifest and the user's per-run £ cap."""
         return RunBudget.from_manifest(budgets, self.settings.get("llm.run_cap_gbp"))
 
-    def _call_with_retries(self, provider: Any, req: ChatRequest) -> ChatResponse:
+    def _wait(self, delay: float, run: RunBudget | None) -> None:
+        """Sleep before a retry or fallback, unless the run's time limit can't afford it."""
+        if run is not None and delay >= run.remaining_seconds():
+            raise BudgetExceeded(
+                f"This run reached its time limit of {run.max_seconds:.0f} seconds."
+            )
+        self.sleep(delay)
+
+    @staticmethod
+    def _retry_after(exc: LLMError) -> float | None:
+        wait = getattr(exc, "retry_after", None)
+        if wait is not None and math.isfinite(wait) and wait >= 0:
+            return min(MAX_RETRY_AFTER, float(wait))
+        return None
+
+    def _send(
+        self,
+        conn: Connection,
+        task: str,
+        req: ChatRequest,
+        redactions: int,
+        pinned: bool,
+        run: RunBudget | None,
+    ) -> ChatResponse:
+        """One model, with up to two retries; the run's time limit bounds every attempt."""
         attempt = 0
         while True:
+            timeout = timeout_for(task, conn.is_local)
+            if run is not None:
+                run.check_time()
+                timeout = min(timeout, run.remaining_seconds())
+            provider = self.connections.provider(
+                conn.id, task=task, redactions=redactions, timeout=timeout, require_local=pinned
+            )
             try:
                 return provider.chat(req)
             except LLMError as exc:
                 if not exc.retryable or attempt >= MAX_RETRIES:
                     raise
-                wait = getattr(exc, "retry_after", None)
-                if wait is not None and math.isfinite(wait) and wait >= 0:
-                    delay = min(MAX_RETRY_AFTER, float(wait))
-                else:
-                    delay = BACKOFF[attempt]
-                self.sleep(delay)
+                wait = self._retry_after(exc)
+                self._wait(BACKOFF[attempt] if wait is None else wait, run)
                 attempt += 1
+            finally:
+                provider.client.close()
 
     def chat(
         self,
@@ -123,43 +166,92 @@ class LLMClient:
         never retried and never passed on to the next model.
         """
         attempts: list[str] = []
+        pinned = self.router.is_pinned_local(task)
+        cooldown: dict[str, float] = {}
         for conn, model in self.router.chain_for(task):
             label = f"{conn.name} / {model.model_id}"
             if not self.breakers.allow(conn.id):
                 attempts.append(f"{label}: paused after repeated failures")
                 continue
-            if conn.needs_notice:
+            wait = cooldown.pop(conn.id, None)
+            if wait:
+                self._wait(wait, run)  # the provider asked us to slow down
+            blocked = (pinned or bool(self.settings.get("privacy.local_only"))) and (
+                not conn.is_local
+            )
+            # A blocked call goes on to the guarded client, which logs it and says why.
+            if conn.needs_notice and not blocked:
                 notice = NoticeRequired(
                     f"Confirm what {conn.name} will see before Tuppence uses it (Settings › AI)."
                 )
                 attempts.append(f"{label}: {notice}")
                 continue
-            estimate = estimate_tokens(messages, tools)
-            window = model.context_window
-            room = window - estimate
-            if estimate > window * 0.6 or room < 256:
-                fits = max(0, min(int(window * 0.6), window - 256))
-                too_big = ContextTooLarge(
+            outcome = self._try_model(
+                conn,
+                model,
+                task,
+                messages,
+                tools,
+                json_schema,
+                schema_name,
+                max_tokens,
+                run,
+                run_id,
+                pinned,
+                cooldown,
+            )
+            if isinstance(outcome, str):
+                attempts.append(f"{label}: {outcome}")
+                continue
+            return outcome
+        raise AllModelsFailed(attempts)
+
+    def _try_model(
+        self,
+        conn: Connection,
+        model: ModelInfo,
+        task: str,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec],
+        json_schema: dict[str, Any] | None,
+        schema_name: str,
+        max_tokens: int,
+        run: RunBudget | None,
+        run_id: str | None,
+        pinned: bool,
+        cooldown: dict[str, float],
+    ) -> ChatResult | str:
+        """A ChatResult, or the reason this model couldn't answer."""
+        estimate = estimate_tokens(messages, tools)
+        window = model.context_window
+        room = window - estimate
+        if estimate > window * 0.6 or room < 256:
+            fits = max(0, min(int(window * 0.6), window - 256))
+            return str(
+                ContextTooLarge(
                     f"This is too much text for {model.model_id} (about {estimate:,} tokens; "
                     f"it fits {fits:,}). Choose a model with a bigger context window."
                 )
-                attempts.append(f"{label}: {too_big}")
-                continue
-            max_tokens_eff = min(max_tokens, room, model.max_output_tokens or max_tokens)
-            rate = self.settings.get("llm.usd_to_gbp")
-            projected = cost_gbp(
+            )
+        max_tokens_eff = min(max_tokens, room, model.max_output_tokens or max_tokens)
+        rate = self.settings.get("llm.usd_to_gbp")
+        projected = 0.0
+        if not conn.is_local:
+            projected, _ = priced_cost(
                 model, Usage(input_tokens=estimate, output_tokens=max_tokens_eff), rate
             )
-            cap = self.settings.get("llm.monthly_cap_gbp")
-            now = utcnow()
-            if projected and self.usage.month_spend_gbp(now.year, now.month) + projected > cap:
-                capped = BudgetExceeded(
-                    f"This month's AI spending cap (£{cap:.2f}) would be exceeded."
+        cap = self.settings.get("llm.monthly_cap_gbp")
+        now = self.usage.clock()
+        with self._spend_lock:
+            spent = self.usage.month_spend_gbp(now.year, now.month) + self._reserved
+            if projected > 0 and spent + projected > cap:
+                return str(
+                    BudgetExceeded(f"This month's AI spending cap (£{cap:.2f}) would be exceeded.")
                 )
-                attempts.append(f"{label}: {capped}")
-                continue
+            self._reserved += projected
+        try:
             if run is not None:
-                run.check(estimate + max_tokens_eff)
+                run.check(estimate + max_tokens_eff, projected)
             use_pseudo = not conn.is_local and self.settings.get("privacy.pseudonymise")
             pseudo = self._pseudonymiser() if use_pseudo else None
             sent = [self._redacted(m, pseudo) for m in messages] if pseudo else list(messages)
@@ -171,19 +263,21 @@ class LLMClient:
                 schema_name=schema_name,
                 max_tokens=max_tokens_eff,
             )
-            provider = self.connections.provider(
-                conn.id,
-                task=task,
-                redactions=pseudo.count if pseudo else 0,
-                timeout=timeout_for(task, conn.is_local),
-            )
             try:
-                resp = self._call_with_retries(provider, req)
+                resp = self._send(conn, task, req, pseudo.count if pseudo else 0, pinned, run)
             except LocalOnlyBlocked as exc:
-                attempts.append(f"{label}: {exc}")
-                continue
+                return str(exc)
+            except BudgetExceeded:
+                raise
             except LLMError as exc:
-                self.breakers.failure(conn.id)
+                # Only a connection that looks unhealthy counts towards the breaker; a
+                # refusal or a malformed reply means the server answered.
+                if exc.retryable:
+                    self.breakers.failure(conn.id)
+                else:
+                    self.breakers.success(conn.id)
+                if isinstance(exc, LLMHTTPError) and exc.status == 429:
+                    cooldown[conn.id] = self._retry_after(exc) or BACKOFF[-1]
                 self.usage.record(
                     task,
                     conn.id,
@@ -194,36 +288,53 @@ class LLMClient:
                     error=str(exc),
                     run_id=run_id,
                 )
-                attempts.append(f"{label}: {exc}")
-                continue
-            finally:
-                provider.client.close()
+                return str(exc)
             self.breakers.success(conn.id)
-            cost = 0.0 if conn.is_local else cost_gbp(model, resp.usage, rate)
+            usage, estimated = resp.usage, False
+            if usage.input_tokens == 0 and usage.output_tokens == 0:
+                # The provider didn't say what it used: count it from the text instead.
+                out_chars = len(resp.text) + sum(
+                    len(json.dumps(c.arguments)) + len(c.name) for c in resp.tool_calls
+                )
+                usage = Usage(input_tokens=estimate, output_tokens=math.ceil(out_chars / 4))
+                estimated = True
+            if conn.is_local:
+                cost = 0.0
+            else:
+                cost, fallback_price = priced_cost(model, usage, rate)
+                estimated = estimated or fallback_price
             self.usage.record(
-                task, conn.id, model.model_id, resp.usage, cost, ok=True, run_id=run_id
+                task,
+                conn.id,
+                model.model_id,
+                usage,
+                cost,
+                ok=True,
+                run_id=run_id,
+                estimated=estimated,
             )
             if run is not None:
-                run.record(resp.usage.input_tokens + resp.usage.output_tokens, cost)
-            text = pseudo.restore(resp.text) if pseudo else resp.text
-            calls = resp.tool_calls
-            if pseudo:
-                calls = [
-                    c.model_copy(update={"arguments": pseudo.restore_value(c.arguments)})
-                    for c in calls
-                ]
-            return ChatResult(
-                text=text,
-                tool_calls=calls,
-                usage=resp.usage,
-                model=resp.model,
-                finish_reason=resp.finish_reason,
-                connection_id=conn.id,
-                model_id=model.model_id,
-                redactions=pseudo.count if pseudo else 0,
-                cost_gbp=cost,
-            )
-        raise AllModelsFailed(attempts)
+                run.record(usage.input_tokens + usage.output_tokens, cost)
+        finally:
+            with self._spend_lock:
+                self._reserved -= projected
+        text = pseudo.restore(resp.text) if pseudo else resp.text
+        calls = resp.tool_calls
+        if pseudo:
+            calls = [
+                c.model_copy(update={"arguments": pseudo.restore_value(c.arguments)}) for c in calls
+            ]
+        return ChatResult(
+            text=text,
+            tool_calls=calls,
+            usage=usage,
+            model=resp.model,
+            finish_reason=resp.finish_reason,
+            connection_id=conn.id,
+            model_id=model.model_id,
+            redactions=pseudo.count if pseudo else 0,
+            cost_gbp=cost,
+        )
 
     @staticmethod
     def _redacted(message: Message, pseudo: Pseudonymiser) -> Message:
@@ -243,6 +354,7 @@ class LLMClient:
         *,
         max_tokens: int = 4096,
         run: RunBudget | None = None,
+        run_id: str | None = None,
     ) -> T:
         strict = to_strict_schema(schema.model_json_schema())
         instruction = Message(
@@ -260,11 +372,12 @@ class LLMClient:
             schema_name=schema.__name__,
             max_tokens=max_tokens,
             run=run,
+            run_id=run_id,
         )
         try:
             return schema.model_validate(extract_json(first.text))
         except (ValueError, ValidationError) as exc:
-            problem = str(exc).splitlines()[0][:300]
+            problem = _problem(exc)
         repair = [
             *convo,
             Message(role="assistant", content=first.text[:4000]),
@@ -280,11 +393,11 @@ class LLMClient:
             schema_name=schema.__name__,
             max_tokens=max_tokens,
             run=run,
+            run_id=run_id,
         )
         try:
             return schema.model_validate(extract_json(second.text))
         except (ValueError, ValidationError) as exc:
             raise LLMBadResponse(
-                "The model's reply didn't match the expected format: "
-                f"{str(exc).splitlines()[0][:200]}"
+                f"The model's reply didn't match the expected format: {_problem(exc)[:200]}"
             ) from exc

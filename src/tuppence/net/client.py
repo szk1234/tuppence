@@ -30,6 +30,9 @@ class CallContext:
     connection_id: str | None = None
     local: bool = False
     redactions: int = 0
+    # Block any non-local host for this call whatever the global Local only setting is
+    # (a task pinned to local models).
+    require_local: bool = False
 
 
 def _wire_host(request: httpx.Request) -> str:
@@ -70,7 +73,7 @@ class GuardedTransport(httpx.BaseTransport):
         host = _wire_host(request)
         if (
             self.ctx.purpose in GUARDED_PURPOSES
-            and self.local_only()
+            and (self.ctx.require_local or self.local_only())
             and not (self.ctx.local and is_local_host(host))
         ):
             self.log.record(self._event(request, outcome="blocked", note="Local only is on"))

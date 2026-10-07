@@ -1,7 +1,11 @@
+import contextlib
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 from pydantic import BaseModel
 
+from tuppence.config.models import Budgets
 from tuppence.core.household import PersonIn
 from tuppence.llm.budget import RunBudget
 from tuppence.llm.types import AllModelsFailed, BudgetExceeded, LLMBadResponse, Message
@@ -27,6 +31,17 @@ def setup_cloud(services):
 
 
 U = [Message(role="user", content="hello")]
+CLOCK = datetime(2026, 10, 31, 23, 59, 59, tzinfo=UTC)
+
+
+def month_now(services):
+    """Pin the ledger's UTC clock so the month can't change under a test."""
+    services.usage.clock = lambda: CLOCK
+    return CLOCK.year, CLOCK.month
+
+
+def spend(services):
+    return services.usage.month_spend_gbp(CLOCK.year, CLOCK.month)
 
 
 def test_chat_records_usage_and_privacy_log(env):
@@ -35,10 +50,8 @@ def test_chat_records_usage_and_privacy_log(env):
     scripted.replies = [{"content": "hi there"}]
     r = services.llm.chat("coach", U)
     assert r.text == "hi there" and r.connection_id == c.id and r.cost_gbp == 0.0
-    summary = services.usage.summary(
-        *map(int, __import__("datetime").date.today().isoformat().split("-")[:2])
-    )
-    assert summary["calls"] == 1
+    summary = services.usage.summary(*month_now(services))
+    assert summary["calls"] == 1 and summary["failed_calls"] == 0
     assert any(e.outcome == "sent" and e.task == "coach" for e in services.privacy_log.list())
 
 
@@ -252,7 +265,7 @@ def test_value_error_is_not_retried_or_fallen_back(env, monkeypatch):
 def test_breaker_pauses_a_failing_connection(env):
     services, scripted = env
     setup_local(services)
-    scripted.replies = [httpx.Response(400, json={})] * 3
+    scripted.replies = [httpx.Response(500, json={})] * 9
     for _ in range(3):
         with pytest.raises(AllModelsFailed):
             services.llm.chat("coach", U)
@@ -280,3 +293,294 @@ def test_new_run_applies_the_user_run_cap(env):
     services.settings.set("llm.run_cap_gbp", 0.25, expected_version=0)
     budgets = Budgets(max_llm_calls=5, max_tokens=1000, max_gbp=2.0, max_seconds=30)
     assert services.llm.new_run(budgets).max_gbp == 0.25
+
+
+def cloud_priced(services, price=1000.0):
+    c = setup_cloud(services)
+    with services.db.transaction() as conn:
+        conn.execute(
+            "UPDATE llm_model SET price_in_usd_per_mtok = ?, price_out_usd_per_mtok = ?",
+            [price, price],
+        )
+    return c
+
+
+def sent_chats(scripted):
+    return [r for r in scripted.requests if "messages" in r]
+
+
+def test_unknown_price_cloud_counts_at_fallback_price_and_trips_monthly_cap(env):
+    services, scripted = env
+    month_now(services)
+    setup_cloud(services)  # the fake provider lists no prices
+    services.settings.set("llm.monthly_cap_gbp", 0.0, expected_version=0)
+    with pytest.raises(AllModelsFailed, match="spending cap"):
+        services.llm.chat("coach", U)
+    assert sent_chats(scripted) == []
+
+
+def test_unknown_price_cloud_is_recorded_as_estimated(env):
+    services, _ = env
+    month_now(services)
+    setup_cloud(services)
+    r = services.llm.chat("coach", U)
+    assert r.cost_gbp and r.cost_gbp > 0
+    assert spend(services) == pytest.approx(r.cost_gbp)
+    assert services.usage.summary(*month_now(services))["estimated_calls"] == 1
+
+
+def test_unknown_price_trips_run_cap(env):
+    services, scripted = env
+    setup_cloud(services)
+    run = RunBudget(max_calls=100, max_tokens=10_000_000, max_gbp=0.0001, max_seconds=600)
+    with pytest.raises(BudgetExceeded, match="spending limit"):
+        services.llm.chat("coach", U, run=run)
+    assert sent_chats(scripted) == []
+
+
+def test_missing_usage_is_estimated_and_counts(env):
+    services, scripted = env
+    month_now(services)
+    cloud_priced(services)
+    services.settings.set("llm.monthly_cap_gbp", 4.0, expected_version=0)
+    big = "y" * 4000  # about 1000 output tokens, roughly £0.75 at this price
+    scripted.replies = [
+        lambda req: httpx.Response(200, json={"choices": [{"message": {"content": big}}]})
+    ] * 10
+    first = services.llm.chat("coach", U)
+    assert first.cost_gbp and first.cost_gbp > 0.5
+    assert spend(services) == pytest.approx(first.cost_gbp)
+    with pytest.raises(AllModelsFailed, match="spending cap"):
+        for _ in range(9):
+            services.llm.chat("coach", U)
+    assert services.usage.summary(*month_now(services))["estimated_calls"] >= 1
+
+
+def test_local_models_stay_free_under_a_zero_cap(env):
+    services, _ = env
+    setup_local(services)
+    services.settings.set("llm.monthly_cap_gbp", 0.0, expected_version=0)
+    services.settings.set("llm.run_cap_gbp", 0.0, expected_version=0)
+    run = services.llm.new_run(
+        Budgets(max_llm_calls=5, max_tokens=100_000, max_gbp=1.0, max_seconds=60)
+    )
+    r = services.llm.chat("coach", U, run=run)
+    assert r.cost_gbp == 0.0
+
+
+def test_run_cap_uses_projected_cost_before_the_call(env):
+    services, scripted = env
+    cloud_priced(services, price=100_000.0)
+    services.settings.set("llm.monthly_cap_gbp", 10_000.0, expected_version=0)
+    run = RunBudget(max_calls=10, max_tokens=1_000_000, max_gbp=0.10, max_seconds=600)
+    with pytest.raises(BudgetExceeded, match="spending limit"):
+        services.llm.chat("coach", U, run=run)
+    assert sent_chats(scripted) == []
+
+
+def test_pinned_local_task_is_blocked_at_http_even_if_locality_is_stale(env, monkeypatch):
+    from tuppence.net import hosts
+
+    services, scripted = env
+    addr = {"ip": "192.168.1.5"}
+    monkeypatch.setattr(hosts, "_system_resolve", lambda h: [addr["ip"]])
+    c = services.connections.create("custom", base_url="http://gpu-box:11434/v1")
+    services.connections.test(c.id)
+    assert services.connections.get(c.id).is_local
+    addr["ip"] = "203.0.113.5"  # the name now resolves to a public address
+    services.settings.set("llm.mode", "advanced", expected_version=0)
+    services.router.set_task(
+        "coach",
+        [{"connection_id": c.id, "model_id": "m-small"}],
+        local_only=True,
+        expected_version=0,
+    )
+    with pytest.raises(AllModelsFailed, match="Local only"):
+        services.llm.chat("coach", U)
+    assert sent_chats(scripted) == []
+    assert services.privacy_log.list()[0].outcome == "blocked"
+
+
+def test_blocked_cloud_call_is_logged_not_a_notice_error(env):
+    services, scripted = env
+    c = setup_cloud(services)
+    with services.db.transaction() as conn:
+        conn.execute("UPDATE llm_connection SET notice_acknowledged_at = NULL")
+    assert services.connections.get(c.id).needs_notice
+    services.settings.set("privacy.local_only", True, expected_version=0)
+    with pytest.raises(AllModelsFailed) as exc:
+        services.llm.chat("coach", U)
+    assert "Confirm what" not in str(exc.value) and "Local only" in str(exc.value)
+    assert services.privacy_log.list()[0].outcome == "blocked"
+    assert sent_chats(scripted) == []
+
+
+def test_malformed_replies_do_not_open_the_breaker(env):
+    services, scripted = env
+    setup_local(services)
+    scripted.replies = [httpx.Response(200, json={"choices": []})] * 3
+    for _ in range(3):
+        with pytest.raises(AllModelsFailed):
+            services.llm.chat("coach", U)
+    assert services.llm.chat("coach", U).text == "ok"
+
+
+def test_client_errors_and_refusals_do_not_open_the_breaker(env):
+    services, scripted = env
+    setup_local(services)
+    scripted.replies = [httpx.Response(404, json={})] * 3
+    for _ in range(3):
+        with pytest.raises(AllModelsFailed):
+            services.llm.chat("coach", U)
+    assert services.breakers.opened_at == {}
+
+
+def test_run_time_limit_bounds_retry_waits(env):
+    services, scripted = env
+    setup_local(services)
+    t = [0.0]
+    run = RunBudget(
+        max_calls=10, max_tokens=1_000_000, max_gbp=1, max_seconds=10, monotonic=lambda: t[0]
+    )
+
+    def sleep(s):
+        t[0] += s
+
+    services.llm.sleep = sleep
+    scripted.replies = [httpx.Response(429, headers={"Retry-After": "30"}, json={})] * 3
+    with pytest.raises(BudgetExceeded, match="time"):
+        services.llm.chat("coach", U, run=run)
+    assert t[0] <= 10
+
+
+def test_each_call_timeout_is_clamped_to_remaining_run_time(env, monkeypatch):
+    services, _ = env
+    setup_local(services)
+    t = [0.0]
+    run = RunBudget(
+        max_calls=10, max_tokens=1_000_000, max_gbp=1, max_seconds=50, monotonic=lambda: t[0]
+    )
+    t[0] = 20.0
+    seen = []
+    real = services.connections.provider
+
+    def provider(*args, **kwargs):
+        seen.append(kwargs["timeout"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(services.connections, "provider", provider)
+    services.llm.chat("coach", U, run=run)  # a local coach call would otherwise get 180 s
+    assert seen == [30.0]
+
+
+def test_run_time_exhausted_before_a_fallback_stops_the_run(env):
+    services, scripted = env
+    c = setup_local(services)
+    services.settings.set("llm.mode", "advanced", expected_version=0)
+    chain = [
+        {"connection_id": c.id, "model_id": "m-big"},
+        {"connection_id": c.id, "model_id": "m-small"},
+    ]
+    services.router.set_task("coach", chain, local_only=False, expected_version=0)
+    t = [0.0]
+    run = RunBudget(
+        max_calls=10, max_tokens=1_000_000, max_gbp=1, max_seconds=5, monotonic=lambda: t[0]
+    )
+
+    def slow_fail(req):
+        t[0] += 6
+        return httpx.Response(400, json={})
+
+    scripted.replies = [slow_fail]
+    with pytest.raises(BudgetExceeded, match="time"):
+        services.llm.chat("coach", U, run=run)
+
+
+def test_fallback_on_same_connection_waits_for_retry_after(env):
+    services, scripted = env
+    c = setup_local(services)
+    services.settings.set("llm.mode", "advanced", expected_version=0)
+    chain = [
+        {"connection_id": c.id, "model_id": "m-big"},
+        {"connection_id": c.id, "model_id": "m-small"},
+    ]
+    services.router.set_task("coach", chain, local_only=False, expected_version=0)
+    scripted.replies = [httpx.Response(429, headers={"Retry-After": "2"}, json={})] * 3 + [
+        {"content": "from small"}
+    ]
+    r = services.llm.chat("coach", U)
+    assert r.model_id == "m-small"
+    assert [q for q in scripted.requests if "slept" in q] == [{"slept": 2.0}] * 3
+
+
+def test_repair_prompt_names_the_problem(env):
+    services, scripted = env
+    setup_local(services)
+    scripted.replies = [
+        {"content": '{"category": "groceries"}'},
+        {"content": '{"category": "g", "confidence": 1}'},
+    ]
+    services.llm.structured("categorise", U, Verdict, run_id="r1")
+    assert "confidence: Field required" in scripted.requests[-1]["messages"][-1]["content"]
+    with services.db.connection() as conn:
+        rows = conn.execute("SELECT run_id FROM llm_usage").fetchall()
+    assert [r["run_id"] for r in rows] == ["r1", "r1"]
+
+
+def test_pin_with_no_local_model_says_so(env):
+    from tuppence.llm.types import NoModelConfigured
+
+    services, _ = env
+    setup_cloud(services)
+    services.settings.set("llm.mode", "advanced", expected_version=0)
+    services.router.set_task("read", [], local_only=True, expected_version=0)
+    with pytest.raises(NoModelConfigured, match="only models on your own computer"):
+        services.llm.chat("read", U)
+
+
+def test_failed_calls_are_counted_apart(env):
+    services, scripted = env
+    setup_local(services)
+    scripted.replies = [httpx.Response(400, json={}), {"content": "ok"}]
+    with pytest.raises(AllModelsFailed):
+        services.llm.chat("coach", U)
+    services.llm.chat("coach", U)
+    summary = services.usage.summary(*month_now(services))
+    assert summary["calls"] == 1 and summary["failed_calls"] == 1
+    assert summary["by_task"]["coach"]["failed_calls"] == 1
+
+
+def test_concurrent_calls_cannot_both_fit_under_the_monthly_cap(env):
+    import threading
+
+    services, scripted = env
+    cloud_priced(services)
+    services.settings.set("llm.monthly_cap_gbp", 4.0, expected_version=0)
+    barrier = threading.Barrier(2, timeout=3)
+
+    def handler(req):
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "m-small"}]})
+        with contextlib.suppress(threading.BrokenBarrierError):
+            barrier.wait()  # the capped call never arrives, so this times out
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 4000},
+            },
+        )
+
+    scripted.handler = handler
+    results = []
+
+    def go():
+        try:
+            results.append(services.llm.chat("coach", U, max_tokens=4000).text)
+        except AllModelsFailed as exc:
+            results.append("capped" if "spending cap" in str(exc) else str(exc))
+
+    threads = [threading.Thread(target=go) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sorted(results) == ["capped", "ok"]

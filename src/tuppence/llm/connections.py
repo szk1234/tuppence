@@ -391,6 +391,7 @@ class ConnectionRegistry:
         task: str | None = None,
         redactions: int = 0,
         timeout: float = 30.0,
+        require_local: bool = False,
     ) -> Provider:
         row = self._row(connection_id)
         if PRESETS[row["preset"]].key_required and row["secret_ref"] is None:
@@ -405,6 +406,7 @@ class ConnectionRegistry:
             connection_id=connection_id,
             local=bool(row["is_local"]),
             redactions=redactions,
+            require_local=require_local,
         )
         client = self.client_factory(ctx, timeout)
         preset = PRESETS[row["preset"]]
