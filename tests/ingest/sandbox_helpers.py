@@ -143,3 +143,12 @@ def error_child(conn, fn, args, memory_mb):
 
 def noop(*_args):
     return None
+
+
+def partial_child(conn, fn, args, memory_mb):
+    """Announces a 1000-byte reply, sends 10 bytes and stays alive."""
+    import struct
+    import time
+
+    os.write(conn.fileno(), struct.pack("!i", 1000) + b"x" * 10)
+    time.sleep(120)

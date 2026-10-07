@@ -14,18 +14,23 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from tuppence.ingest.imaging import vision_image
-from tuppence.ingest.importers.camt import camt_document
+from tuppence.ingest.importers.camt import (
+    CamtFacts,
+    document_from_facts,
+    read_camt_facts,
+)
 from tuppence.ingest.importers.ofx import ofx_document
 from tuppence.ingest.importers.qif import qif_document
 from tuppence.ingest.importers.xlsx import xlsx_records
 from tuppence.ingest.models import Document, FileKind
 from tuppence.ingest.ocr import image_rows
-from tuppence.ingest.pdftext import pdf_pages, render_pages_png
+from tuppence.ingest.pdftext import pdf_pages, render_page_images
 from tuppence.ingest.results import (
+    parse_camt_facts,
     parse_image_rows,
     parse_pdf_pages,
-    parse_png_list,
     parse_vision_image,
+    parse_vision_images,
     parse_xlsx_records,
 )
 from tuppence.ingest.sandbox import SandboxTimeout, run_isolated
@@ -39,6 +44,7 @@ from tuppence.ingest.textprep import (
 )
 
 LOW_OCR_CONFIDENCE = 0.6
+VISION_BATCH = 4
 
 
 class ExtractLimits(BaseModel):
@@ -73,7 +79,9 @@ def extract_document(
     if kind == "qif":
         return qif_document(decode_text(path.read_bytes()), sha256=sha256)
     if kind == "camt053":
-        return camt_document(path.read_bytes(), sha256=sha256)
+        return document_from_facts(
+            clock.run(parse_camt_facts, read_camt_facts, str(path)), sha256=sha256
+        )
     if kind == "xlsx":
         check_zip(path)
         records = clock.run(parse_xlsx_records, xlsx_records, str(path))
@@ -81,6 +89,12 @@ def extract_document(
     if kind == "pdf":
         return _pdf(path, sha256, limits, clock, vision)
     return _image(path, sha256, limits, clock, vision)
+
+
+def read_camt(path: Path, limits: ExtractLimits) -> CamtFacts:
+    """A CAMT.053 file's facts, with the XML parsed in the sandbox (never in the app).
+    Build the statement with `camt.parsed_from_facts`."""
+    return _Deadline(limits).run(parse_camt_facts, read_camt_facts, str(path.resolve()))
 
 
 class _Deadline:
@@ -118,11 +132,15 @@ def _pdf(
     warnings: list[str] = []
     if vision is not None:
         scanned = list(result.scanned_pages)
-        pngs = clock.run(parse_png_list, render_pages_png, str(path), scanned) if scanned else []
-        for number, png in zip(scanned, pngs, strict=True):
-            clock.remaining()  # the model calls count against the same deadline
-            pages[number - 1] = vision.transcribe(png, "image/png")
-            ocr_pages.append(number)
+        for start in range(0, len(scanned), VISION_BATCH):
+            batch = scanned[start : start + VISION_BATCH]
+            # A few pages per sandbox call keeps each reply small; every call and every
+            # model call counts against the same overall deadline.
+            images = clock.run(parse_vision_images, render_page_images, str(path), batch)
+            for number, picture in zip(batch, images, strict=True):
+                clock.remaining()
+                pages[number - 1] = vision.transcribe(picture.data, picture.media_type)
+                ocr_pages.append(number)
         if result.scanned_pages:
             warnings.append("Scanned pages were read by your AI vision model.")
     doc = pages_document(pages, sha256=sha256, kind="pdf")

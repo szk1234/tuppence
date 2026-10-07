@@ -41,7 +41,7 @@ def test_a_page_with_a_huge_media_box_is_rendered_within_the_cap(tmp_path):
     extract_document(pdf, "pdf", sha256="x", limits=LIMITS, vision=vision)
     media_type, png = vision.sent[0]
     with Image.open(io.BytesIO(png)) as image:
-        assert media_type == "image/png" and max(image.size) <= MAX_VISION_SIDE
+        assert media_type == "image/jpeg" and max(image.size) <= MAX_VISION_SIDE
 
 
 def test_a_pdf_with_a_huge_page_tree_is_refused_quickly(tmp_path):
@@ -179,3 +179,112 @@ def test_photo_orientation_is_applied_before_ocr(fixtures, tmp_path):
     shot.rotate(90, expand=True).save(sideways, "JPEG", quality=95, exif=exif.tobytes())
     doc = extract_document(sideways, "image", sha256="x", limits=LIMITS)
     assert any("Little Cafe" in line.text for line in doc.lines)
+
+
+def test_dense_pages_do_not_pile_up_in_memory(tmp_path):
+    """Dense pages: pdfplumber used to keep every page's objects (about 80 MB a page)."""
+    pdf = hostile_pdfs.word_flood(tmp_path / "dense.pdf", 20_000, pages=12)
+    started = time.monotonic()
+    doc = extract_document(
+        pdf, "pdf", sha256="x", limits=ExtractLimits(max_pages=50, timeout_s=120, memory_mb=600)
+    )
+    assert doc.pages == 12 and time.monotonic() - started < 60
+
+
+def _noisy_scan(path, pages, sigma=6):
+    import numpy as np
+    import pypdfium2 as pdfium
+
+    source = pdfium.PdfDocument("tests/fixtures/statements/pdf/card-text.pdf")[0]
+    page = np.asarray(source.render(scale=150 / 72).to_pil().convert("RGB"), dtype=np.int16)
+    rng = np.random.default_rng(1)
+    noise = rng.normal(0, sigma, page.shape).astype(np.int16)
+    images = [
+        Image.fromarray(np.clip(np.roll(noise, 7 * i, axis=0) + page, 0, 255).astype("uint8"))
+        for i in range(pages)
+    ]
+    images[0].save(path, "PDF", resolution=150, save_all=True, append_images=images[1:])
+    return path
+
+
+def test_a_long_noisy_scan_is_read_by_vision_page_by_page(tmp_path):
+    pdf = _noisy_scan(tmp_path / "scan30.pdf", 30)
+    vision = CaptureVision()
+    doc = extract_document(pdf, "pdf", sha256="x", limits=LIMITS, vision=vision)
+    assert doc.ocr_pages == list(range(1, 31)) and len(vision.sent) == 30
+    assert all(m == "image/jpeg" and len(png) < 2_000_000 for m, png in vision.sent)
+    with Image.open(io.BytesIO(vision.sent[0][1])) as image:
+        assert max(image.size) <= MAX_VISION_SIDE and not image.getexif()
+
+
+def _camt_nested(depth):
+    return (
+        b'<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">'
+        + b"<a>" * depth
+        + b"</a>" * depth
+        + b"</Document>"
+    )
+
+
+def test_a_deeply_nested_camt_file_is_refused_quickly_and_cheaply(tmp_path):
+    import resource
+
+    bomb = tmp_path / "nested.xml"
+    bomb.write_bytes(_camt_nested(7_000_000))  # about 42 MB of open tags
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    started = time.monotonic()
+    with pytest.raises(SandboxFailed, match="nested too deeply"):
+        extract_document(bomb, "camt053", sha256="x", limits=LIMITS)
+    assert time.monotonic() - started < 30
+    grown_mb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 1024  # Linux: KiB
+    assert grown_mb < 150
+
+
+def test_a_camt_file_with_too_many_elements_is_refused(tmp_path):
+    flat = tmp_path / "flat.xml"
+    flat.write_bytes(
+        b'<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">'
+        + b"<a/>" * 1_100_000
+        + b"</Document>"
+    )
+    with pytest.raises(SandboxFailed, match="too large to read safely"):
+        extract_document(flat, "camt053", sha256="x", limits=LIMITS)
+
+
+def test_camt_is_parsed_in_the_sandbox_and_matches_the_in_process_reader(fixtures):
+    from tuppence.ingest.extract import read_camt
+    from tuppence.ingest.importers import camt
+
+    path = fixtures / "camt" / "statement.xml"
+    facts = read_camt(path, LIMITS)
+    assert camt.parsed_from_facts(facts) == camt.parse_camt(path.read_bytes())
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda f: f.pop("iban"),
+        lambda f: f.update(extra=1),
+        lambda f: f.update(opening_pence="5"),
+        lambda f: f.update(period_start="not-a-date"),
+        lambda f: f["entries"].append({"ref": "L1"}),
+        lambda f: f.update(entries="x"),
+    ],
+)
+def test_camt_facts_are_validated(mutate):
+    from tuppence.ingest.results import BadReply, parse_camt_facts
+
+    facts = {
+        "iban": "GB00SYNT1",
+        "bic": "",
+        "currency": "GBP",
+        "period_start": "2026-10-01",
+        "period_end": "",
+        "opening_pence": 100,
+        "closing_pence": None,
+        "entries": [],
+    }
+    assert parse_camt_facts(dict(facts, entries=[])).iban == "GB00SYNT1"
+    mutate(facts)
+    with pytest.raises(BadReply):
+        parse_camt_facts(facts)

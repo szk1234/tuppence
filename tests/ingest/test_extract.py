@@ -91,9 +91,9 @@ def test_vision_model_can_replace_ocr(fixtures):
     doc = extract_document(
         fixtures / "pdf" / "card-scanned.pdf", "pdf", sha256="x", limits=LIMITS, vision=vision
     )
-    assert [m for m, _ in vision.seen] == ["image/png", "image/png"] and vision.seen[0][
-        1
-    ] == b"\x89PNG\r\n\x1a\n"
+    assert [m for m, _ in vision.seen] == ["image/jpeg", "image/jpeg"] and vision.seen[0][1][
+        :3
+    ] == b"\xff\xd8\xff"
     assert doc.ocr_pages == [1, 2] and "read by your AI vision model" in doc.warnings[0]
     shot = extract_document(
         fixtures / "image" / "app-screenshot.png", "image", sha256="x", limits=LIMITS, vision=vision

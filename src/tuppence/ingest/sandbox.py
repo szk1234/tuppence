@@ -13,6 +13,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from multiprocessing.connection import Connection
@@ -213,14 +214,27 @@ def run_isolated(
                     "so it was stopped."
                 )
             if parent.poll(min(POLL_S, remaining)):
+                # Reading the reply is inside the deadline too: a child that announces a
+                # reply and never finishes it is killed when time is up, which ends the read.
+                watchdog = threading.Timer(max(remaining, 0.01), process.kill)
+                watchdog.daemon = True
+                watchdog.start()
                 try:
                     raw = parent.recv_bytes(MAX_RESULT_BYTES + 4096)
-                except EOFError:
-                    raise SandboxFailed(
-                        "The file reader stopped unexpectedly. The file may be damaged."
-                    ) from None
-                except OSError:  # a reply longer than the cap
+                except (EOFError, OSError) as exc:
+                    if time.monotonic() >= deadline:  # the watchdog cut the read short
+                        raise SandboxTimeout(
+                            f"Reading this file took longer than {int(timeout_s)} seconds, "
+                            "so it was stopped."
+                        ) from None
+                    if isinstance(exc, EOFError):
+                        raise SandboxFailed(
+                            "The file reader stopped unexpectedly. The file may be damaged."
+                        ) from None
+                    # a reply longer than the cap, or cut short
                     raise SandboxFailed("The file reader sent back something unexpected.") from None
+                finally:
+                    watchdog.cancel()
                 break
             used = resident_mb(process.pid or 0)
             if used is not None and used > memory_mb:

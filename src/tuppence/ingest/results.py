@@ -11,7 +11,10 @@ import base64
 import binascii
 import math
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Literal
+
+from tuppence.ingest.importers.camt import CamtEntry, CamtFacts
 
 MAX_TEXT = 1_000_000  # one string
 MAX_ITEMS = 1_000_000  # one list
@@ -131,10 +134,6 @@ def parse_vision_image(value: Any) -> VisionImage:
     raise BadReply("unexpected image type")
 
 
-def parse_png_list(value: Any) -> list[bytes]:
-    return [_bytes(item) for item in _list(value, MAX_PAGE_NUMBER)]
-
-
 def parse_xlsx_records(value: Any) -> list[tuple[int, str, list[str]]]:
     out: list[tuple[int, str, list[str]]] = []
     for item in _list(value):
@@ -143,3 +142,60 @@ def parse_xlsx_records(value: Any) -> list[tuple[int, str, list[str]]]:
             raise BadReply("expected three items")
         out.append((_int(row[0], 1, MAX_ITEMS), _str(row[1]), _strs(row[2], 10_000)))
     return out
+
+
+def _iso_date_or_blank(value: Any) -> str:
+    text = _str(value, 10)
+    if text:
+        try:
+            date.fromisoformat(text)
+        except ValueError:
+            raise BadReply("expected a date") from None
+    return text
+
+
+def _pence(value: Any) -> int | None:
+    return None if value is None else _int(value, -(10**13), 10**13)
+
+
+def parse_camt_facts(value: Any) -> CamtFacts:
+    raw = _dict(
+        value,
+        {
+            "iban",
+            "bic",
+            "currency",
+            "period_start",
+            "period_end",
+            "opening_pence",
+            "closing_pence",
+            "entries",
+        },
+    )
+    entries = []
+    for item in _list(raw["entries"]):
+        e = _dict(item, {"ref", "date", "amount_text", "status", "name", "details"})
+        entries.append(
+            CamtEntry(
+                ref=_str(e["ref"], 20),
+                date=_iso_date_or_blank(e["date"]),
+                amount_text=_str(e["amount_text"], 100),
+                status=_str(e["status"], 100),
+                name=_str(e["name"]),
+                details=_str(e["details"]),
+            )
+        )
+    return CamtFacts(
+        iban=_str(raw["iban"], 100),
+        bic=_str(raw["bic"], 100),
+        currency=_str(raw["currency"], 10),
+        period_start=_iso_date_or_blank(raw["period_start"]),
+        period_end=_iso_date_or_blank(raw["period_end"]),
+        opening_pence=_pence(raw["opening_pence"]),
+        closing_pence=_pence(raw["closing_pence"]),
+        entries=entries,
+    )
+
+
+def parse_vision_images(value: Any) -> list[VisionImage]:
+    return [parse_vision_image(item) for item in _list(value, MAX_PAGE_NUMBER)]

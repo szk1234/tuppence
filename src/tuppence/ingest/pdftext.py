@@ -65,9 +65,15 @@ def pdf_pages(path: str, max_pages: int, ocr: bool, render_dpi: int = 200) -> di
                 fast = doc[number - 1]
                 if fast.get_textpage().count_chars() > MAX_CHARS_PER_PAGE:
                     raise PdfPageTooMuchText
-                words = pdf.pages[number - 1].extract_words(
-                    x_tolerance=1.5, y_tolerance=3, keep_blank_chars=False
-                )
+                plumber_page = pdf.pages[number - 1]
+                try:
+                    words = plumber_page.extract_words(
+                        x_tolerance=1.5, y_tolerance=3, keep_blank_chars=False
+                    )
+                finally:
+                    # pdfplumber keeps every page's parsed objects until told otherwise; a
+                    # document of dense pages would otherwise grow without bound.
+                    plumber_page.close()
                 if len(words) > MAX_WORDS_PER_PAGE:
                     raise PdfPageTooManyWords
                 if len(words) >= MIN_WORDS_FOR_TEXT_LAYER:
@@ -99,10 +105,11 @@ def pdf_pages(path: str, max_pages: int, ocr: bool, render_dpi: int = 200) -> di
     }
 
 
-def render_pages_png(path: str, numbers: list[int], dpi: int = 150) -> list[bytes]:
-    """The given pages (1-based) as clean PNG bytes, for the vision model."""
+def render_page_images(path: str, numbers: list[int], dpi: int = 150) -> list[tuple[bytes, str]]:
+    """The given pages (1-based) as small, clean JPEGs (at most 2000 px, quality 85, no
+    metadata) for the vision model. A few pages per call keeps each reply small."""
     doc = _open(path)
     try:
-        return [encode_for_vision(_render(doc[n - 1], dpi))[0] for n in numbers]
+        return [encode_for_vision(_render(doc[n - 1], dpi), jpeg=True) for n in numbers]
     finally:
         doc.close()

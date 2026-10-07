@@ -46,8 +46,8 @@ def big_page(path: Path, points: int) -> Path:
     )
 
 
-def word_flood(path: Path, words: int) -> Path:
-    """One page whose content stream draws `words` short words."""
+def word_flood(path: Path, words: int, pages: int = 1) -> Path:
+    """`pages` pages sharing one content stream that draws `words` short words."""
     ops = [b"BT /F1 1 Tf"]
     for i in range(words):
         ops.append(
@@ -55,16 +55,20 @@ def word_flood(path: Path, words: int) -> Path:
         )
     ops.append(b"ET")
     stream = zlib.compress(b"\n".join(ops), 9)
+    kids = " ".join(f"{5 + i} 0 R" for i in range(pages))
     return _write(
         path,
         [
             b"<< /Type /Catalog /Pages 2 0 R >>",
-            b"<< /Type /Pages /Count 1 /Kids [5 0 R] >>",
+            f"<< /Type /Pages /Count {pages} /Kids [{kids}] >>".encode(),
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
             f"<< /Length {len(stream)} /Filter /FlateDecode >>\nstream\n".encode()
             + stream
             + b"\nendstream",
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 14400] /Contents 4 0 R "
-            b"/Resources << /Font << /F1 3 0 R >> >> >>",
+            *[
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+                b"/Resources << /Font << /F1 3 0 R >> >> >>"
+            ]
+            * pages,
         ],
     )
