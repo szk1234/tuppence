@@ -15,6 +15,8 @@ from tuppence.core.auth import LoginLimiter, Sessions, Users, prune_auth
 from tuppence.core.backup import daily_backup
 from tuppence.core.clock import months_ago, to_iso, utcnow
 from tuppence.core.db import Database
+from tuppence.core.debts import DebtService
+from tuppence.core.goals import GoalService
 from tuppence.core.household import HouseholdService
 from tuppence.core.income import IncomeService
 from tuppence.core.jobs import Job, JobQueue, Periodic, Worker
@@ -64,6 +66,8 @@ class Services:
     llm: LLMClient
     accounts: AccountService
     income: IncomeService
+    debts: DebtService
+    goals: GoalService
     periodic: list[Periodic] = field(default_factory=list)
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _launch_used: bool = field(default=False, repr=False)
@@ -173,6 +177,8 @@ def build_services(runtime: RuntimeSettings) -> Services:
         llm=llm,
         accounts=accounts,
         income=IncomeService(db, household, accounts),
+        debts=DebtService(db, household),
+        goals=GoalService(db),
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
     services.sessions.purge_kind("launch")
