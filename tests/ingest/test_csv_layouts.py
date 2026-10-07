@@ -119,3 +119,32 @@ def test_missing_column_is_reported(fixtures):
     )
     with pytest.raises(LayoutMismatch, match="Payee"):
         parse_with_layout(doc, layout)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"category": "Cat"},
+        {"merchant": "M"},
+        {"type": "T"},
+        {"account_number": "A"},
+        {"fee": "F"},
+        {"skip": [{"column": "State", "not_in": ["X"], "reason": "r"}]},
+    ],
+)
+def test_every_named_column_must_exist(extra):
+    from tuppence.core.errors import UserFacing
+
+    doc = csv_document(b"Date,Desc,Amt\n05/01/2026,Tea,-2.50\n", sha256="x")
+    layout = CsvLayout(
+        id="u",
+        name="My layout",
+        signature=["Date", "Desc", "Amt"],
+        date="Date",
+        description=["Desc"],
+        amount="Amt",
+        **extra,
+    )
+    with pytest.raises(LayoutMismatch, match="My layout") as refused:
+        parse_with_layout(doc, layout)
+    assert isinstance(refused.value, UserFacing)

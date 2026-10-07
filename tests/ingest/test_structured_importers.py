@@ -117,3 +117,86 @@ def test_camt_never_resolves_external_entities(tmp_path):
 
 def test_importer_errors_are_ours_to_show():
     assert all(issubclass(e, UserFacing) for e in (OfxError, QifError, CamtError))
+
+
+def test_unclosed_ofx_aggregates_are_refused_quickly():
+    import time
+
+    big = "<OFX>" + "<STMTTRN><TRNAMT>1<DTPOSTED>20260101" * 6000  # about 216 KB
+    started = time.perf_counter()
+    for call in (lambda: parse_ofx(big), lambda: ofx_document(big, sha256="x")):
+        with pytest.raises(OfxError, match="never closed"):
+            call()
+    assert time.perf_counter() - started < 0.5
+
+
+def test_ofx_size_and_count_limits(monkeypatch):
+    from tuppence.ingest.importers import ofx
+
+    monkeypatch.setattr(ofx, "MAX_CHARS", 50)
+    with pytest.raises(OfxError, match="too large"):
+        parse_ofx("<OFX>" + "x" * 100)
+    monkeypatch.setattr(ofx, "MAX_CHARS", 10_000)
+    monkeypatch.setattr(ofx, "MAX_TRANSACTIONS", 2)
+    many = "<OFX>" + "<STMTTRN><TRNAMT>1<DTPOSTED>20260101</STMTTRN>" * 3
+    with pytest.raises(OfxError, match="too many"):
+        parse_ofx(many)
+
+
+def test_ofx_entities_are_unescaped():
+    text = "<OFX><STMTTRN><DTPOSTED>20260101<TRNAMT>-1.00<NAME>Tom &amp; Jerry</STMTTRN></OFX>"
+    assert parse_ofx(text).rows[0].raw_description == "Tom & Jerry"
+
+
+def _camt(stmts: str) -> bytes:
+    return (
+        '<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"><BkToCstmrStmt>'
+        f"{stmts}</BkToCstmrStmt></Document>"
+    ).encode()
+
+
+def _stmt(iban, start, amount, opening, closing, ind="DBIT", extra=""):
+    return (
+        f"<Stmt><Id>{start}</Id><FrToDt><FrDtTm>{start}T00:00:00</FrDtTm>"
+        f"<ToDtTm>{start}T23:59:59</ToDtTm></FrToDt>"
+        f"<Acct><Id><IBAN>{iban}</IBAN></Id></Acct>"
+        f"<Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt>{opening}</Amt>"
+        "<CdtDbtInd>CRDT</CdtDbtInd></Bal>"
+        f"<Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt>{closing}</Amt>"
+        "<CdtDbtInd>CRDT</CdtDbtInd></Bal>"
+        f"<Ntry><Amt>{amount}</Amt><CdtDbtInd>{ind}</CdtDbtInd>{extra}<Sts><Cd>BOOK</Cd></Sts>"
+        f"<BookgDt><Dt>{start}</Dt></BookgDt></Ntry></Stmt>"
+    )
+
+
+def test_camt_reads_every_statement_of_one_account_in_date_order():
+    data = _camt(
+        _stmt("GB00SYNT1", "2026-11-05", "20.00", "90.00", "70.00")
+        + _stmt("GB00SYNT1", "2026-10-05", "10.00", "100.00", "90.00")
+    )
+    doc, parsed = camt_document(data, sha256="x"), parse_camt(data)
+    assert doc.data_refs == ["L1", "L2"]
+    assert [(r.ref, r.amount_pence) for r in parsed.rows] == [("L1", -1000), ("L2", -2000)]
+    assert (parsed.opening_balance_pence, parsed.closing_balance_pence) == (10000, 7000)
+    assert (parsed.period_start, parsed.period_end) == (date(2026, 10, 5), date(2026, 11, 5))
+    assert check_document(doc, parsed) == []
+
+
+def test_camt_refuses_statements_for_two_accounts():
+    data = _camt(
+        _stmt("GB00SYNT1", "2026-10-05", "10.00", "100.00", "90.00")
+        + _stmt("GB00SYNT2", "2026-10-05", "5.00", "50.00", "45.00")
+    )
+    for call in (lambda: parse_camt(data), lambda: camt_document(data, sha256="x")):
+        with pytest.raises(CamtError, match="more than one account") as refused:
+            call()
+        assert isinstance(refused.value, UserFacing)
+
+
+def test_camt_reversal_flips_the_sign_and_bad_encoding_is_ours():
+    data = _camt(
+        _stmt("GB00SYNT1", "2026-10-05", "5.00", "1", "1", extra="<RvslInd>true</RvslInd>")
+    )
+    assert parse_camt(data).rows[0].amount_pence == 500
+    with pytest.raises(CamtError):
+        parse_camt(b'<?xml version="1.0" encoding="no-such-codec"?><Document/>')

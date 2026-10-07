@@ -7,6 +7,7 @@ nothing for a hostile file to exploit.
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import date
 
@@ -21,17 +22,37 @@ class OfxError(UserFacing, ValueError):
     pass
 
 
+MAX_CHARS = 10_000_000
+MAX_TRANSACTIONS = 50_000
+
+
 def _blocks(text: str, name: str) -> list[str]:
-    return [
-        m.group(1) for m in re.finditer(rf"<{name}>(.*?)</{name}>", text, re.IGNORECASE | re.DOTALL)
-    ]
+    """The text inside each <name>...</name>, in one pass over the file."""
+    if len(text) > MAX_CHARS:
+        raise OfxError("This OFX file is too large to read.")
+    out: list[str] = []
+    opened: int | None = None
+    for m in re.finditer(rf"<(/?){re.escape(name)}>", text, re.IGNORECASE):
+        if m.group(1):
+            if opened is not None:
+                out.append(text[opened : m.start()])
+                opened = None
+        elif opened is not None:
+            raise OfxError(f"This OFX file has a <{name}> that is never closed.")
+        else:
+            opened = m.end()
+    if opened is not None:
+        raise OfxError(f"This OFX file has a <{name}> that is never closed.")
+    if name.upper() == "STMTTRN" and len(out) > MAX_TRANSACTIONS:
+        raise OfxError("This OFX file has too many transactions to read.")
+    return out
 
 
 def _leaves(block: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for name, value in _LEAF.findall(block):
         if value.strip():
-            found.setdefault(name.upper(), value.strip())
+            found.setdefault(name.upper(), html.unescape(value.strip()))
     return found
 
 

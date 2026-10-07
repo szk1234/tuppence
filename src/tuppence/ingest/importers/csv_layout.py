@@ -64,13 +64,21 @@ def _require_columns(layout: CsvLayout, header: Sequence[str] | None) -> None:
         layout.money_out,
         layout.money_in,
         layout.balance,
+        layout.merchant,
+        layout.category,
+        layout.type,
+        layout.account_number,
+        layout.fee,
+        *(rule.column for rule in layout.skip),
     ]
     width = len(header) if header is not None else (layout.columns or 0)
     present = {norm(c) for c in header or []}
     for ref in filter(None, wanted):
         ok = int(ref[1:]) < width if ref.startswith("#") else norm(ref) in present
         if not ok:
-            raise LayoutMismatch(f'The file has no "{ref}" column.')
+            raise LayoutMismatch(
+                f'The "{layout.name}" layout needs a "{ref}" column and this file has none.'
+            )
 
 
 def _record(

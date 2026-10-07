@@ -325,7 +325,8 @@ def _sign(row: ParsedRow, text: str, sign_from: str) -> list[str]:
     positives = [shown for negative, shown in found if not negative]
     if negatives and amount >= 0:
         return [f"{row.ref}: sign mismatch (line shows {negatives[0]}, amount is {pounds(amount)})"]
-    if positives and not negatives and amount <= 0 and not sign_from:
+    fee = row.bank_type == "fee"  # a fee is printed as a plain charge, e.g. Revolut's Fee column
+    if positives and not negatives and amount <= 0 and not sign_from and not fee:
         return [f"{row.ref}: sign mismatch (line shows {positives[0]}, amount is {pounds(amount)})"]
     if "-" in row.amount_text and amount >= 0 and not negatives:
         return [

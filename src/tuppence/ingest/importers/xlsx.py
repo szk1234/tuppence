@@ -46,16 +46,21 @@ def xlsx_records(path: str) -> list[tuple[int, str, list[str]]]:
     import openpyxl
 
     _check_zip(path)
-    book = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        book = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except (KeyError, ValueError, OSError, SyntaxError):  # SyntaxError: XML ParseError
+        raise WorkbookRejected("That doesn't look like an Excel workbook.") from None
     try:
         for sheet in book.worksheets:
             out: list[tuple[int, str, list[str]]] = []
             for n, row in enumerate(
                 sheet.iter_rows(max_col=MAX_COLUMNS, values_only=True), start=1
             ):
-                if n > MAX_ROWS:
-                    break
                 cells = [cell_text(v) for v in row]
+                if n > MAX_ROWS:
+                    if any(cells):
+                        raise WorkbookRejected("That workbook has too many rows to read safely.")
+                    break
                 while cells and not cells[-1]:
                     cells.pop()
                 out.append((n, ", ".join(cells), cells))

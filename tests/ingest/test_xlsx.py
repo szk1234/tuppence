@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 
 import openpyxl
 
@@ -70,3 +71,43 @@ def test_zip_bomb_and_non_workbooks_are_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(xlsx, "MAX_UNPACKED_BYTES", 1000)
     with pytest.raises(xlsx.WorkbookRejected, match="too large"):
         xlsx.xlsx_records(str(bomb))
+
+
+def _revolut_workbook(path, *, as_dates):
+    import csv
+
+    book = openpyxl.Workbook()
+    sheet = book.active
+    rows = list(
+        csv.reader(
+            (Path(__file__).resolve().parents[1] / "fixtures/statements/csv/revolut.csv").open(
+                encoding="utf-8"
+            )
+        )
+    )
+    sheet.append(rows[0])
+    for row in rows[1:]:
+        cells = list(row)
+        for i in (2, 3):
+            if cells[i]:
+                when = datetime.strptime(cells[i], "%Y-%m-%d %H:%M:%S")
+                cells[i] = when if as_dates else cells[i]
+        for i in (5, 6, 9):
+            cells[i] = float(cells[i]) if cells[i] else None
+        sheet.append(cells)
+    book.save(path)
+
+
+def test_revolut_workbooks_import_with_date_cells_or_text(tmp_path):
+    for as_dates in (True, False):
+        path = tmp_path / f"revolut-{as_dates}.xlsx"
+        _revolut_workbook(path, as_dates=as_dates)
+        registry = LayoutRegistry(load_bank_pack())
+        doc = table_document(
+            xlsx_records(str(path)), sha256="x", kind="xlsx", known=registry.is_known_header
+        )
+        layout = registry.match(doc)
+        assert layout.id == "revolut"
+        result = parse_with_layout(doc, layout)
+        assert result.problems == [] and len(result.parsed.rows) == 10
+        assert check_document(doc, result.parsed) == []

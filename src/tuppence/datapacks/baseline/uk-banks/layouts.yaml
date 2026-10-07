@@ -148,7 +148,7 @@ layouts:
     kind: current
     signature: [Type, Product, Started Date, Completed Date, Description, Amount, Fee, Currency, State, Balance]
     date: Completed Date
-    date_formats: ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]
+    date_formats: ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%Y"]
     description: [Description]
     amount: Amount
     fee: Fee
