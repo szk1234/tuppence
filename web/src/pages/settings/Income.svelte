@@ -7,7 +7,7 @@
   import { errorText, isConflict } from '../../lib/form'
   import { formatGBP } from '../../lib/money'
   import { link } from '../../lib/router.svelte'
-  import type { Account, Income, Person } from '../../lib/types'
+  import { needsAccount, type Account, type Income, type Person } from '../../lib/types'
 
   let people = $state<Person[]>([])
   let accounts = $state<Account[]>([])
@@ -23,6 +23,12 @@
   const assumed = $derived(active.some((i) => i.calendar_assumed))
   const who = (i: Income) => people.find((p) => p.id === i.person_id)?.display_name ?? 'Someone who has left'
   const into = (i: Income) => accounts.find((a) => a.id === i.account_id)?.nickname
+  /** Where the pay lands; an account that closed or isn't theirs any more counts as not chosen. */
+  const landing = (i: Income) => {
+    if (!i.account_id) return ' · account not chosen yet'
+    if (needsAccount(i) || !into(i)) return ' · its account has closed or is no longer theirs: choose another'
+    return ` · paid into ${into(i)}`
+  }
 
   async function load() {
     people = (await api<{ people: Person[] }>('/api/household/people')).people
@@ -84,7 +90,7 @@
           {:else}
             <span class="name">{i.name}</span>
             <span class="meta">
-              {who(i)} · {formatGBP(i.net_amount)} · {i.pay_rule_description}{i.next_pay_date ? ` · next payday ${ukDate(i.next_pay_date)}` : ''}{into(i) ? ` · paid into ${into(i)}` : ' · account not chosen yet'}
+              {who(i)} · {formatGBP(i.net_amount)} · {i.pay_rule_description}{i.next_pay_date ? ` · next payday ${ukDate(i.next_pay_date)}` : ''}{landing(i)}
               {#if i.person_left}<span class="badge cloud">Has left the household</span>{/if}
             </span>
             <span class="actions">

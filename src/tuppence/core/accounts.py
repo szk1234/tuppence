@@ -73,6 +73,14 @@ class AccountPatch(BaseModel):
     statement_day: StatementDay | None = None
 
 
+class IncomeRef(BaseModel):
+    """An income whose receiving account a change made unusable (closed, or no longer owned
+    by the person paid); it needs a receiving account again."""
+
+    id: str
+    name: str
+
+
 class Account(BaseModel):
     id: str
     provider: str
@@ -89,6 +97,7 @@ class Account(BaseModel):
     status: Literal["active", "closed"]
     version: int
     joint: bool
+    affected_income: list[IncomeRef] = []  # set by close, and by an edit that removes an owner
 
 
 class AccountService:
@@ -184,6 +193,25 @@ class AccountService:
         }
 
     @staticmethod
+    def _incomes_paid_into(
+        conn: sqlite3.Connection, account_id: str, owners: list[str] | None = None
+    ) -> list[IncomeRef]:
+        """Active incomes of people in the household paid into this account; with `owners`,
+        only those whose person isn't one of them."""
+        rows = conn.execute(
+            "SELECT i.id, i.name, i.person_id FROM income_source i"
+            " JOIN person p ON p.id = i.person_id"
+            " WHERE i.account_id = ? AND i.status = 'active' AND p.status = 'active'"
+            " ORDER BY i.created_at, i.rowid",
+            [account_id],
+        ).fetchall()
+        return [
+            IncomeRef(id=r["id"], name=r["name"])
+            for r in rows
+            if owners is None or r["person_id"] not in owners
+        ]
+
+    @staticmethod
     def _write_owners(conn: sqlite3.Connection, account_id: str, owners: list[str]) -> None:
         conn.execute("DELETE FROM account_owner WHERE account_id = ?", [account_id])
         conn.executemany(
@@ -215,6 +243,8 @@ class AccountService:
             if field in data and data[field] is None:
                 raise InputError(f"{field} can't be empty.")
         current = self.get(account_id)
+        if current.status != "active":
+            raise InputError("This account is closed. Reopen it to make changes.")
         owners = None
         if "owner_ids" in data:
             owners = self._check_owners(data["owner_ids"], keep=current.owner_ids)
@@ -241,9 +271,11 @@ class AccountService:
                 changed or {"status": current.status},
                 now=to_iso(utcnow()),
             )
+            affected: list[IncomeRef] = []
             if owners_changed and owners is not None:
                 self._write_owners(conn, account_id, owners)
-        return self.get(account_id)
+                affected = self._incomes_paid_into(conn, account_id, owners)
+        return self.get(account_id).model_copy(update={"affected_income": affected})
 
     @staticmethod
     def _differs(column: str, value: Any, current: Account) -> bool:
@@ -256,6 +288,9 @@ class AccountService:
         return bool(old != value)
 
     def _set_status(self, account_id: str, status: str, expected_version: int) -> Account:
+        if self.get(account_id).status == status:
+            word = "closed" if status == "closed" else "open"
+            raise InputError(f"This account is already {word}.")
         with self.db.transaction() as conn:
             update_versioned(
                 conn,
@@ -266,7 +301,9 @@ class AccountService:
                 {"status": status},
                 now=to_iso(utcnow()),
             )
-        return self.get(account_id)
+            # Incomes paid into a closed account need a receiving account again.
+            affected = self._incomes_paid_into(conn, account_id) if status == "closed" else []
+        return self.get(account_id).model_copy(update={"affected_income": affected})
 
     def close(self, account_id: str, expected_version: int) -> Account:
         return self._set_status(account_id, "closed", expected_version)

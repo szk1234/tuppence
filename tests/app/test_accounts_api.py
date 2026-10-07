@@ -41,10 +41,35 @@ def test_accounts_api_roundtrip(client):
     assert len(everything) == 2
     back = client.post(f"/api/accounts/{acct['id']}/reopen", json={"expected_version": 3})
     assert back.status_code == 200 and back.json()["status"] == "active"
-    assert (
-        client.post(f"/api/accounts/{acct['id']}/reopen", json={"expected_version": 3}).status_code
-        == 409
-    )
+    # The shared status rule: reopening an open account is refused, not a silent version bump.
+    again = client.post(f"/api/accounts/{acct['id']}/reopen", json={"expected_version": 3})
+    assert again.status_code == 422 and again.json()["detail"] == "This account is already open."
+    stale = client.post(f"/api/accounts/{acct['id']}/close", json={"expected_version": 3})
+    assert stale.status_code == 409
+
+
+def test_closing_an_account_lists_the_incomes_that_need_a_new_one(client):
+    a = _person(client)
+    acct = client.post(
+        "/api/accounts",
+        json={"provider": "monzo", "kind": "current", "nickname": "Main", "owner_ids": [a]},
+    ).json()
+    pay = client.post(
+        "/api/income",
+        json={
+            "person_id": a,
+            "kind": "salary",
+            "name": "Acme Payroll",
+            "net_amount": "1000",
+            "account_id": acct["id"],
+            "pay_rule": {"type": "last_working_day"},
+        },
+    ).json()
+    assert pay["needs_account"] is False
+    closed = client.post(f"/api/accounts/{acct['id']}/close", json={"expected_version": 1})
+    assert closed.json()["affected_income"] == [{"id": pay["id"], "name": "Acme Payroll"}]
+    listed = client.get("/api/income").json()["income"]
+    assert [i["needs_account"] for i in listed] == [True]
 
 
 def test_accounts_api_validation(client):

@@ -140,3 +140,57 @@ def test_calendar_assumed_flag(env):
     assert svc.calendar_assumed()
     svc.household.update(HouseholdPatch(nation="scotland"), svc.household.get().version)
     assert svc.list()[0].calendar_assumed is False
+
+
+def test_closing_an_account_returns_its_incomes_and_they_need_an_account_again(env):
+    svc, a, b, joint, sams = env
+    alex = svc.create(_salary(a, joint, name="Alex pay"))
+    sam = svc.create(_salary(b, sams, name="Sam pay"))
+    assert not alex.needs_account and not sam.needs_account
+    closed = svc.accounts.close(joint.id, joint.version)
+    assert [(r.id, r.name) for r in closed.affected_income] == [(alex.id, "Alex pay")]
+    assert svc.get(alex.id).needs_account and not svc.get(sam.id).needs_account
+    assert svc.create(_salary(a, name="No account yet")).needs_account
+
+
+def test_removing_an_owner_returns_their_incomes(env):
+    svc, a, b, joint, _ = env
+    alex = svc.create(_salary(a, joint, name="Alex pay"))
+    svc.create(_salary(b, joint, name="Sam pay"))
+    updated = svc.accounts.update(joint.id, {"owner_ids": [b.id]}, joint.version)
+    assert [r.name for r in updated.affected_income] == ["Alex pay"]
+    assert svc.get(alex.id).needs_account
+    assert [i.name for i in svc.list() if i.needs_account] == ["Alex pay"]
+    renamed = svc.accounts.update(joint.id, {"nickname": "Bills"}, updated.version)
+    assert renamed.affected_income == []
+
+
+def test_status_changes_to_the_same_status_are_refused(env):
+    svc, a, *_ = env
+    inc = svc.create(_salary(a))
+    ended = svc.end(inc.id, inc.version)
+    with pytest.raises(InputError, match="already ended"):
+        svc.end(inc.id, ended.version)
+
+
+def test_pay_dates_use_the_nation_as_of_each_date(env):
+    """St Andrew's Day (Mon 30 Nov 2026) is a bank holiday in Scotland only."""
+    svc, a, *_ = env
+    from tuppence.core.timeline import Timeline
+
+    today = date(2026, 10, 7)
+    svc.today = lambda: today
+    svc.household.today = lambda: today
+    rule = {"type": "monthly_day", "day": 30, "adjust": "previous_working_day"}
+    inc = svc.create(_salary(a, rule=rule))
+    svc.household.update(HouseholdPatch(nation="england"), svc.household.get().version)
+    Timeline(svc.db, today=lambda: today).set(
+        "household", "1", "nation", "scotland", date(2026, 11, 1)
+    )
+    assert svc.household.get().nation == "england"  # the move is still in the future
+    dates = [d for d, _ in svc.upcoming(today, 60)]
+    assert dates == [date(2026, 10, 30), date(2026, 11, 27)]  # Nov follows Scotland's calendar
+    _, preview = svc.preview_rule(rule)
+    assert preview[:2] == [date(2026, 10, 30), date(2026, 11, 27)]
+    svc.today = lambda: date(2026, 11, 1)
+    assert svc.get(inc.id).next_pay_date == date(2026, 11, 27)

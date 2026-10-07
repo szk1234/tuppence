@@ -4,7 +4,7 @@
   import Notice from '../../components/Notice.svelte'
   import { api } from '../../lib/api'
   import { errorText, isConflict } from '../../lib/form'
-  import type { Account, Income, Person } from '../../lib/types'
+  import { needsAccount, type Account, type Income, type Person } from '../../lib/types'
 
   const KINDS = { current: 'Current account', savings: 'Savings account', credit_card: 'Credit card' }
   let people = $state<Person[]>([])
@@ -24,7 +24,8 @@
     return form.save()
   }
   const active = $derived(accounts.filter((a) => a.status === 'active'))
-  const unplaced = $derived(incomes.filter((i) => i.status === 'active' && !i.account_id && !i.person_left))
+  // No receiving account yet, or one that has closed or isn't the earner's any more: ask (again).
+  const unplaced = $derived(incomes.filter(needsAccount))
   const options = (i: Income) => active.filter((a) => a.owner_ids.includes(i.person_id))
   const owners = (a: Account) => a.owner_ids.map((id) => people.find((p) => p.id === id)?.display_name ?? 'Someone who has left').join(', ')
 

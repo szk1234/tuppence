@@ -203,6 +203,17 @@ it('asks "Which account is <income> paid into?" for income without an account, t
   await waitFor(() => expect(screen.queryByLabelText('Which account is Acme Payroll paid into?')).toBeNull())
 })
 
+it('asks again for an income whose account has closed', async () => {
+  const income = { id: 'i_1', person_id: 'p_1', kind: 'salary', name: 'Acme Payroll', net_amount: '1.00', account_id: 'a_old', needs_account: true, pay_rule: {}, pay_rule_description: '', variable_components: [], next_pay_date: null, person_left: false, calendar_assumed: false, status: 'active', version: 2 }
+  const account = { id: 'a_1', provider: 'monzo', provider_name: 'Monzo', kind: 'current', nickname: 'New Monzo', last4: null, owner_ids: ['p_1'], credit_limit: null, purchase_apr: null, promo_apr: null, promo_end: null, statement_day: null, status: 'active', version: 1, joint: false }
+  api('accounts', (url, method) => {
+    if (url === '/api/accounts') return json({ accounts: [account] })
+    if (url === '/api/income' && method === 'GET') return json({ income: [income] })
+  })
+  render(Welcome)
+  expect(await screen.findByLabelText('Which account is Acme Payroll paid into?')).toBeInTheDocument()
+})
+
 it('does not ask where pay lands when there are no accounts yet', async () => {
   const income = { id: 'i_1', person_id: 'p_1', kind: 'salary', name: 'Acme Payroll', net_amount: '1.00', account_id: null, pay_rule: {}, pay_rule_description: '', variable_components: [], next_pay_date: null, person_left: false, calendar_assumed: false, status: 'active', version: 1 }
   api('accounts', (url, method) => (url === '/api/income' && method === 'GET' ? json({ income: [income] }) : undefined))

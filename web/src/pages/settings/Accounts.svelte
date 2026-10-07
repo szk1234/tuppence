@@ -27,6 +27,13 @@
   }
   onMount(() => { load().catch(fail) })
 
+  /** Closing an account or removing an owner can leave incomes without a usable receiving account. */
+  function affectedNote(a: Account): string {
+    const names = (a.affected_income ?? []).map((i) => i.name)
+    if (names.length === 0) return ''
+    return ` ${names.join(', ')} ${names.length === 1 ? 'needs' : 'need'} a new receiving account: choose one in Settings › Income.`
+  }
+
   function fail(err: unknown) {
     saved = ''; error = errorText(err)
     if (isConflict(err)) load().catch(() => {})
@@ -45,7 +52,7 @@
     error = ''; saved = ''
     try {
       const updated = await api<Account>(`/api/accounts/${a.id}`, { method: 'PATCH', body: { changes, expected_version: a.version } })
-      accounts = accounts.map((x) => (x.id === a.id ? updated : x)); editing = null; saved = `${updated.nickname} saved.`
+      accounts = accounts.map((x) => (x.id === a.id ? updated : x)); editing = null; saved = `${updated.nickname} saved.${affectedNote(updated)}`
       return true
     } catch (err) { fail(err); return false }
   }
@@ -55,7 +62,7 @@
     try {
       const updated = await api<Account>(`/api/accounts/${a.id}/${action}`, { method: 'POST', body: { expected_version: a.version } })
       accounts = accounts.map((x) => (x.id === a.id ? updated : x))
-      saved = action === 'close' ? `${a.nickname} closed.` : `${a.nickname} reopened.`
+      saved = action === 'close' ? `${a.nickname} closed.${affectedNote(updated)}` : `${a.nickname} reopened.`
     } catch (err) { fail(err) }
   }
 </script>

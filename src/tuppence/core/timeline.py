@@ -319,6 +319,18 @@ class Timeline:
         with self.db.connection() as conn:
             return _value_on(conn, [subject_type, subject_id, attribute], on.isoformat())
 
+    def lookup(self, subject_type: str, subject_id: str, attribute: str) -> Callable[[date], Any]:
+        """One read of an attribute's history, as a function giving its value on any date."""
+        entries = self.history(subject_type, subject_id, attribute)
+
+        def on(day: date) -> Any | None:
+            for e in reversed(entries):
+                if e.valid_from <= day and (e.valid_to is None or e.valid_to > day):
+                    return e.value
+            return None
+
+        return on
+
     def as_of(self, subject_type: str, subject_id: str, on: date) -> dict[str, Any]:
         day = on.isoformat()
         with self.db.connection() as conn:

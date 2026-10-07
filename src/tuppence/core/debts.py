@@ -307,7 +307,7 @@ class DebtService:
                 raise InputError(f"{field} can't be empty.")
         current = self.get(debt_id)
         if current.status == "settled":
-            raise InputError("This debt is settled. Add a new one instead.")
+            raise InputError("This debt is settled. Reopen it to make changes.")
         state = self._state(current)
         supplied = data.pop("details", None) or {}
         state.update(data)

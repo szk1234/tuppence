@@ -5,12 +5,16 @@ export type Account = {
   id: string; provider: string; provider_name: string; kind: 'current' | 'savings' | 'credit_card'; nickname: string; last4: string | null
   owner_ids: string[]; credit_limit: string | null; purchase_apr: number | null; promo_apr: number | null; promo_end: string | null
   statement_day: number | null; status: 'active' | 'closed'; version: number; joint: boolean
+  /** Set by a close, or an edit that removed an owner: incomes that now need a receiving account. */
+  affected_income?: Array<{ id: string; name: string }>
 }
 
 export type PayRule = Record<string, unknown>
 export type Income = {
   id: string; person_id: string; kind: string; name: string; net_amount: string; account_id: string | null; pay_rule: PayRule
   pay_rule_description: string; variable_components: string[]; next_pay_date: string | null; person_left: boolean
+  /** No usable receiving account: none chosen, or it has closed or isn't the person's any more. */
+  needs_account?: boolean
   calendar_assumed: boolean; status: 'active' | 'ended'; version: number
 }
 
@@ -29,6 +33,9 @@ export type TimelineEntry = {
   id: number; subject_type: string; subject_id: string; attribute: string; value: unknown
   valid_from: string; valid_to: string | null; source: string; version: number
 }
+
+/** An income that should be asked "which account is this paid into?" again. */
+export const needsAccount = (i: Income): boolean => i.status === 'active' && !i.person_left && (!i.account_id || i.needs_account === true)
 
 /** The value in force on `day` (YYYY-MM-DD) for one attribute, or null. */
 export function valueOn(entries: TimelineEntry[], attribute: string, day: string): unknown {

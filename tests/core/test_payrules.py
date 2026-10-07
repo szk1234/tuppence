@@ -107,3 +107,18 @@ def test_describe():
 def test_bad_rules(bad):
     with pytest.raises(InputError):
         parse_rule(bad)
+
+
+def test_nation_can_change_by_date():
+    """A move to Scotland from 1 Nov 2026: St Andrew's Day (Mon 30 Nov) is then a bank holiday."""
+    rule = parse_rule({"type": "monthly_day", "day": 30, "adjust": "previous_working_day"})
+
+    def nation_on(day: date) -> str | None:
+        return "scotland" if day >= date(2026, 11, 1) else "england"
+
+    assert pay_dates(rule, date(2026, 10, 1), date(2026, 11, 30), nation_on) == [
+        date(2026, 10, 30),
+        date(2026, 11, 27),
+    ]
+    assert pay_dates(rule, date(2026, 11, 1), date(2026, 11, 30), "england") == [date(2026, 11, 30)]
+    assert next_pay_date(rule, date(2026, 11, 1), nation_on) == date(2026, 11, 27)

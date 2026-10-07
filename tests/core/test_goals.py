@@ -61,3 +61,17 @@ def test_bad_status(svc):
     g = svc.create(GoalIn(name="X", kind="other"))
     with pytest.raises(InputError):
         svc.set_status(g.id, "nope", g.version)
+
+
+def test_same_status_changes_and_edits_while_closed_are_refused(svc):
+    g = svc.create(GoalIn(name="Car", kind="car"))
+    with pytest.raises(InputError, match="already active"):
+        svc.set_status(g.id, "active", g.version)
+    done = svc.set_status(g.id, "achieved", g.version)
+    with pytest.raises(InputError, match="already achieved"):
+        svc.set_status(g.id, "achieved", done.version)
+    with pytest.raises(InputError, match="Reopen it"):
+        svc.update(g.id, {"name": "Van"}, done.version)
+    dropped = svc.set_status(g.id, "abandoned", done.version)
+    assert dropped.status == "abandoned"
+    assert svc.set_status(g.id, "active", dropped.version).status == "active"

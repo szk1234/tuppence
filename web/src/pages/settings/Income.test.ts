@@ -27,3 +27,15 @@ it('lists income, nudges for the nation and ends an income', async () => {
   expect(await screen.findByRole('heading', { name: 'Ended' })).toBeInTheDocument()
   expect(calls.find((c) => c.url === '/api/income/i_1/end')?.body).toEqual({ expected_version: 1 })
 })
+
+it('an income whose account closed is shown as needing a new one, and the edit form says so', async () => {
+  stubApi((url) => {
+    if (url === '/api/household/people') return json({ people: [person] })
+    if (url === '/api/accounts') return json({ accounts: [] })
+    if (url.startsWith('/api/income?')) return json({ income: [income({ account_id: 'a_gone', needs_account: true })] })
+  })
+  render(Income)
+  expect(await screen.findByText(/its account has closed or is no longer theirs: choose another/)).toBeInTheDocument()
+  await fireEvent.click(screen.getByRole('button', { name: 'Edit Salary' }))
+  expect(screen.getByText('The account this was paid into has closed or is no longer theirs. Choose another.')).toBeInTheDocument()
+})

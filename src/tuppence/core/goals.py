@@ -1,7 +1,8 @@
 """Savings goals. Money is pounds strings at the API and integer pence in storage.
 
 A target date must be in the future when it is set or changed; an existing goal whose date
-has passed can still be renamed or have its saved amount updated."""
+has passed can still be renamed or have its saved amount updated. Status changes and edits follow
+the shared status rule in `core/records.py`."""
 
 from __future__ import annotations
 
@@ -148,6 +149,9 @@ class GoalService:
             if field in data and data[field] is None:
                 raise InputError(f"{field} can't be empty.")
         current = self.get(goal_id)
+        if current.status != "active":
+            word = "achieved" if current.status == "achieved" else "dropped"
+            raise InputError(f"This goal is {word}. Reopen it to make changes.")
         state = {f: getattr(current, f) for f in _FIELDS}
         state.update(data)
         date_changed = "target_date" in data and data["target_date"] != current.target_date
@@ -167,6 +171,9 @@ class GoalService:
     def set_status(self, goal_id: str, status: str, expected_version: int) -> Goal:
         if status not in ("active", "achieved", "abandoned"):
             raise InputError("Choose active, achieved or abandoned.")
+        if self.get(goal_id).status == status:
+            word = {"active": "active", "achieved": "achieved", "abandoned": "dropped"}[status]
+            raise InputError(f"This goal is already {word}.")
         with self.db.transaction() as conn:
             update_versioned(
                 conn, "goal", "id", goal_id, expected_version, {"status": status},

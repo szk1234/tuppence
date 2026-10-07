@@ -190,3 +190,18 @@ def test_apr_rules_and_clearing_card_fields(env):
     )
     cleared = svc.update(card.id, {"credit_limit": None}, 1)
     assert cleared.credit_limit is None and cleared.version == 2
+
+
+def test_same_status_changes_and_edits_while_closed_are_refused(env):
+    svc, a, _ = env
+    acct = svc.create(
+        AccountIn(provider="hsbc", kind="current", nickname="Bills", owner_ids=[a.id])
+    )
+    with pytest.raises(InputError, match="already open"):
+        svc.reopen(acct.id, acct.version)
+    closed = svc.close(acct.id, acct.version)
+    with pytest.raises(InputError, match="already closed"):
+        svc.close(acct.id, closed.version)
+    with pytest.raises(InputError, match="Reopen it"):
+        svc.update(acct.id, {"nickname": "Old bills"}, closed.version)
+    assert svc.reopen(acct.id, closed.version).status == "active"

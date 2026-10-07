@@ -1,8 +1,13 @@
 """Income sources (salary etc.) with pay rules and upcoming pay dates (spec §5.2, §5.4).
 
 The receiving account is optional: the wizard collects income before accounts and links the
-account later. Pay dates use the household's nation for bank holidays (England and Wales
-when no nation is set)."""
+account later. `needs_account` is True while an income has no usable receiving account: none
+chosen yet, or one that has since closed or that the person no longer owns (closing an account or
+removing an owner lists the incomes this affects, and the UI asks again where they are paid).
+
+Pay dates use the household's nation as of each date for bank holidays (a dated move to Scotland
+changes the calendar from then on); England and Wales are assumed where no nation is set.
+Status changes follow the shared status rule in `core/records.py`."""
 
 from __future__ import annotations
 
@@ -15,14 +20,15 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from tuppence.core.accounts import AccountService
+from tuppence.core.accounts import Account, AccountService
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.errors import InputError
 from tuppence.core.household import HouseholdService, _check_version
 from tuppence.core.money import format_pounds, parse_pounds
-from tuppence.core.payrules import describe, next_pay_date, parse_rule, pay_dates
+from tuppence.core.payrules import NationOn, describe, next_pay_date, parse_rule, pay_dates
 from tuppence.core.records import NotFound, update_versioned
+from tuppence.core.timeline import HOUSEHOLD_ID, Timeline
 
 Kind = Literal["salary", "self_employment", "benefits", "pension", "rental", "maintenance", "other"]
 Component = Literal["bonus", "overtime", "commission"]
@@ -72,6 +78,7 @@ class Income(BaseModel):
     pay_rule_description: str
     variable_components: list[Component]
     next_pay_date: date | None
+    needs_account: bool = False
     person_left: bool = False
     calendar_assumed: bool = False
     status: Literal["active", "ended"]
@@ -96,15 +103,35 @@ class IncomeService:
     def _nation(self) -> str | None:
         return self.household.get().nation
 
+    def _nation_on(self) -> NationOn:
+        """The household's nation as of any date (the timeline is the source of truth)."""
+        return Timeline(self.db).lookup("household", HOUSEHOLD_ID, "nation")
+
     def calendar_assumed(self) -> bool:
         """True when no nation is set, so England and Wales bank holidays are assumed."""
         return self._nation() is None
 
-    def _build(self, r: sqlite3.Row, nation: str | None, current_people: set[str]) -> Income:
+    def _context(self) -> tuple[NationOn, set[str], dict[str, Account], bool]:
+        """What building an Income needs, read once per request."""
+        assumed = self.calendar_assumed()
+        people = {p.id for p in self.household.list_people()}
+        accounts = {a.id: a for a in self.accounts.list(include_closed=True)}
+        return self._nation_on(), people, accounts, assumed
+
+    def _build(
+        self,
+        r: sqlite3.Row,
+        nation_on: NationOn,
+        current_people: set[str],
+        accounts: dict[str, Account],
+        calendar_assumed: bool,
+    ) -> Income:
         rule = parse_rule(json.loads(r["pay_rule"]))
         left = r["person_id"] not in current_people
         active = r["status"] == "active" and not left
-        nxt = next_pay_date(rule, self.today() - timedelta(days=1), nation) if active else None
+        nxt = next_pay_date(rule, self.today() - timedelta(days=1), nation_on) if active else None
+        into = accounts.get(r["account_id"]) if r["account_id"] else None
+        usable = into is not None and into.status == "active" and r["person_id"] in into.owner_ids
         return Income(
             id=r["id"],
             person_id=r["person_id"],
@@ -116,36 +143,35 @@ class IncomeService:
             pay_rule_description=describe(rule),
             variable_components=json.loads(r["variable_components"]),
             next_pay_date=nxt,
+            needs_account=active and not usable,
             person_left=left,
-            calendar_assumed=nation is None,
+            calendar_assumed=calendar_assumed,
             status=r["status"],
             version=r["version"],
         )
 
     def list(self, include_ended: bool = False) -> list[Income]:
         where = "" if include_ended else " WHERE status = 'active'"
-        nation = self._nation()
-        current = {p.id for p in self.household.list_people()}
+        context = self._context()
         with self.db.connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM income_source" + where + " ORDER BY created_at, rowid"  # noqa: S608
             ).fetchall()
-        built = [self._build(r, nation, current) for r in rows]
+        built = [self._build(r, *context) for r in rows]
         # People who've left keep their income rows, but they stay out of day-to-day lists.
         return built if include_ended else [i for i in built if not i.person_left]
 
     def get(self, income_id: str) -> Income:
-        nation = self._nation()
-        current = {p.id for p in self.household.list_people()}
+        context = self._context()
         with self.db.connection() as conn:
             r = conn.execute("SELECT * FROM income_source WHERE id = ?", [income_id]).fetchone()
         if r is None:
             raise NotFound("income", income_id)
-        return self._build(r, nation, current)
+        return self._build(r, *context)
 
     def upcoming(self, after: date, days: int = 35) -> list[tuple[date, Income]]:
         """Pay dates from `after` (inclusive) for `days` days, all active sources, in order."""
-        nation = self._nation()
+        nation = self._nation_on()
         out: list[tuple[date, Income]] = []
         for inc in self.list():
             rule = parse_rule(inc.pay_rule)
@@ -158,7 +184,7 @@ class IncomeService:
         """Describe a rule and list its next five dates. Writes nothing."""
         rule = parse_rule(pay_rule)
         start = self.today()
-        dates = pay_dates(rule, start, start + timedelta(days=400), self._nation())
+        dates = pay_dates(rule, start, start + timedelta(days=400), self._nation_on())
         return describe(rule), dates[:5]
 
     # -- validation ------------------------------------------------------------------------
@@ -241,6 +267,8 @@ class IncomeService:
         return self.get(income_id)
 
     def end(self, income_id: str, expected_version: int) -> Income:
+        if self.get(income_id).status == "ended":
+            raise InputError("This income has already ended.")
         with self.db.transaction() as conn:
             update_versioned(
                 conn, "income_source", "id", income_id, expected_version, {"status": "ended"},

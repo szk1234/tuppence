@@ -172,3 +172,11 @@ def test_update_only_validates_changes(env):
         svc.update(d.id, {"kind": "student_loan"}, j.version)
     m = svc.update(d.id, {"kind": "mortgage", "details": {"rate_type": "svr"}}, j.version)
     assert m.details == {"rate_type": "svr"}
+
+
+def test_a_settled_debt_must_be_reopened_before_editing(env):
+    svc, *_ = env
+    d = svc.create(_debt())
+    s = svc.settle(d.id, d.version)
+    with pytest.raises(InputError, match="Reopen it"):
+        svc.update(d.id, {"lender": "Other bank"}, s.version)

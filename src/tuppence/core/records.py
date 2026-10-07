@@ -1,4 +1,12 @@
-"""Per-record writes with optimistic version checks (spec §3.4)."""
+"""Per-record writes with optimistic version checks (spec §3.4).
+
+Status rule for user-owned records (ruling R-M2-8), the same for every entity:
+
+* A status change to the status the record already has is refused with a plain InputError
+  ("This account is already closed."), never a silent success that bumps the version.
+* A record that isn't active (a closed account, a settled debt, an achieved or dropped goal)
+  can't be edited: reopen it first. An ended income can't be reopened: add a new one instead.
+"""
 
 from __future__ import annotations
 

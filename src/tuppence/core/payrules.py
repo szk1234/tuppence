@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar as pycal
+from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 
@@ -39,6 +40,14 @@ _ADAPTER: TypeAdapter[PayRule] = TypeAdapter(PayRule)
 _STEP = {"weekly": 7, "fortnightly": 14, "four_weekly": 28}
 _DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+# The household's nation, or a function giving it as of a date (a dated move changes which
+# bank holidays apply from then on). None means England and Wales are assumed.
+NationOn = str | None | Callable[[date], str | None]
+
+
+def _nation_at(nation: NationOn, day: date) -> str | None:
+    return nation(day) if callable(nation) else nation
+
 
 def parse_rule(data: dict[str, Any]) -> PayRule:
     try:
@@ -49,14 +58,16 @@ def parse_rule(data: dict[str, Any]) -> PayRule:
         ) from None
 
 
-def _month_date(rule: PayRule, year: int, month: int, nation: str | None) -> date:
+def _month_date(rule: PayRule, year: int, month: int, nation_on: NationOn) -> date:
+    """The pay date in one month; bank holidays are those of the nation on the nominal date."""
+    last = date(year, month, pycal.monthrange(year, month)[1])
     if isinstance(rule, LastWorkingDay):
-        return cal.last_working_day(year, month, nation)
+        return cal.last_working_day(year, month, _nation_at(nation_on, last))
     if isinstance(rule, LastWeekday):
-        last = date(year, month, pycal.monthrange(year, month)[1])
         return last - timedelta(days=(last.weekday() - rule.weekday) % 7)
     assert isinstance(rule, MonthlyDay)
-    day = date(year, month, min(rule.day, pycal.monthrange(year, month)[1]))
+    day = date(year, month, min(rule.day, last.day))
+    nation = _nation_at(nation_on, day)
     if rule.adjust == "previous_working_day":
         return cal.previous_working_day(day, nation)
     if rule.adjust == "next_working_day":
@@ -64,7 +75,7 @@ def _month_date(rule: PayRule, year: int, month: int, nation: str | None) -> dat
     return day
 
 
-def pay_dates(rule: PayRule, start: date, end: date, nation: str | None) -> list[date]:
+def pay_dates(rule: PayRule, start: date, end: date, nation: NationOn) -> list[date]:
     out: list[date] = []
     if isinstance(rule, Interval):
         step = timedelta(days=_STEP[rule.type])
@@ -86,7 +97,7 @@ def pay_dates(rule: PayRule, start: date, end: date, nation: str | None) -> list
     return sorted(set(out))
 
 
-def next_pay_date(rule: PayRule, after: date, nation: str | None) -> date:
+def next_pay_date(rule: PayRule, after: date, nation: NationOn) -> date:
     found = pay_dates(rule, after + timedelta(days=1), after + timedelta(days=70), nation)
     return found[0]
 

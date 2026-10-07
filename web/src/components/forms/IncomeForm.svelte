@@ -100,10 +100,11 @@
     <PayRuleField bind:rule />
 
     <label for={`${uid}-account`}>Paid into</label>
-    <select id={`${uid}-account`} bind:value={accountId}>
+    <select id={`${uid}-account`} bind:value={accountId} aria-describedby={i?.needs_account && i.account_id ? `${uid}-account-gone` : undefined}>
       <option value="">Not sure yet</option>
       {#each owned as a (a.id)}<option value={a.id}>{a.nickname}</option>{/each}
     </select>
+    {#if i?.needs_account && i.account_id}<p id={`${uid}-account-gone`} class="hint">The account this was paid into has closed or is no longer theirs. Choose another.</p>{/if}
 
     <fieldset>
       <legend>Pay that varies (optional)</legend>

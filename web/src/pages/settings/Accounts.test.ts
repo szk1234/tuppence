@@ -61,3 +61,19 @@ it('adds an account', async () => {
   expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ provider: 'monzo', kind: 'current', nickname: 'Bills', owner_ids: ['p_1'] })
   expect(screen.getByLabelText('Nickname')).toHaveValue('')
 })
+
+it('closing an account says which incomes need a new receiving account', async () => {
+  let current = account()
+  stubApi((url, method) => {
+    if (url === '/api/household/people') return json({ people: [person] })
+    if (url.startsWith('/api/accounts?')) return json({ accounts: [current] })
+    if (url === '/api/accounts/providers') return json({ providers: [] })
+    if (url === '/api/accounts/a_1/close' && method === 'POST') {
+      current = account({ status: 'closed', version: 2 })
+      return json({ ...current, affected_income: [{ id: 'i_1', name: 'Acme Payroll' }] })
+    }
+  })
+  render(Accounts)
+  await fireEvent.click(await screen.findByRole('button', { name: 'Close Main' }))
+  expect(await screen.findByText('Main closed. Acme Payroll needs a new receiving account: choose one in Settings › Income.')).toBeInTheDocument()
+})
