@@ -20,8 +20,22 @@ from typing import Any
 
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'"})
 
-# Generic IBAN (any country), case-insensitive, applied before the card pattern.
-_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,3})?\b", re.IGNORECASE)
+# IBAN registry lengths by country. A candidate starts with a known country and two check
+# digits; its real extent is found by that length and the mod-97 checksum (``_iban_length``).
+_IBAN_LENGTHS = {
+    code[:2]: int(code[2:])
+    for code in (
+        "AD24 AE23 AL28 AT20 AZ28 BA20 BE16 BG22 BH22 BR29 BY28 CH21 CR22 CY28 CZ24 DE22  "
+        "DK18 DO28 EE20 EG29 ES24 FI18 FO18 FR27 GB22 GE22 GI23 GL18 GR27 GT28 HR21 HU28  "
+        "IE22 IL23 IQ23 IS26 IT27 JO30 KW30 KZ20 LB28 LC32 LI21 LT20 LU20 LV21 MC27 MD24  "
+        "ME22 MK19 MR27 MT31 MU30 NL18 NO15 PK24 PL28 PS29 PT25 QA29 RO24 RS22 SA24 SC31  "
+        "SE24 SI19 SK24 SM27 ST25 SV28 TL23 TN24 TR26 UA29 VA22 VG24 XK20"
+    ).split()
+}
+_IBAN = re.compile(
+    r"\b(?:" + "|".join(_IBAN_LENGTHS) + r")\d{2}(?: ?[A-Z0-9]){11,30}", re.IGNORECASE
+)
+_SORT_WORD = re.compile(r"(?<!\w)(?:sort\s?code|s/c|sc)(?!\w)", re.IGNORECASE)
 # Sort codes written 12-34-56 or 12 34 56; not part of a longer column of digit pairs.
 _SORT = re.compile(r"(?<!\d)(?<!\b\d\d[ -])\d{2}[ -]\d{2}[ -]\d{2}(?!\d|-\d| \d{2}(?!\d))")
 _SORT_KEYWORD = re.compile(
@@ -36,7 +50,8 @@ _ACCT_AFTER_SORT = re.compile(r"(SORTCODE_\d+[ \t,;/-]{1,3})(?<![£$€.,\d])" +
 _ACCT_BEFORE_SORT = re.compile(
     r"(?<![\d£$€.,])(\d{4} \d{4}|\d{8})(?!\d)([ \t,;/-]{1,3}SORTCODE_\d+)"
 )
-_CARD_RUN = re.compile(r"(?<!\d)\d{13,19}(?!\d)")
+# Any contiguous run of 13 or more digits: over-long runs are masked whole, never skipped.
+_CARD_RUN = re.compile(r"(?<!\d)\d{13,}(?!\d)")
 _CARD_SEPARATED = re.compile(r"(?<!\d)(?:\d{1,7}[ -]){2,}\d{1,7}(?!\d)")
 # Start only at the beginning of a run and never backtrack into it: linear on long inputs.
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]++@[\w-]+(?:\.[\w-]+)+\b")
@@ -96,6 +111,32 @@ def _luhn(digits: str) -> bool:
                 n -= 9
         total += n
     return total % 10 == 0
+
+
+def _iban_length(text: str, start: int, candidate: str) -> int:
+    """Characters of ``candidate`` that form a valid IBAN (0 if none)."""
+    wanted = _IBAN_LENGTHS.get(candidate[:2].upper())
+    ends = [i + 1 for i, ch in enumerate(candidate) if ch.isalnum()]
+    if wanted is None or wanted > len(ends):
+        return 0
+    end = ends[wanted - 1]
+    if text[start + end : start + end + 1].isalnum():
+        return 0
+    compact = "".join(ch for ch in candidate[:end] if ch.isalnum()).upper()
+    rotated = compact[4:] + compact[:4]
+    if int("".join(str(int(ch, 36)) for ch in rotated)) % 97 == 1:
+        return end
+    return 0
+
+
+def _is_date8(digits: str) -> bool:
+    """True for a plausible YYYYMMDD date (never treated as an account number)."""
+    return (
+        len(digits) == 8
+        and digits[:2] in ("19", "20")
+        and 1 <= int(digits[4:6]) <= 12
+        and 1 <= int(digits[6:]) <= 31
+    )
 
 
 def _clean_people(people: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -215,11 +256,39 @@ class Pseudonymiser:
         digits = re.sub(r"\D", "", raw)
         return self._token("ACCT", digits, digits)
 
+    def _acct8(self, raw: str) -> str:
+        """Account-number rule: a plausible YYYYMMDD date is left alone."""
+        return raw if _is_date8(re.sub(r"\D", "", raw)) else self._acct(raw)
+
+    def _ibans(self, text: str) -> str:
+        out: list[str] = []
+        pos = search = 0
+        while (m := _IBAN.search(text, search)) is not None:
+            length = _iban_length(text, m.start(), m.group(0))
+            if length:
+                out.append(text[pos : m.start()])
+                out.append(self._token("IBAN", text[m.start() : m.start() + length]))
+                pos = search = m.start() + length
+            else:
+                search = m.start() + 1
+        out.append(text[pos:])
+        return "".join(out)
+
+    def _sort_code(self, m: re.Match[str]) -> str:
+        a, b = int(m.group(0)[:2]), int(m.group(0)[3:5])
+        if 1 <= a <= 31 and 1 <= b <= 12:  # looks like a date: only after a sort-code keyword
+            before = m.string[max(0, m.start() - 40) : m.start()]
+            ends = [k.end() for k in _SORT_WORD.finditer(before)]
+            if not ends or len(before) - ends[-1] > 20:
+                return m.group(0)
+        return self._token("SORTCODE", m.group(0))
+
     def _cards_separated(self, m: re.Match[str]) -> str:
         text = m.group(0)
         pieces = [(g.start(), g.end()) for g in re.finditer(r"\d+", text)]
         if len(pieces) > _MAX_SEPARATED_GROUPS:
-            return text
+            # Too long to window-scan cheaply: fail closed and mask the whole run.
+            return self._acct(text)
         out: list[str] = []
         pos = 0
         i = 0
@@ -251,14 +320,14 @@ class Pseudonymiser:
 
     def redact(self, text: str) -> str:
         text = _norm_text(text)
-        text = _IBAN.sub(lambda m: self._token("IBAN", m.group(0)), text)
-        text = _SORT.sub(lambda m: self._token("SORTCODE", m.group(0)), text)
+        text = self._ibans(text)
+        text = _SORT.sub(self._sort_code, text)
         text = _SORT_KEYWORD.sub(
             lambda m: m.group(1) + m.group(2) + self._token("SORTCODE", m.group(3)), text
         )
-        text = _ACCOUNT.sub(lambda m: m.group(1) + m.group(2) + self._acct(m.group(3)), text)
-        text = _ACCT_AFTER_SORT.sub(lambda m: m.group(1) + self._acct(m.group(2)), text)
-        text = _ACCT_BEFORE_SORT.sub(lambda m: self._acct(m.group(1)) + m.group(2), text)
+        text = _ACCOUNT.sub(lambda m: m.group(1) + m.group(2) + self._acct8(m.group(3)), text)
+        text = _ACCT_AFTER_SORT.sub(lambda m: m.group(1) + self._acct8(m.group(2)), text)
+        text = _ACCT_BEFORE_SORT.sub(lambda m: self._acct8(m.group(1)) + m.group(2), text)
         text = _CARD_RUN.sub(lambda m: self._acct(m.group(0)), text)
         text = _CARD_SEPARATED.sub(self._cards_separated, text)
         text = _EMAIL.sub(lambda m: self._token("EMAIL", m.group(0)), text)

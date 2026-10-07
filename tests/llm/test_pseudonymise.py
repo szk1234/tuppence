@@ -1,3 +1,5 @@
+import time
+
 from tuppence.llm.pseudonymise import Pseudonymiser, role_labels
 
 PEOPLE = [("Alex Example", "adult"), ("Sam Example", "adult"), ("Kid A", "child")]
@@ -224,3 +226,51 @@ def test_email_and_long_inputs_are_linear():
     for text in ["1-" * 50_000, "a." * 50_000, "1 " * 50_000]:
         p.redact(text)
     assert time.perf_counter() - start < 3
+
+
+def test_long_separated_runs_fail_closed():
+    p = Pseudonymiser([])
+    text = "ref " + "1 " * 30 + "4111 1111 1111 1111"
+    out = p.redact(text)
+    assert "4111" not in out and "ACCT_" in out
+    assert "0" * 25 not in p.redact("0" * 25)
+    start = time.perf_counter()
+    for adversarial in [
+        "1 " * 50_000,
+        "1-" * 50_000,
+        "4111 " * 20_000,
+        "GB12 " * 25_000,
+        "AB12 " * 25_000,
+    ]:
+        p.redact(adversarial)
+    assert time.perf_counter() - start < 1
+
+
+def test_dates_are_not_masked_but_sort_codes_are():
+    p = Pseudonymiser([])
+    for text in ["07 10 26", "07-10-26", "26 10 07", "paid 15 09 26 AMAZON"]:
+        assert p.redact(text) == text, text
+    assert p.redact("sort code 07-10-26") == "sort code SORTCODE_1"
+    assert p.redact("12-34-56") == "SORTCODE_2"
+    assert p.redact("Account balance 20261007") == "Account balance 20261007"
+    assert p.redact("account 20261301") == "account ACCT_1 ending ••01"
+
+
+def test_ibans_need_a_valid_checksum_and_stop_at_their_length():
+    p = Pseudonymiser([])
+    assert p.redact("to GB33 BUKB 2020 1555 5555 55 thanks") == "to IBAN_1 thanks"
+    assert p.redact("DE89370400440532013000 and more") == "IBAN_2 and more"
+    assert p.redact("FR1420041010050500013M02606") == "IBAN_3"
+    assert p.redact("gb33bukb20201555555555") == "IBAN_1"
+    for text in [
+        "FP12 3456 7890",
+        "REF FP12 3456 7890 1234",
+        "hello there ab12 word abcd efgh ijkl mnop",
+    ]:
+        assert p.redact(text) == text, text
+    assert p.redact("FP12 3456 7890 1234 GB33BUKB20201555555555") == "FP12 3456 7890 1234 IBAN_1"
+
+
+def test_hyphenated_configured_name_is_one_stand_in():
+    p = Pseudonymiser([], ["Jo", "Jo-Jo"])
+    assert p.redact("Jo-Jo and Jo") == "Person 2 and Person 1"
