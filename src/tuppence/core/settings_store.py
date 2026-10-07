@@ -45,6 +45,12 @@ define(
     "Swap names and account numbers for stand-ins before cloud AI calls.",
 )
 define(
+    "privacy.hidden_names",
+    list[str],
+    [],
+    "Other names to hide from cloud AI (e.g. your landlord).",
+)
+define(
     "privacy.research_lookups",
     bool,
     False,
