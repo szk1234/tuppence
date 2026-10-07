@@ -292,6 +292,23 @@ def test_dr_and_cr_are_sign_labels():
     assert any("requires negative" in e for e in check_document(d2, wrong))
 
 
+def test_a_dr_cr_cell_on_the_row_is_its_sign_label():
+    """A table's DR/CR (Debit/Credit) column: the marker is a whole cell of the row's own line."""
+    d = doc("02/10/2026,Shop,DR,12.30", "03/10/2026,Refund,Credit,5.00")
+    d.lines[0] = Line(ref="L1", text="Date,Description,Type,Amount")
+    p = statement(
+        row("L2", 2, -1230, "12.30", sign_from="DR"),
+        row("L3", 3, 500, "5.00", sign_from="Credit"),
+    )
+    assert check_document(d, p) == []
+    wrong = statement(row("L2", 2, 1230, "12.30", sign_from="DR"))
+    assert any("requires negative" in e for e in check_document(d, wrong))
+    # a word inside a description is not a cell: it must still be on the header
+    text = doc("02/10/2026,BARCLAYCARD CREDIT,12.30", header=True)
+    claimed = statement(row("L2", 2, 1230, "12.30", sign_from="Credit"))
+    assert 'L2: sign_from "Credit" not on header' in check_document(text, claimed)
+
+
 def test_only_split_out_fee_rows_skip_the_plain_charge_sign_check():
     d = doc("01/10/2026,Monthly fee,5.00,,995.00")
     # A row merely typed "fee" (from a CSV Type column or the reader) is still sign-checked.

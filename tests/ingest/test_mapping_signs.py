@@ -143,13 +143,15 @@ def test_a_card_whose_rows_contradict_the_signs_is_held_back(ingest_env, tmp_pat
 
 
 def test_a_type_column_is_evidence_too(ingest_env, tmp_path):
+    """A Type column of PURCHASE rows is evidence. (A column of DEBIT/CREDIT or DR/CR markers is
+    more than evidence: it gives every amount its direction, tested below.)"""
     services, scripted = ingest_env
     use_local_model(services)
     registry = LayoutRegistry(load_bank_pack())
     header = "Date,Narrative,Type,Amount,Balance"
     data = (
-        f"{header}\n01/10/2026,GREENBASKET STORES,DEBIT,42.18,142.18\n"
-        "02/10/2026,LITTLE CAFE,DEBIT,3.40,145.58\n"
+        f"{header}\n01/10/2026,GREENBASKET STORES,PURCHASE,42.18,142.18\n"
+        "02/10/2026,LITTLE CAFE,PURCHASE,3.40,145.58\n"
     ).encode()
     scripted.replies = [{"content": json.dumps({**RIGHT, "type_column": "Type"})}]
     out, doc = parse_csv(services, tmp_path, registry, "credit_card", data)
@@ -201,3 +203,158 @@ def test_two_columns_swapped_is_refused_by_check(ingest_env, tmp_path):
     out, doc = parse_csv(services, tmp_path, registry, "current", data)
     # the column headings contradict the signs, so Check refuses it and nothing is kept
     assert any("wrong way round" in e for e in out.errors) and registry.match(doc) is None
+
+
+# --- a sign source is required (R-M3-17) ------------------------------------------------------
+
+TYPED = [  # an unsigned amount column; the direction is only in a DR/CR column
+    ("GREENBASKET STORES", "DR", "42.18"),
+    ("ACME PAYROLL", "CR", "900.00"),
+    ("LITTLE CAFE", "DR", "3.40"),
+    ("CITY WATER", "DR", "31.15"),
+    ("HOMEWARE DIRECT", "DR", "43.27"),
+    ("NORTHLINE RAIL", "DR", "12.80"),
+]
+TYPED_PENCE = [-4218, 90000, -340, -3115, -4327, -1280]
+
+
+def typed_csv(rows=TYPED, *, header="Date,Description,Type,Amount", words=("DR", "CR")):
+    swap = {"DR": words[0], "CR": words[1]}
+    lines = [header] + [
+        f"{i:02d}/10/2026,{desc},{swap[kind]},{amount}"
+        for i, (desc, kind, amount) in enumerate(rows, start=1)
+    ]
+    return ("\n".join(lines) + "\n").encode()
+
+
+def single_amount(**changes):
+    return {**RIGHT, "description_columns": ["Description"], "balance_column": None, **changes}
+
+
+@pytest.mark.parametrize("kind", ["current", "savings"])
+@pytest.mark.parametrize("type_column", [None, "Type"], ids=["type-unmapped", "type-mapped"])
+def test_a_dr_cr_column_is_the_sign_source(ingest_env, tmp_path, kind, type_column):
+    """The re-review's probe (csvrun.py): every row was stored as money in and the layout kept."""
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    scripted.replies = [{"content": json.dumps(single_amount(type_column=type_column))}]
+    out, doc = parse_csv(services, tmp_path, registry, kind, typed_csv())
+    assert [r.amount_pence for r in out.parsed.rows] == TYPED_PENCE
+    assert out.errors == [] and len(scripted.requests) == 1
+    saved = registry.match(doc)
+    assert saved is not None and saved.direction == "Type"
+    again, _ = parse_csv(services, tmp_path, registry, kind, typed_csv(TYPED[:3]), "b.csv")
+    assert [r.amount_pence for r in again.parsed.rows] == TYPED_PENCE[:3]
+    assert again.errors == [] and len(scripted.requests) == 1  # reused, no AI
+
+
+@pytest.mark.parametrize(
+    ("header", "words"),
+    [
+        ("Date,Description,DR/CR,Amount", ("DR", "CR")),
+        ("Date,Description,Debit/Credit,Amount", ("Debit", "Credit")),
+        ("Date,Description,Type,Amount", ("D", "C")),
+        ("Date,Description,Type,Amount", ("dr", "cr")),
+        ("Date,Description,Amount,Dr/Cr", ("Dr.", "Cr.")),
+    ],
+)
+def test_dr_cr_columns_are_found_by_their_values(ingest_env, tmp_path, header, words):
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    if header.endswith("Dr/Cr"):
+        lines = [header] + [
+            f"{i:02d}/10/2026,{d},{a},{words[0] if k == 'DR' else words[1]}"
+            for i, (d, k, a) in enumerate(TYPED, start=1)
+        ]
+        data = ("\n".join(lines) + "\n").encode()
+    else:
+        data = typed_csv(header=header, words=words)
+    scripted.replies = [{"content": json.dumps(single_amount())}]
+    out, doc = parse_csv(services, tmp_path, registry, "current", data)
+    assert [r.amount_pence for r in out.parsed.rows] == TYPED_PENCE
+    assert out.errors == [] and registry.match(doc) is not None
+
+
+def test_a_card_with_a_dr_cr_column_takes_its_signs_from_it(ingest_env, tmp_path):
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    scripted.replies = [{"content": json.dumps(single_amount(amounts_are="purchases_positive"))}]
+    out, doc = parse_csv(services, tmp_path, registry, "credit_card", typed_csv())
+    assert [r.amount_pence for r in out.parsed.rows] == TYPED_PENCE
+    assert out.errors == [] and registry.match(doc) is not None
+
+
+UNSIGNED = [("GREENBASKET STORES", 42.18), ("ACME PAYROLL", 900.0), ("LITTLE CAFE", 3.40)]
+
+
+def unsigned_csv(rows=UNSIGNED, *, header="Date,Description,Amount"):
+    lines = [header] + [
+        f"{i:02d}/10/2026,{desc},{amount:.2f}" for i, (desc, amount) in enumerate(rows, start=1)
+    ]
+    return ("\n".join(lines) + "\n").encode()
+
+
+@pytest.mark.parametrize("kind", ["current", "savings"])
+def test_an_amount_column_with_no_sign_source_is_refused(ingest_env, tmp_path, kind):
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    scripted.replies = [{"content": json.dumps(single_amount())}] * 3
+    out, doc = parse_csv(services, tmp_path, registry, kind, unsigned_csv())
+    # not imported as all money in: the statement needs review and nothing is remembered
+    assert any(
+        "money in can't be told from money out" in e and e.endswith("check the signs.")
+        for e in out.errors
+    )
+    assert registry.match(doc) is None and out.pending_layout is None
+    # the model was told, in fixed words with no value from the file
+    feedback = scripted.requests[1]["messages"][-1]["content"].split("didn't work:")[1]
+    assert "DR/CR column" in feedback
+    assert not any(value in feedback for value in ("GREENBASKET", "42.18", "900.00"))
+
+
+def test_a_refused_amount_column_can_be_corrected_with_two_columns(ingest_env, tmp_path):
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    data = (
+        b"Date,Description,Paid out,Paid in\n"
+        b"01/10/2026,GREENBASKET STORES,42.18,\n02/10/2026,ACME PAYROLL,,900.00\n"
+        b"03/10/2026,LITTLE CAFE,3.40,\n"
+    )
+    wrong = single_amount(amount_column="Paid out")  # one of the two columns, always positive
+    right = single_amount(
+        amount_column=None, money_out_column="Paid out", money_in_column="Paid in"
+    )
+    scripted.replies = [{"content": json.dumps(wrong)}, {"content": json.dumps(right)}]
+    out, doc = parse_csv(services, tmp_path, registry, "current", data)
+    assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, -340]
+    assert out.errors == [] and registry.match(doc) is not None
+
+
+def test_a_missing_dr_cr_marker_on_a_later_file_is_reported():
+    from tuppence.ingest.importers.csv_layout import parse_with_layout
+    from tuppence.ingest.registry import CsvLayout
+    from tuppence.ingest.textprep import csv_document
+
+    layout = CsvLayout(
+        id="learned-x",
+        name="x",
+        source="learned",
+        signature=["Date", "Description", "Type", "Amount"],
+        date="Date",
+        description=["Description"],
+        amount="Amount",
+        direction="Type",
+    )
+    doc = csv_document(
+        b"Date,Description,Type,Amount\n01/10/2026,SHOP,DR,4.00\n02/10/2026,CAFE,,3.00\n",
+        sha256="x",
+    )
+    result = parse_with_layout(doc, layout)
+    assert [r.amount_pence for r in result.parsed.rows] == [-400]
+    assert [r.sign_from for r in result.parsed.rows] == ["DR"]
+    assert result.problems == ["L3: can't tell whether the amount is money in or out"]

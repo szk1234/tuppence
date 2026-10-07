@@ -10,7 +10,13 @@ from pydantic import BaseModel, Field
 from tuppence.core.errors import UserFacing
 from tuppence.ingest.models import Document, ParsedRow, ParsedStatement, SkippedLine
 from tuppence.ingest.registry import CsvLayout, column_getter, data_records, header_cells, norm
-from tuppence.ingest.textnum import has_credit_marker, parse_date, parse_money, to_pence
+from tuppence.ingest.textnum import (
+    direction_of,
+    has_credit_marker,
+    parse_date,
+    parse_money,
+    to_pence,
+)
 
 Getter = Callable[[Sequence[str], str | None], str]
 
@@ -67,6 +73,7 @@ def _require_columns(layout: CsvLayout, header: Sequence[str] | None) -> None:
         layout.merchant,
         layout.category,
         layout.type,
+        layout.direction,
         layout.account_number,
         layout.fee,
         *(rule.column for rule in layout.skip),
@@ -103,7 +110,13 @@ def _record(
                 return [], [SkippedLine(ref=ref, reason="no amount on this line")], None
             return [], [], f'{ref}: can\'t read the amount "{amount_text}"'
         pence = to_pence(value)
-        if layout.perspective == "card":
+        if layout.direction is not None:  # a DR/CR column says which way every amount goes
+            marker = get(cells, layout.direction)
+            way = direction_of(marker)
+            if way is None:
+                return [], [], f"{ref}: can't tell whether the amount is money in or out"
+            pence, sign_from = way * abs(pence), marker
+        elif layout.perspective == "card":
             pence = abs(pence) if has_credit_marker(amount_text) else -pence
     else:
         assert layout.money_out is not None and layout.money_in is not None

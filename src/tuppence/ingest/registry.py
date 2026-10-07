@@ -58,6 +58,9 @@ class CsvLayout(_Strict):
     balance: str | None = None
     category: str | None = None
     type: str | None = None
+    # A column of DR/CR (Debit/Credit) markers: each amount's direction. Learned layouts set it
+    # when the file has one, so an unsigned amount column is never read as all money in.
+    direction: str | None = None
     account_number: str | None = None
     skip: list[SkipRule] = Field(default_factory=list)
     confirmed: bool = False

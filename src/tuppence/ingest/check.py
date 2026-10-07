@@ -25,7 +25,7 @@ from tuppence.ingest.models import (
     Perspective,
     SkippedLine,
 )
-from tuppence.ingest.textnum import pounds
+from tuppence.ingest.textnum import direction_of, pounds
 
 MAX_PERIOD_DAYS = 400
 DATE_SLACK = timedelta(days=3)
@@ -315,7 +315,11 @@ def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence
         where = page_cache[page.group(1)] if page else context_text
         errors.extend(
             _sign_from(
-                row, label, where, "page" if _PAGE.fullmatch(base_ref(row.ref)) else "header"
+                row,
+                label,
+                where,
+                "page" if _PAGE.fullmatch(base_ref(row.ref)) else "header",
+                line.text,
             )
         )
         if (
@@ -446,18 +450,27 @@ def _bounded(text: str, start: int, end: int) -> bool:
     return not (end + 1 < len(text) and text[end] == "." and text[end + 1].isdigit())
 
 
-def _sign_from(row: ParsedRow, label: str, where: str, place: str) -> list[str]:
+def _cell_direction(label: str, own: str) -> int | None:
+    """The direction of a DR/CR (Debit/Credit) marker printed as a whole cell of the row's own
+    line (a table's direction column), else None."""
+    cell = rf"(?:^|[,;\t|])\s*\"?{re.escape(label.strip())}\"?\s*(?:[,;\t|]|$)"
+    return direction_of(label) if re.search(cell, own, re.IGNORECASE) else None
+
+
+def _sign_from(row: ParsedRow, label: str, where: str, place: str, own: str = "") -> list[str]:
     if not label:
         return []
-    short = len(label) <= 3  # "DR" must not match inside "Address"
-    present = (
-        re.search(rf"\b{re.escape(label)}\b", where, re.IGNORECASE) is not None
-        if short
-        else label.casefold() in where.casefold()
-    )
-    if not present:
-        return [f'{row.ref}: sign_from "{label}" not on {place}']
-    direction = _label_sign(label)
+    direction = _cell_direction(label, own)
+    if direction is None:
+        short = len(label) <= 3  # "DR" must not match inside "Address"
+        present = (
+            re.search(rf"\b{re.escape(label)}\b", where, re.IGNORECASE) is not None
+            if short
+            else label.casefold() in where.casefold()
+        )
+        if not present:
+            return [f'{row.ref}: sign_from "{label}" not on {place}']
+        direction = _label_sign(label)
     if direction is None:
         return [f'{row.ref}: sign_from "{label}" is not a sign label']
     if direction < 0 and row.amount_pence >= 0:

@@ -24,11 +24,12 @@ from pydantic import BaseModel, Field
 from tuppence.core.errors import UserFacing, safe_error_text
 from tuppence.ingest.check import check_document
 from tuppence.ingest.importers.csv_layout import ImportResult, LayoutMismatch, parse_with_layout
-from tuppence.ingest.models import AccountKind, Document
+from tuppence.ingest.models import AccountKind, Document, ParsedStatement
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, tidy
 from tuppence.ingest.registry import CsvLayout, data_records, header_cells, header_key, norm
 from tuppence.ingest.sensitive import HIDDEN, classify, holds_details, mask
+from tuppence.ingest.textnum import direction_of
 from tuppence.llm.types import LLMBadResponse, Message
 
 SAMPLE_ROWS = 5
@@ -218,6 +219,45 @@ def _best_date_format(values: Sequence[str]) -> str | None:
 _KIND_WORDS = {"current": "a current account", "savings": "a savings account"}
 
 
+def _direction_column(
+    header: Sequence[str], rows: Sequence[Sequence[str]], amount_at: int, prefer: int | None
+) -> str | None:
+    """The column that says DR or CR (Debit or Credit) on every row with an amount, worked out
+    on this device: the sign source for a single amount column. The model's type column is
+    tried first."""
+    priced = [row for row in rows if len(row) > amount_at and row[amount_at].strip()]
+    order = [*([prefer] if prefer is not None else []), *range(len(header))]
+    for i in order:
+        if i == amount_at or not header[i].strip() or not priced:
+            continue
+        if all(len(row) > i and direction_of(row[i]) is not None for row in priced):
+            return header[i]
+    return None
+
+
+def missing_sign_source(
+    parsed: ParsedStatement, layout: CsvLayout, account_kind: AccountKind | None
+) -> str | None:
+    """Why a bank account's single amount column can't say which way its amounts go, or None.
+
+    Something must mark money out: a minus, brackets or DR on some amount, or a DR/CR column.
+    Without either, every row would be stored as money in."""
+    if (
+        account_kind not in _KIND_WORDS
+        or layout.amount is None
+        or layout.direction is not None
+        or layout.perspective == "card"
+        or not parsed.rows
+        or any(row.amount_pence < 0 for row in parsed.rows)
+    ):
+        return None
+    return (
+        "No amount in this file is marked as money out (a minus, brackets or DR) and it has no "
+        "DR/CR column, so money in can't be told from money out for "
+        f"{_KIND_WORDS[account_kind]}. Please check the signs."
+    )
+
+
 def mapping_to_layout(
     mapping: MappingOut,
     header: Sequence[str],
@@ -231,7 +271,8 @@ def mapping_to_layout(
     The model names columns as it saw them; they are mapped back to the file's own headings.
     A hidden heading can't be chosen. The date format comes from every value in the date
     column (`rows` is every data row). On a bank account, a single amount column read as a
-    card's (purchases positive) contradicts the account type and is refused."""
+    card's (purchases positive) contradicts the account type and is refused. A column of DR/CR
+    markers beside a single amount column is found here and gives each amount its direction."""
     shown = [shown_heading(h, names=names) for h in header]
     index: dict[str, int] = {}
     for i, name in enumerate(shown):
@@ -267,6 +308,12 @@ def mapping_to_layout(
         "type_column": mapping.type_column,
     }
     columns = {what: column(name, what) for what, name in roles.items()}
+    direction = None
+    if mapping.amount_column is not None:
+        type_at = position(mapping.type_column, "type_column") if mapping.type_column else None
+        direction = _direction_column(
+            header, rows, position(mapping.amount_column, "amount_column"), type_at
+        )
     dates = [" ".join(row[date_at].split()) for row in rows if len(row) > date_at]
     date_format = _best_date_format([d for d in dates if d])
     if date_format is None:
@@ -295,7 +342,8 @@ def mapping_to_layout(
         perspective="card" if card else "household",
         balance=columns["balance_column"],
         category=columns["category_column"],
-        type=columns["type_column"],
+        type=columns["type_column"] or direction,
+        direction=direction,
     )
 
 
@@ -432,6 +480,8 @@ def propose_layout(
         errors = _describe(last.problems, layout, header, names) + summarise_checks(
             check_document(doc, last.parsed)
         )
+        if doubt := missing_sign_source(last.parsed, layout, account_kind):
+            errors.append(doubt)
         if not errors:
             return MappingOutcome(layout=layout, result=last, errors=[], attempts=attempt)
     return MappingOutcome(layout=None, result=last, errors=errors, attempts=max_attempts)

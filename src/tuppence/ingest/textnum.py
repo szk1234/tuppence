@@ -68,6 +68,15 @@ def parse_money(text: str | None) -> Decimal | None:
     return -value if negative else value
 
 
+_DIRECTIONS = {"dr": -1, "d": -1, "debit": -1, "cr": 1, "c": 1, "credit": 1}
+
+
+def direction_of(text: str | None) -> int | None:
+    """-1 for a cell that marks money out (DR, D, Debit), +1 for money in (CR, C, Credit),
+    else None. A column of these is the only thing that gives an unsigned amount a direction."""
+    return _DIRECTIONS.get((text or "").strip().rstrip(".").casefold())
+
+
 def has_credit_marker(text: str) -> bool:
     return bool(re.search(r"\bCR\.?\s*$", text.strip(), re.IGNORECASE))
 
