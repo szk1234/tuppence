@@ -12,7 +12,7 @@ assert any(n.endswith("tuppence/web_dist/index.html") for n in names), "web_dist
 assert any("/web_dist/assets/" in n for n in names), "assets missing from wheel"
 PY
 TMP="$(mktemp -d)"
-trap 'kill "${PID:-0}" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+trap '[ -n "${PID:-}" ] && kill "$PID" 2>/dev/null; rm -rf "$TMP"' EXIT
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
 uvx --from "$WHEEL" tuppence serve --no-browser --port "$PORT" --data-dir "$TMP/data" >"$TMP/log" 2>&1 &
 PID=$!
