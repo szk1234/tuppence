@@ -17,17 +17,21 @@ from tuppence.core.db import Database
 from tuppence.llm.connections import ModelInfo
 from tuppence.llm.types import BudgetExceeded, Message, ToolSpec, Usage
 
+IMAGE_TOKENS = 1600  # a page image, roughly, for context sizing
+
 
 def estimate_tokens(messages: Iterable[Message], tools: Iterable[ToolSpec] = ()) -> int:
     chars = 0
     count = 0
+    images = 0
     for m in messages:
         count += 1
+        images += len(m.images)
         chars += len(m.content) + sum(
             len(json.dumps(c.arguments)) + len(c.name) for c in m.tool_calls
         )
     chars += sum(len(json.dumps(t.model_dump())) for t in tools)
-    return math.ceil(chars / 4) + 8 * count
+    return math.ceil(chars / 4) + 8 * count + IMAGE_TOKENS * images
 
 
 # Prices Tuppence uses for a cloud model it has no price for, so spending caps never treat

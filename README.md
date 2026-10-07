@@ -21,6 +21,10 @@ gives UK-specific guidance — from bills creeping up to money you may be owed.
 | Desktop app | Windows, macOS, Linux | download from Releases (coming with the developer preview) |
 | uvx | technical users | not yet on PyPI; arrives with the developer preview. For now, from a clone: `uv run tuppence serve` |
 
+Platform note: reading scans and screenshots uses on-device OCR (onnxruntime and
+OpenCV), which needs macOS 13 or later (Apple silicon or Intel), 64-bit Windows
+(x86-64) or 64-bit Linux (x86-64 or ARM64). Windows on ARM isn't supported yet.
+
 Never expose Tuppence directly to the internet. For remote access use a VPN
 such as Tailscale.
 

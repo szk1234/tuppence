@@ -24,7 +24,19 @@ from tuppence.llm.types import (
 def _message(m: Message) -> dict[str, Any]:
     if m.role == "tool":
         return {"role": "tool", "tool_call_id": m.tool_call_id, "content": m.content}
-    out: dict[str, Any] = {"role": m.role, "content": m.content}
+    content: Any = m.content
+    if m.images:
+        content = [
+            {"type": "text", "text": m.content},
+            *(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{i.media_type};base64,{i.data_b64}"},
+                }
+                for i in m.images
+            ),
+        ]
+    out: dict[str, Any] = {"role": m.role, "content": content}
     if m.tool_calls:
         out["tool_calls"] = [
             {

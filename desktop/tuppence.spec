@@ -23,6 +23,8 @@ a = Analysis(  # noqa: F821
         (str(WEB), "tuppence/web_dist"),
         # Every non-Python file in the package: migrations (.sql), agent/preset TOMLs, future packs.
         *collect_data_files("tuppence"),
+        # RapidOCR's bundled .onnx models plus config.yaml and default_models.yaml.
+        *collect_data_files("rapidocr"),
         # keyring discovers its backends through entry points, which need the dist metadata.
         *copy_metadata("keyring"),
     ],

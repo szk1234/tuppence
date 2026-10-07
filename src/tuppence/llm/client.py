@@ -326,6 +326,12 @@ class LLMClient:
                     return reason
             use_pseudo = not conn.is_local and self.settings.get("privacy.pseudonymise")
             pseudo = self._pseudonymiser() if use_pseudo else None
+            if pseudo is not None and any(m.images for m in messages):
+                reason = (
+                    "images can't be pseudonymised, so they aren't sent to a cloud "
+                    "model while Pseudonymise is on"
+                )
+                return reason
             sent = [self._redacted(m, pseudo) for m in messages] if pseudo else list(messages)
             req = ChatRequest(
                 model=model.model_id,

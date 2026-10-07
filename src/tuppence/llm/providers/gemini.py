@@ -35,9 +35,14 @@ def _convert(messages: list[Message]) -> tuple[list[str], list[dict[str, Any]]]:
         if m.role == "system":
             system.append(m.content)
         elif m.role == "user":
-            if not m.content:
+            if not m.content and not m.images:
                 continue
-            contents.append({"role": "user", "parts": [{"text": m.content}]})
+            user_parts: list[dict[str, Any]] = [
+                {"inline_data": {"mime_type": i.media_type, "data": i.data_b64}} for i in m.images
+            ]
+            if m.content:
+                user_parts.append({"text": m.content})
+            contents.append({"role": "user", "parts": user_parts})
         elif m.role == "assistant":
             parts: list[dict[str, Any]] = [{"text": m.content}] if m.content else []
             for c in m.tool_calls:

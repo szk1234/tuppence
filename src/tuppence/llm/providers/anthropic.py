@@ -22,6 +22,20 @@ from tuppence.llm.types import (
 ANTHROPIC_VERSION = "2023-06-01"
 
 
+def _content(m: Message) -> Any:
+    """Plain text, or image blocks followed by the text when the message has images."""
+    if not m.images:
+        return m.content
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": i.media_type, "data": i.data_b64},
+        }
+        for i in m.images
+    ]
+    return [*blocks, {"type": "text", "text": m.content}]
+
+
 def _convert(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
     system_parts: list[str] = []
     out: list[dict[str, Any]] = []
@@ -36,7 +50,7 @@ def _convert(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
         if m.role == "system":
             system_parts.append(m.content)
             continue
-        if m.role in ("user", "assistant") and not m.content and not m.tool_calls:
+        if m.role in ("user", "assistant") and not (m.content or m.tool_calls or m.images):
             continue  # the API rejects empty text blocks
         if m.role == "tool":
             pending_results.append(
@@ -54,7 +68,7 @@ def _convert(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
             ]
             out.append({"role": "assistant", "content": blocks})
         else:
-            out.append({"role": m.role, "content": m.content})
+            out.append({"role": m.role, "content": _content(m)})
     flush()
     if not out:
         raise ValueError("There is no message content to send")

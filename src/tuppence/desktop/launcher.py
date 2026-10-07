@@ -131,6 +131,27 @@ def _wait_forever() -> None:
         pass
 
 
+def smoke_ocr(root: Path) -> int:
+    """Read a tiny generated PNG in the sandbox, proving the frozen OCR path works: process
+    spawn, the bundled models and onnxruntime. Returns how many text rows were found."""
+    from PIL import Image, ImageDraw
+
+    from tuppence.ingest.ocr import image_rows
+    from tuppence.ingest.sandbox import run_isolated
+
+    image = Image.new("RGB", (480, 90), "white")
+    ImageDraw.Draw(image).text((10, 20), "Greenbasket Stores 42.18", fill="black", font_size=32)
+    path = root / "smoke-ocr.png"
+    try:
+        image.save(path, "PNG")
+        rows = run_isolated(image_rows, str(path), timeout_s=90)["rows"]
+    finally:
+        path.unlink(missing_ok=True)
+    if not rows:
+        raise RuntimeError("The OCR smoke test found no text.")
+    return len(rows)
+
+
 def run_desktop(
     data_dir: str | None = None,
     *,
@@ -174,6 +195,7 @@ def run_desktop(
             clear_report(root)
             if smoke:
                 result = {"ok": True, "url": server.url, "version": __version__, "mode": "desktop"}
+                result["ocr_rows"] = smoke_ocr(root)
                 text = json.dumps(result)
                 if smoke_out:
                     Path(smoke_out).write_text(text, encoding="utf-8")

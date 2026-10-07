@@ -39,6 +39,7 @@ def test_smoke_mode_writes_result_and_exits(tmp_path):
     result = json.loads(out.read_text())
     assert result["ok"] is True and result["mode"] == "desktop"
     assert result["url"].startswith("http://127.0.0.1:")
+    assert result["ocr_rows"] >= 1  # the sandboxed on-device OCR path ran
 
 
 def test_falls_back_to_browser_when_no_gui(tmp_path):

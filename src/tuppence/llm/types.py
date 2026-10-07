@@ -20,12 +20,20 @@ class ToolCall(BaseModel):
     provider_meta: dict[str, Any] | None = Field(default=None, repr=False)
 
 
+class ImageData(BaseModel):
+    """A picture for the `vision` task, base64-encoded."""
+
+    media_type: Literal["image/png", "image/jpeg"]
+    data_b64: str
+
+
 class Message(BaseModel):
     role: Role
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_call_id: str | None = None
     name: str | None = None
+    images: list[ImageData] = Field(default_factory=list)
 
 
 class ToolSpec(BaseModel):
