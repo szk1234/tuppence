@@ -252,3 +252,79 @@ def test_cross_origin_login_rejected_but_same_origin_ok(make_app):
         headers={"Origin": "http://testserver"},
     )
     assert ok.status_code == 200
+
+
+def _stale(c):
+    with c.app.state.services.db.transaction() as conn:
+        conn.execute("UPDATE session SET last_seen_at = '2020-01-01T00:00:00Z'")
+
+
+def _signed_in(make_app, **kw):
+    c = TestClient(make_app("server", **kw))
+    r = c.post("/api/auth/setup", json={"username": "alex", "password": "correct-horse-battery"})
+    return c, r.json()["csrf_token"]
+
+
+def test_cookie_refreshed_on_session_endpoint(make_app):
+    c, _ = _signed_in(make_app)
+    assert "set-cookie" not in c.get("/api/auth/session").headers
+    _stale(c)
+    sc = c.get("/api/auth/session").headers["set-cookie"].lower()
+    assert "tuppence_session=" in sc and "max-age=2592000" in sc and "samesite=strict" in sc
+
+
+def test_cookie_refreshed_even_on_404_and_csrf_403(make_app):
+    c, csrf = _signed_in(make_app)
+    _stale(c)
+    r = c.patch(
+        "/api/settings/nope",
+        json={"value": 1, "expected_version": 0},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 404 and "tuppence_session=" in r.headers["set-cookie"]
+    _stale(c)
+    r = c.patch("/api/settings/privacy.local_only", json={"value": True, "expected_version": 0})
+    assert r.status_code == 403 and "tuppence_session=" in r.headers["set-cookie"]
+
+
+def test_refreshed_cookie_keeps_secure_flag(make_app):
+    c, _ = _signed_in(make_app, secure_cookies=True)
+    _stale(c)
+    c2 = TestClient(c.app, base_url="https://testserver")
+    c2.cookies.set("tuppence_session", c.cookies.get("tuppence_session"))
+    sc = c2.get("/api/auth/session").headers["set-cookie"].lower().split("; ")
+    assert "secure" in sc
+
+
+def test_setup_after_completion_never_hashes(make_app, monkeypatch):
+    from tuppence.core import auth
+
+    c, _ = _signed_in(make_app)
+    calls = []
+    monkeypatch.setattr(auth, "hash_password", lambda pw: calls.append(pw) or "x")
+    r = c.post("/api/auth/setup", json={"username": "b", "password": "another-long-one"})
+    assert r.status_code == 409 and calls == []
+
+
+def test_session_endpoint_rejects_launch_kind_in_server_mode(make_app):
+    c, _ = _signed_in(make_app)
+    token, _s = c.app.state.services.sessions.create("launch")
+    c.cookies.set("tuppence_session", token)
+    s = c.get("/api/auth/session").json()
+    assert s["authenticated"] is False and s["csrf_token"] is None
+
+
+def test_login_returns_503_when_hashing_is_saturated(make_app, monkeypatch):
+    import threading
+    import time
+
+    from tuppence.core import auth
+
+    c, _ = _signed_in(make_app)
+    monkeypatch.setattr(auth, "_hash_slots", threading.BoundedSemaphore(0))
+    monkeypatch.setattr(auth, "HASH_WAIT_SECONDS", 0.05)
+    start = time.monotonic()
+    r = c.post("/api/auth/login", json={"username": "alex", "password": "correct-horse-battery"})
+    assert r.status_code == 503 and r.headers["retry-after"] == "5"
+    assert r.json()["detail"] == "Tuppence is busy. Try again in a moment."
+    assert time.monotonic() - start < 2

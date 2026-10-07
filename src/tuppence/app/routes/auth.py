@@ -17,7 +17,8 @@ from tuppence.app.deps import (
     set_session_cookie,
 )
 from tuppence.app.services import Services
-from tuppence.core.auth import SetupComplete, WeakPassword
+from tuppence.app.session_cookie import RENEW_KEY
+from tuppence.core.auth import AuthBusy, SetupComplete, WeakPassword
 
 Svc = Annotated[Services, Depends(get_services)]
 
@@ -49,11 +50,13 @@ class SessionInfo(BaseModel):
     csrf_token: str | None
 
 
-def _info(services: Services, token: str | None) -> SessionInfo:
+def _info(services: Services, token: str | None, request: Request | None = None) -> SessionInfo:
     mode = services.runtime.mode
     needs_setup = mode == "server" and services.users.count() == 0
     session = services.sessions.get(token)
-    if session is None:
+    if session is not None and session.renewed and request is not None:
+        setattr(request.state, RENEW_KEY, token)
+    if session is None or (session.kind == "launch" and mode == "server"):
         return SessionInfo(
             authenticated=False, mode=mode, needs_setup=needs_setup, user=None, csrf_token=None
         )
@@ -64,6 +67,14 @@ def _info(services: Services, token: str | None) -> SessionInfo:
         needs_setup=needs_setup,
         user=SessionUser(username=user.username, is_admin=user.is_admin) if user else None,
         csrf_token=session.csrf_token,
+    )
+
+
+def _busy() -> JSONResponse:
+    return JSONResponse(
+        {"detail": "Tuppence is busy. Try again in a moment."},
+        status_code=503,
+        headers={"Retry-After": "5"},
     )
 
 
@@ -78,19 +89,19 @@ def launch(token: str, services: Svc) -> Response:
         return HTMLResponse(EXPIRED_HTML, status_code=403)
     raw, _ = services.sessions.create("launch")
     response = RedirectResponse("/", status_code=303)
-    set_session_cookie(response, raw, services)
+    set_session_cookie(response, raw, secure=services.runtime.secure_cookies)
     return response
 
 
 @router.get("/api/auth/session")
 def session_info(request: Request, services: Svc) -> SessionInfo:
-    return _info(services, request.cookies.get(SESSION_COOKIE))
+    return _info(services, request.cookies.get(SESSION_COOKIE), request)
 
 
 def _start_user_session(services: Services, user_id: int) -> JSONResponse:
     raw, _ = services.sessions.create("user", user_id)
     response = JSONResponse(_info(services, raw).model_dump())
-    set_session_cookie(response, raw, services)
+    set_session_cookie(response, raw, secure=services.runtime.secure_cookies)
     return response
 
 
@@ -98,12 +109,16 @@ def _start_user_session(services: Services, user_id: int) -> JSONResponse:
 def setup(body: Credentials, services: Svc) -> JSONResponse:
     if services.runtime.mode != "server":
         raise HTTPException(status_code=404)
+    if services.users.count() > 0:  # cheap early exit: never hash for a finished setup
+        raise HTTPException(status_code=409, detail="Setup is already complete.")
     try:
         user = services.users.create_first_admin(body.username, body.password)
     except SetupComplete:
         raise HTTPException(status_code=409, detail="Setup is already complete.") from None
     except WeakPassword as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    except AuthBusy:
+        return _busy()
     return _start_user_session(services, user.id)
 
 
@@ -120,7 +135,10 @@ def login(body: Credentials, request: Request, services: Svc) -> JSONResponse:
             status_code=429,
             headers={"Retry-After": str(wait)},
         )
-    user = services.users.authenticate(body.username, body.password)
+    try:
+        user = services.users.authenticate(body.username, body.password)
+    except AuthBusy:
+        return _busy()
     if user is None:
         raise HTTPException(status_code=401, detail="Wrong username or password.")
     services.limiter.reset(key)

@@ -138,3 +138,55 @@ def test_session_renewal_flag_and_no_write_on_fresh_read(db):
         conn.execute("UPDATE session SET last_seen_at = '2020-01-01T00:00:00Z'")
     assert sessions.get(token).renewed is True
     assert sessions.get(token).renewed is False
+
+
+def test_renewal_loses_to_concurrent_logout(db):
+    sessions = Sessions(db)
+    token, _ = sessions.create("launch")
+    with db.transaction() as conn:
+        conn.execute("UPDATE session SET last_seen_at = '2020-01-01T00:00:00Z'")
+    real = db.connection
+    state = {"first": True}
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def racing():
+        with real() as conn:
+            yield conn
+        if state["first"]:  # the read has finished; now the user logs out
+            state["first"] = False
+            with real() as other:
+                other.execute("DELETE FROM session")
+
+    db.connection = racing  # type: ignore[method-assign]
+    assert sessions.get(token) is None
+
+
+def test_hash_wait_is_bounded(monkeypatch):
+    import threading
+
+    from tuppence.core import auth
+
+    monkeypatch.setattr(auth, "_hash_slots", threading.BoundedSemaphore(0))
+    monkeypatch.setattr(auth, "HASH_WAIT_SECONDS", 0.05)
+    with pytest.raises(auth.AuthBusy):
+        auth.hash_password("correct-horse-battery")
+
+
+def test_create_hashes_outside_write_transaction(db, monkeypatch):
+    from tuppence.core import auth
+
+    users = Users(db)
+    real = auth.hash_password
+
+    def check(pw):
+        # If a write transaction were open, this second writer would block then fail.
+        with db.connection() as other:
+            other.execute("PRAGMA busy_timeout=50")
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("ROLLBACK")
+        return real(pw)
+
+    monkeypatch.setattr(auth, "hash_password", check)
+    users.create("alex", "correct-horse-battery", is_admin=False)

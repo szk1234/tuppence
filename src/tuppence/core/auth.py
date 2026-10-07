@@ -6,6 +6,8 @@ import hashlib
 import math
 import secrets
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Literal
 
@@ -23,8 +25,25 @@ MIN_PASSWORD = 10
 MAX_USERNAME = 64
 
 
+HASH_WAIT_SECONDS = 5.0
+
+
 class SetupComplete(RuntimeError):
     pass
+
+
+class AuthBusy(RuntimeError):
+    """Too many password checks are already running."""
+
+
+@contextmanager
+def _hash_slot() -> Iterator[None]:
+    if not _hash_slots.acquire(timeout=HASH_WAIT_SECONDS):
+        raise AuthBusy
+    try:
+        yield
+    finally:
+        _hash_slots.release()
 
 
 class WeakPassword(ValueError):
@@ -32,13 +51,13 @@ class WeakPassword(ValueError):
 
 
 def hash_password(password: str) -> str:
-    with _hash_slots:
+    with _hash_slot():
         return _hasher.hash(password)
 
 
 def verify_password(stored: str, password: str) -> bool:
     try:
-        with _hash_slots:
+        with _hash_slot():
             return _hasher.verify(stored, password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
@@ -74,12 +93,13 @@ class Users:
     def create(self, username: str, password: str, *, is_admin: bool) -> User:
         username = username.strip()
         validate_new_password(username, password)
+        password_hash = hash_password(password)  # slow: do it before taking the write lock
         now = to_iso(utcnow())
         with self.db.transaction() as conn:
             cur = conn.execute(
                 "INSERT INTO app_user (username, password_hash, is_admin, created_at, updated_at)"
                 " VALUES (?, ?, ?, ?, ?)",
-                [username, hash_password(password), int(is_admin), now, now],
+                [username, password_hash, int(is_admin), now, now],
             )
             user_id = int(cur.lastrowid or 0)
         return User(id=user_id, username=username, is_admin=is_admin)
@@ -171,10 +191,12 @@ class Sessions:
         if stale:
             expires = to_iso(now + self.ttl)
             with self.db.transaction() as conn:
-                conn.execute(
+                updated = conn.execute(
                     "UPDATE session SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?",
                     [to_iso(now), expires, key],
-                )
+                ).rowcount
+            if updated == 0:  # logged out between our read and the renewal
+                return None
         return Session(
             kind=row["kind"],
             user_id=row["user_id"],

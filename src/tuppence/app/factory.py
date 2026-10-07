@@ -10,6 +10,7 @@ from tuppence.app.errors import install_error_handlers
 from tuppence.app.routes import include_routers
 from tuppence.app.security import HostAllowlistMiddleware, SecurityHeadersMiddleware
 from tuppence.app.services import build_services
+from tuppence.app.session_cookie import SessionCookieRefreshMiddleware
 from tuppence.app.static import mount_web
 from tuppence.settings import RuntimeSettings
 
@@ -28,6 +29,7 @@ def create_app(settings: RuntimeSettings) -> FastAPI:
     app.state.paths = services.paths
     install_error_handlers(app)
     app.add_middleware(HostAllowlistMiddleware, settings=settings)
+    app.add_middleware(SessionCookieRefreshMiddleware, secure=settings.secure_cookies)
     app.add_middleware(SecurityHeadersMiddleware)
 
     @app.get("/health", include_in_schema=False)
