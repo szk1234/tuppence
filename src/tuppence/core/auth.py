@@ -21,6 +21,7 @@ from tuppence.core.db import Database
 _hasher = PasswordHasher()
 # Each argon2 call allocates ~64 MiB; cap concurrency so a burst of logins can't exhaust memory.
 _hash_slots = threading.BoundedSemaphore(2)
+_slot_owner = threading.local()
 MIN_PASSWORD = 10
 MAX_USERNAME = 64
 
@@ -37,12 +38,23 @@ class AuthBusy(RuntimeError):
 
 
 @contextmanager
-def _hash_slot() -> Iterator[None]:
+def hash_slot() -> Iterator[None]:
+    """Hold one argon2 slot, waiting at most HASH_WAIT_SECONDS (else AuthBusy, body not run).
+
+    Re-entrant within a thread: a caller can reserve the slot before its cheap checks, and the
+    hash/verify calls inside reuse it instead of queueing for a second one. Never hold it across
+    slow work, and never wait for it while holding the database write lock.
+    """
+    if getattr(_slot_owner, "held", False):
+        yield
+        return
     if not _hash_slots.acquire(timeout=HASH_WAIT_SECONDS):
         raise AuthBusy
+    _slot_owner.held = True
     try:
         yield
     finally:
+        _slot_owner.held = False
         _hash_slots.release()
 
 
@@ -51,13 +63,13 @@ class WeakPassword(ValueError):
 
 
 def hash_password(password: str) -> str:
-    with _hash_slot():
+    with hash_slot():
         return _hasher.hash(password)
 
 
 def verify_password(stored: str, password: str) -> bool:
     try:
-        with _hash_slot():
+        with hash_slot():
             return _hasher.verify(stored, password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
@@ -255,15 +267,6 @@ class LoginLimiter:
                 [key, failures, locked],
             )
         return None
-
-    def refund_attempt(self, key: str) -> None:
-        """Undo one begin_attempt charge (e.g. the server was too busy to check the password)."""
-        with self.db.transaction() as conn:
-            conn.execute(
-                "UPDATE login_attempt SET failures = max(failures - 1, 0), locked_until = NULL"
-                " WHERE key = ? AND (locked_until IS NULL OR failures >= ?)",
-                [key, self.max_failures],
-            )
 
     def record_failure(self, key: str) -> None:
         now = utcnow()

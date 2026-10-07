@@ -18,7 +18,7 @@ from tuppence.app.deps import (
 )
 from tuppence.app.services import Services
 from tuppence.app.session_cookie import RENEW_KEY, clear_session_cookie
-from tuppence.core.auth import AuthBusy, SetupComplete, WeakPassword
+from tuppence.core.auth import AuthBusy, SetupComplete, WeakPassword, hash_slot
 
 Svc = Annotated[Services, Depends(get_services)]
 
@@ -78,6 +78,14 @@ def _busy() -> JSONResponse:
     )
 
 
+def _too_many(wait: int) -> JSONResponse:
+    return JSONResponse(
+        {"detail": f"Too many attempts. Try again in {wait} seconds."},
+        status_code=429,
+        headers={"Retry-After": str(wait)},
+    )
+
+
 @router.get("/auth/launch", include_in_schema=False)
 def launch(token: str, services: Svc) -> Response:
     expected = services.runtime.launch_token
@@ -128,18 +136,24 @@ def login(body: Credentials, request: Request, services: Svc) -> JSONResponse:
         raise HTTPException(status_code=404)
     ip = request.client.host if request.client else "unknown"
     key = f"{ip}|{body.username.strip().lower()}"
-    wait = services.limiter.begin_attempt(key)  # charged up front, so bursts can't bypass it
+    # Cheap read first: a locked key never queues for a hash slot.
+    wait = services.limiter.retry_after(key)
     if wait is not None:
-        return JSONResponse(
-            {"detail": f"Too many attempts. Try again in {wait} seconds."},
-            status_code=429,
-            headers={"Retry-After": str(wait)},
-        )
+        return _too_many(wait)
+    user = None
     try:
-        user = services.users.authenticate(body.username, body.password)
+        # Reserve the hasher before charging, so a busy server (503) charges nothing and can
+        # never undo a lockout. Then charge atomically (bursts can't bypass the limit) and
+        # verify while still holding the slot. begin_attempt is one short transaction, and no
+        # code waits for a slot while holding the write lock, so this can't deadlock.
+        with hash_slot():
+            wait = services.limiter.begin_attempt(key)
+            if wait is None:
+                user = services.users.authenticate(body.username, body.password)
     except AuthBusy:
-        services.limiter.refund_attempt(key)  # a busy server isn't the user's failed guess
         return _busy()
+    if wait is not None:
+        return _too_many(wait)
     if user is None:
         raise HTTPException(status_code=401, detail="Wrong username or password.")
     services.limiter.reset(key)

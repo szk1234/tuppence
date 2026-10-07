@@ -364,5 +364,95 @@ def test_busy_logins_do_not_count_towards_lockout(make_app, monkeypatch):
     body = {"username": "alex", "password": "correct-horse-battery"}
     for _ in range(6):
         assert c.post("/api/auth/login", json=body).status_code == 503
+    with c.app.state.services.db.connection() as conn:  # nothing was charged at all
+        assert conn.execute("SELECT count(*) FROM login_attempt").fetchone()[0] == 0
     monkeypatch.setattr(auth, "_hash_slots", real)
     assert c.post("/api/auth/login", json=body).status_code == 200
+
+
+WRONG = {"username": "alex", "password": "nope-nope-nope"}
+RIGHT = {"username": "alex", "password": "correct-horse-battery"}
+
+
+class _GatedSlots:
+    """Stand-in for the argon2 slots: the first `gated` acquires park until `give_up` is set
+    and then time out (a saturated hasher); every later acquire uses a real semaphore."""
+
+    def __init__(self, gated: int) -> None:
+        import threading
+
+        self.real = threading.BoundedSemaphore(2)
+        self.gated = gated
+        self.parked = 0
+        self.lock = threading.Lock()
+        self.all_parked = threading.Event()
+        self.give_up = threading.Event()
+
+    def acquire(self, timeout: float | None = None) -> bool:
+        with self.lock:
+            gate = self.parked < self.gated
+            if gate:
+                self.parked += 1
+                if self.parked == self.gated:
+                    self.all_parked.set()
+        if gate:
+            self.give_up.wait(10)
+            return False
+        return self.real.acquire(timeout=timeout)
+
+    def release(self) -> None:
+        self.real.release()
+
+
+def test_lockout_holds_while_hashing_is_saturated(make_app, monkeypatch):
+    import threading
+
+    from tuppence.core import auth
+
+    c, _ = _signed_in(make_app)
+    c.cookies.clear()
+    slots = _GatedSlots(gated=3)
+    monkeypatch.setattr(auth, "_hash_slots", slots)
+    busy: list[int] = []
+
+    def waiting_attempt():
+        busy.append(TestClient(c.app).post("/api/auth/login", json=WRONG).status_code)
+
+    # Three attempts are already queued for a hash slot when real failures lock the key...
+    threads = [threading.Thread(target=waiting_attempt) for _ in range(3)]
+    [t.start() for t in threads]
+    assert slots.all_parked.wait(5)
+    real = [c.post("/api/auth/login", json=WRONG).status_code for _ in range(5)]
+    # ...and only then give up as busy. That must not lift the lock.
+    slots.give_up.set()
+    [t.join() for t in threads]
+    # More attempts while the hasher stays saturated must not lift it either.
+    monkeypatch.setattr(auth, "_hash_slots", threading.BoundedSemaphore(0))
+    monkeypatch.setattr(auth, "HASH_WAIT_SECONDS", 0.01)
+    later = [c.post("/api/auth/login", json=RIGHT).status_code for _ in range(3)]
+    monkeypatch.setattr(auth, "_hash_slots", threading.BoundedSemaphore(2))
+
+    final = c.post("/api/auth/login", json=RIGHT)
+    assert final.status_code == 429 and 0 < int(final.headers["retry-after"]) <= 60
+    assert busy == [503] * 3
+    assert real == [401] * 5
+    assert set(later) <= {429, 503}
+
+
+def test_busy_attempt_between_failures_still_locks_on_the_fifth(make_app, monkeypatch):
+    import threading
+
+    from tuppence.core import auth
+
+    c, _ = _signed_in(make_app)
+    c.cookies.clear()
+    real = auth._hash_slots
+    for _ in range(4):
+        assert c.post("/api/auth/login", json=WRONG).status_code == 401
+    monkeypatch.setattr(auth, "_hash_slots", threading.BoundedSemaphore(0))
+    monkeypatch.setattr(auth, "HASH_WAIT_SECONDS", 0.01)
+    assert c.post("/api/auth/login", json=WRONG).status_code == 503
+    monkeypatch.setattr(auth, "_hash_slots", real)
+    assert c.post("/api/auth/login", json=WRONG).status_code == 401
+    locked = c.post("/api/auth/login", json=RIGHT)
+    assert locked.status_code == 429 and int(locked.headers["retry-after"]) > 0

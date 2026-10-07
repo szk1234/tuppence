@@ -174,6 +174,33 @@ def test_hash_wait_is_bounded(monkeypatch):
         auth.hash_password("correct-horse-battery")
 
 
+def test_hash_slot_is_reentrant_within_a_thread(monkeypatch):
+    import threading
+
+    from tuppence.core import auth
+
+    monkeypatch.setattr(auth, "_hash_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(auth, "HASH_WAIT_SECONDS", 0.05)
+    with auth.hash_slot():  # a caller may reserve the slot before hashing...
+        stored = auth.hash_password("correct-horse-battery")  # ...without deadlocking itself
+        assert auth.verify_password(stored, "correct-horse-battery")
+    with auth.hash_slot():  # and the slot is free again afterwards
+        pass
+
+
+def test_hash_slot_raises_busy_before_running_the_body(monkeypatch):
+    import threading
+
+    from tuppence.core import auth
+
+    monkeypatch.setattr(auth, "_hash_slots", threading.BoundedSemaphore(0))
+    monkeypatch.setattr(auth, "HASH_WAIT_SECONDS", 0.05)
+    ran = []
+    with pytest.raises(auth.AuthBusy), auth.hash_slot():
+        ran.append(True)
+    assert ran == []
+
+
 def test_create_hashes_outside_write_transaction(db, monkeypatch):
     from tuppence.core import auth
 
