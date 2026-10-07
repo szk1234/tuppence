@@ -507,10 +507,31 @@ def test_non_admin_cannot_change_shared_ai_and_privacy_settings(client, member, 
 
 
 def test_every_setting_is_shared_and_admin_only_in_server_mode(client, member):
-    """AI, privacy and agent settings (llm.*, privacy.*, config.*) are all household-wide."""
-    keys = [e["key"] for e in client.get("/api/settings").json()["settings"]]
-    assert keys and all(k.startswith(("llm.", "privacy.", "config.", "ingest.")) for k in keys)
+    """Deny by default: no registered setting can be written by a member."""
+    from tuppence.core.settings_store import SETTINGS
+
+    listed = {e["key"] for e in client.get("/api/settings").json()["settings"]}
+    assert listed == set(SETTINGS) and listed
     assert member.get("/api/settings").status_code == 200  # members can still read them
+    for key in SETTINGS:
+        r = member.patch(f"/api/settings/{key}", json={"value": None, "expected_version": 0})
+        assert r.status_code == 403, key
+
+
+def test_a_setting_added_later_is_admin_only_without_registering_it(client, member, monkeypatch):
+    from tuppence.core import settings_store as ss
+
+    monkeypatch.setitem(
+        ss.SETTINGS, "future.flag", ss.SettingDef("future.flag", False, ss.TypeAdapter(bool), "x")
+    )
+    r = member.patch("/api/settings/future.flag", json={"value": True, "expected_version": 0})
+    assert r.status_code == 403
+    assert (
+        member.patch(
+            "/api/settings/ingest.vision_for_scans", json={"value": True, "expected_version": 0}
+        ).status_code
+        == 403
+    )
 
 
 def test_non_admin_cannot_change_agent_config_in_server_mode(client, member):

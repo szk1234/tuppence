@@ -16,13 +16,6 @@ from tuppence.core.settings_store import SettingEntry
 
 Svc = Annotated[Services, Depends(get_services)]
 
-# Household-wide choices: in server mode only an admin may change them (each with its own 403 copy).
-ADMIN_PREFIXES: dict[str, str] = {
-    "llm.": AI_ADMIN_MESSAGE,
-    "privacy.": AI_ADMIN_MESSAGE,
-    "config.": CONFIG_ADMIN_MESSAGE,  # agent config is shared, like /api/config/agents
-}
-
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
@@ -38,9 +31,9 @@ def list_settings(services: Svc) -> dict[str, list[SettingEntry]]:
 
 @router.patch("/{key}")
 def update_setting(key: str, body: SettingUpdate, services: Svc, request: Request) -> SettingEntry:
-    for prefix, message in ADMIN_PREFIXES.items():
-        if key.startswith(prefix):
-            require_admin(request, message)
+    # Deny by default: every setting is household-wide, so in server mode only an admin may write
+    # any of them (a new setting needs no extra registration). Only the 403 wording varies.
+    require_admin(request, CONFIG_ADMIN_MESSAGE if key.startswith("config.") else AI_ADMIN_MESSAGE)
     try:
         return services.settings.set(key, body.value, expected_version=body.expected_version)
     except KeyError:
