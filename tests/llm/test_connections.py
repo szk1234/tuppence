@@ -392,3 +392,12 @@ def test_forget_keys_carries_on_past_entries_the_keychain_refuses(keychain_reg):
         assert not c.has_key and all(not h.has_value for h in c.headers)
     backend.refuse = set()
     assert reg.forget_keys() == 0 and backend.data == {}
+
+
+def test_locality_is_checked_for_the_name_the_guard_connects_to(reg, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        "tuppence.net.hosts._system_resolve", lambda h: seen.append(h) or ["10.0.0.9"]
+    )
+    c = reg.create("custom", base_url="http://straße.example:8080/v1")
+    assert seen == ["xn--strae-oqa.example"] and c.is_local

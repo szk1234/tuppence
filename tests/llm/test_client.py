@@ -402,7 +402,27 @@ def test_pinned_local_task_is_blocked_at_http_even_if_locality_is_stale(env, mon
         local_only=True,
         expected_version=0,
     )
-    with pytest.raises(AllModelsFailed, match="only local models"):
+    # Refused because a connection classed as local must still resolve inside the network.
+    with pytest.raises(AllModelsFailed, match="now points outside"):
+        services.llm.chat("coach", U)
+    assert sent_chats(scripted) == []
+    assert services.privacy_log.list()[0].outcome == "blocked"
+
+
+def test_stale_local_connection_is_refused_even_with_local_only_off(env, monkeypatch):
+    """Closes the stale-locality gap: no notice, pseudonymising or price for a public host."""
+    from tuppence.net import hosts
+
+    services, scripted = env
+    addr = {"ip": "192.168.1.5"}
+    monkeypatch.setattr(hosts, "_system_resolve", lambda h: [addr["ip"]])
+    c = services.connections.create("custom", base_url="http://gpu-box:11434/v1")
+    services.connections.test(c.id)
+    services.settings.set(
+        "llm.simple_model", {"connection_id": c.id, "model_id": "m-small"}, expected_version=0
+    )
+    addr["ip"] = "203.0.113.5"
+    with pytest.raises(AllModelsFailed, match="now points outside"):
         services.llm.chat("coach", U)
     assert sent_chats(scripted) == []
     assert services.privacy_log.list()[0].outcome == "blocked"

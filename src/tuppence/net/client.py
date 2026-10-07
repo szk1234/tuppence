@@ -1,12 +1,20 @@
-"""The only way Tuppence talks to the outside world (spec §4.6)."""
+"""The only way Tuppence talks to the outside world (spec §4.6).
+
+Every outbound request goes through `GuardedTransport`, which decides (and logs) whether it
+may leave, pins it to the address it vetted, and holds it to a wall-clock deadline.
+"""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import ssl
+import threading
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
+import httpcore
 import httpx
 
 from tuppence.core.clock import to_iso, utcnow
@@ -57,6 +65,113 @@ class MetadataHostBlocked(LocalOnlyBlocked):
         self.pinned = False
 
 
+class NotLocalAnyMore(LocalOnlyBlocked):
+    """A connection classed as local whose host now points outside the user's network."""
+
+    def __init__(self, host: str) -> None:
+        Exception.__init__(
+            self,
+            f"Tuppence didn't contact {host}: this connection is set up as local, but {host} "
+            "now points outside your computer or network. Press Test in Settings › AI to "
+            "check it again.",
+        )
+        self.host = host
+        self.pinned = False
+
+
+# --- wall-clock deadline -------------------------------------------------------------------
+# httpx's timeouts limit each socket operation, so a server that trickles bytes can hold a
+# call open indefinitely. The guard sets a deadline for the whole request (connect, send,
+# headers and body) and every socket operation below is given only the time that remains.
+
+_deadline = threading.local()
+
+
+def _time_left(timeout: float | None, expired: type[Exception]) -> float | None:
+    at: float | None = getattr(_deadline, "at", None)
+    if at is None:
+        return timeout
+    left = at - time.monotonic()
+    if left <= 0:
+        raise expired("The request ran past its time limit")
+    return left if timeout is None else min(timeout, left)
+
+
+class _DeadlineStream(httpcore.NetworkStream):
+    def __init__(self, inner: httpcore.NetworkStream) -> None:
+        self._inner = inner
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        return self._inner.read(max_bytes, _time_left(timeout, httpcore.ReadTimeout))
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self._inner.write(buffer, _time_left(timeout, httpcore.WriteTimeout))
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore.NetworkStream:
+        left = _time_left(timeout, httpcore.ConnectTimeout)
+        return _DeadlineStream(self._inner.start_tls(ssl_context, server_hostname, left))
+
+    def get_extra_info(self, info: str) -> Any:
+        return self._inner.get_extra_info(info)
+
+
+class _DeadlineBackend(httpcore.NetworkBackend):
+    def __init__(self) -> None:
+        self._inner = httpcore.SyncBackend()
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.NetworkStream:
+        left = _time_left(timeout, httpcore.ConnectTimeout)
+        return _DeadlineStream(
+            self._inner.connect_tcp(host, port, left, local_address, socket_options)
+        )
+
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.NetworkStream:  # pragma: no cover - Tuppence never uses unix sockets
+        left = _time_left(timeout, httpcore.ConnectTimeout)
+        return _DeadlineStream(self._inner.connect_unix_socket(path, left, socket_options))
+
+    def sleep(self, seconds: float) -> None:
+        self._inner.sleep(seconds)
+
+
+class DeadlineTransport(httpx.HTTPTransport):
+    """httpx's standard transport, with every socket operation held to the guard's deadline."""
+
+    def __init__(self) -> None:
+        super().__init__(retries=0)
+        limits = httpx.Limits()
+        # The pool httpx built has no connections yet; this one differs only in its backend.
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=httpx.create_ssl_context(),
+            max_connections=limits.max_connections,
+            max_keepalive_connections=limits.max_keepalive_connections,
+            keepalive_expiry=limits.keepalive_expiry,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=_DeadlineBackend(),
+        )
+
+
 class GuardedTransport(httpx.BaseTransport):
     def __init__(
         self,
@@ -64,8 +179,10 @@ class GuardedTransport(httpx.BaseTransport):
         ctx: CallContext,
         log: PrivacyLog,
         local_only: Callable[[], bool],
+        deadline_s: float | None = None,
     ) -> None:
         self.inner, self.ctx, self.log, self.local_only = inner, ctx, log, local_only
+        self.deadline_s = deadline_s  # wall-clock limit for each whole request
         # A pooled connection is keyed by the pinned address, so one client may only ever
         # serve one (scheme, hostname, port): each name needs its own verified connection.
         self._bound: tuple[str, str, int | None] | None = None
@@ -98,6 +215,13 @@ class GuardedTransport(httpx.BaseTransport):
             found = ["127.0.0.1"]
         return found, False  # the resolver's order is kept
 
+    def _block(
+        self, request: httpx.Request, host: str, note: str, exc: LocalOnlyBlocked
+    ) -> NoReturn:
+        """Log the refusal first (a log failure fails the call closed), then refuse."""
+        self.log.record(self._event(request, host, outcome="blocked", note=note))
+        raise exc
+
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         host = _wire_host(request)
         origin = (request.url.scheme, host, request.url.port)
@@ -105,23 +229,31 @@ class GuardedTransport(httpx.BaseTransport):
             self._bound = origin
         elif self._bound != origin:
             raise ValueError(f"This connection is set up for {self._bound[1]}")
+        metadata_note = "Cloud metadata address"
+        if hosts.is_metadata_name(host):
+            self._block(request, host, metadata_note, MetadataHostBlocked(host))
+        strict = self.ctx.purpose in GUARDED_PURPOSES and (
+            self.ctx.require_local or self.local_only()
+        )
+        if strict and not self.ctx.local:
+            # Decided by the connection's stored classification, before any DNS lookup:
+            # a blocked cloud host isn't even looked up.
+            self._refuse_non_local(request, host)
         addresses, literal = self._vet(host)
-        if hosts.is_metadata_name(host) or any(hosts.is_metadata_address(a) for a in addresses):
-            self.log.record(
-                self._event(request, host, outcome="blocked", note="Cloud metadata address")
-            )
-            raise MetadataHostBlocked(host)
+        if any(hosts.is_metadata_address(a) for a in addresses):
+            self._block(request, host, metadata_note, MetadataHostBlocked(host))
         local = bool(addresses) and all(hosts.is_local_address(a) for a in addresses)
-        if (
-            self.ctx.purpose in GUARDED_PURPOSES
-            and (self.ctx.require_local or self.local_only())
-            and not (self.ctx.local and local)
-        ):
-            pinned = self.ctx.require_local and not self.local_only()
-            note = "Task is set to local models only" if pinned else "Local only is on"
-            self.log.record(self._event(request, host, outcome="blocked", note=note))
-            raise LocalOnlyBlocked(host, pinned=pinned)
+        if self.ctx.local and addresses and not local:
+            # A connection classed as local is only ever used as local, whatever the
+            # Local only setting: its host must still point inside the user's network.
+            note = "Local connection now points outside your network"
+            self._block(request, host, note, NotLocalAnyMore(host))
+        if strict and not local:
+            self._refuse_non_local(request, host)
         body = request.read()
+        previous = getattr(_deadline, "at", None)
+        if self.deadline_s is not None:
+            _deadline.at = time.monotonic() + self.deadline_s
         try:
             response = self._send(request, host, addresses, literal)
             response.read()
@@ -137,6 +269,8 @@ class GuardedTransport(httpx.BaseTransport):
                 )
             )
             raise
+        finally:
+            _deadline.at = previous
         self._record_after_send(
             self._event(
                 request,
@@ -147,6 +281,11 @@ class GuardedTransport(httpx.BaseTransport):
             )
         )
         return response
+
+    def _refuse_non_local(self, request: httpx.Request, host: str) -> NoReturn:
+        pinned = self.ctx.require_local and not self.local_only()
+        note = "Task is set to local models only" if pinned else "Local only is on"
+        self._block(request, host, note, LocalOnlyBlocked(host, pinned=pinned))
 
     def _send(
         self, request: httpx.Request, host: str, addresses: list[str], literal: bool
@@ -189,9 +328,9 @@ def make_client(
     timeout: float,
     transport: httpx.BaseTransport | None = None,
 ) -> httpx.Client:
-    inner = transport or httpx.HTTPTransport(retries=0)
+    inner = transport or DeadlineTransport()
     return httpx.Client(
-        transport=GuardedTransport(inner, ctx, privacy_log, local_only),
+        transport=GuardedTransport(inner, ctx, privacy_log, local_only, deadline_s=timeout),
         timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
         follow_redirects=False,
         # No trust_env: env proxies are intentionally unused because the guard owns the transport.

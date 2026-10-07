@@ -309,3 +309,80 @@ def test_transport_error_text_never_carries_a_header_value(log):
         server.close()
     assert "PROBEKEY" not in str(exc.value)
     assert [e.note for e in log.list()] == ["LocalProtocolError"]
+
+
+def never(req):
+    pytest.fail("the request reached the network")
+
+
+def test_a_local_connection_whose_host_now_resolves_outside_is_refused(log, monkeypatch):
+    monkeypatch.setattr("tuppence.net.hosts._system_resolve", lambda h: ["10.0.0.5", "8.8.8.8"])
+    ctx = CallContext(purpose="llm", local=True, connection_id="c1")
+    with (
+        make_client(
+            ctx,
+            privacy_log=log,
+            local_only=lambda: False,
+            timeout=5,
+            transport=httpx.MockTransport(never),
+        ) as c,
+        pytest.raises(LocalOnlyBlocked) as exc,
+    ):
+        c.get("http://box.lan/v1/models")
+    assert "Test" in str(exc.value)
+    [e] = log.list()
+    assert e.outcome == "blocked" and e.connection_id == "c1" and e.bytes_out == 0
+
+
+def test_a_local_connection_to_a_public_address_is_refused_with_local_only_off(log):
+    ctx = CallContext(purpose="llm", local=True)
+    with (
+        make_client(
+            ctx,
+            privacy_log=log,
+            local_only=lambda: False,
+            timeout=5,
+            transport=httpx.MockTransport(never),
+        ) as c,
+        pytest.raises(LocalOnlyBlocked),
+    ):
+        c.get("http://8.8.8.8/v1/models")
+    assert log.list()[0].outcome == "blocked"
+
+
+def test_a_blocked_cloud_connection_never_looks_its_name_up(log, monkeypatch):
+    seen = []
+    monkeypatch.setattr("tuppence.net.hosts._system_resolve", lambda h: seen.append(h) or [])
+    for local_only, require_local in ((True, False), (False, True)):
+        ctx = CallContext(purpose="llm", local=False, require_local=require_local)
+        with (
+            make_client(
+                ctx,
+                privacy_log=log,
+                local_only=lambda flag=local_only: flag,
+                timeout=5,
+                transport=httpx.MockTransport(never),
+            ) as c,
+            pytest.raises(LocalOnlyBlocked),
+        ):
+            c.get("https://api.example.com/v1/models")
+    assert seen == []
+    assert [e.outcome for e in log.list()] == ["blocked", "blocked"]
+
+
+def test_metadata_names_are_refused_without_being_looked_up(log, monkeypatch):
+    seen = []
+    monkeypatch.setattr("tuppence.net.hosts._system_resolve", lambda h: seen.append(h) or [])
+    ctx = CallContext(purpose="market")
+    with (
+        make_client(
+            ctx,
+            privacy_log=log,
+            local_only=lambda: False,
+            timeout=5,
+            transport=httpx.MockTransport(never),
+        ) as c,
+        pytest.raises(LocalOnlyBlocked),
+    ):
+        c.get("http://metadata.google.internal/computeMetadata/v1/")
+    assert seen == []

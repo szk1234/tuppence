@@ -91,7 +91,8 @@ class DetectedServer(BaseModel):
 def _locality(preset_id: str, base_url: str) -> bool:
     if PRESETS[preset_id].kind == "cloud":
         return False
-    return is_local_host(httpx.URL(base_url).host)
+    # The IDNA (ASCII) name the guard resolves and connects to, not httpx's decoded form.
+    return is_local_host(httpx.URL(base_url).raw_host.decode("ascii"))
 
 
 def _printable(text: str, *, spaces: bool) -> bool:
