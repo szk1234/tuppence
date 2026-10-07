@@ -1,16 +1,22 @@
 <script lang="ts">
   import Notice from '../components/Notice.svelte'
   import { api, ApiError } from '../lib/api'
-  import { navigate } from '../lib/router.svelte'
-  import { applySession, type SessionInfo } from '../lib/session.svelte'
+  import { leaveSignInPage } from '../lib/router.svelte'
+  import { applySession, loadSession, type SessionInfo } from '../lib/session.svelte'
   let username = $state('')
   let password = $state('')
   let error = $state('')
   let busy = $state(false)
   async function submit(e: SubmitEvent) {
     e.preventDefault(); error = ''; busy = true
-    try { applySession(await api<SessionInfo>('/api/auth/setup', { method: 'POST', body: { username, password } })); navigate('/') }
-    catch (err) { error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
+    try { applySession(await api<SessionInfo>('/api/auth/setup', { method: 'POST', body: { username, password } })); leaveSignInPage() }
+    catch (err) {
+      // Someone else finished setup (another tab or device): reload, which shows sign-in.
+      if (err instanceof ApiError && err.status === 409) {
+        try { await loadSession(); return } catch { /* fall through and show the message */ }
+      }
+      error = err instanceof ApiError ? err.detail : 'Something went wrong.'
+    }
     finally { busy = false }
   }
 </script>
