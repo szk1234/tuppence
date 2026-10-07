@@ -53,27 +53,33 @@ LABELS: dict[str, re.Pattern[str]] = {
         r"\b(?:account|acct?|a/c)\.?\s*(?:no\.?|num(?:ber)?|name|holders?|type)\b", _I
     ),
     "customer_label": re.compile(
-        r"\b(?:customer|membership|roll)\s*(?:no\.?|num(?:ber)?|id)\b", _I
+        r"\b(?:customer|membership|roll)\s*(?:no\.?|num(?:ber)?|id|ref(?:erence)?)\b", _I
     ),
     "sort_code_label": re.compile(r"\bsort\s*code\b", _I),
     "card_label": re.compile(r"\bcard\s+(?:ending|number|no\.?)\b", _I),
     "bank_code_label": re.compile(r"\biban\b|\bbic\b", _I),
-    "holder_label": re.compile(r"^\s*holder\b", _I),
+    "holder_label": re.compile(r"^\s*(?:holder\b|name\s*:|joint\s+account\s*:)", _I),
 }
 VALUES: dict[str, re.Pattern[str]] = {
     # an account, sort code or roll number after its abbreviation: "A/C 12345678",
     # "Acct -71004", "s/c: 123456"
     "account_number": re.compile(
-        r"(?<![\w/])(?:account|acct?|a/c|s/c|s\.c\.)\.?\s*(?::\s*)?(?:#\s*)?(?:[-−–]\s*)?"
+        r"(?<![\w/])(?:account|acct?|ac|a/c|s/c|s\.c\.|sc)\.?\s*(?::\s*)?(?:#\s*)?(?:[-−–]\s*)?"
         r"\d[\d -]{3,}\d",
         _I,
     ),
     "sort_code": re.compile(r"\b\d{2}-\d{2}-\d{2}\b", _I),
-    "card_number": re.compile(r"\b(?:\d[ -]?){12,18}\d\b", _I),
+    # a full card number; laid-out text may leave a wide gap between its groups of four
+    "card_number": re.compile(r"\b(?:\d[ -]?){12,18}\d\b|\b\d{4}(?:[ -]{1,3}\d{4}){3}\b", _I),
     "card_ending": re.compile(
-        r"\bending\s+(?:in\s+)?\d{4}\b|\*{2,}[\s-]*\d{2,4}|(?<![a-z])x{2,}[\s-]*\d{4}\b"
-        r"|\b\d{4}[\s-]*\*{2,}",
+        r"\bending\s+(?:in\s+)?\d{3,4}\b|\*{2,}[\s-]*\d{2,4}|(?<![a-z])x{2,}[\s-]*\d{4}\b"
+        r"|\b\d{4}[\s-]*\*{2,}"
+        # the last digits behind bullets, dots or an ellipsis: "•••• 4242", "...4242", "…4242"
+        r"|[•●·∙◦∗]{2,}[\s-]*\d{2,4}(?![.,]?\d)|(?:…|\.{3,})\s*\d{4}(?![.,]?\d)",
         _I,
+    ),
+    "swift_code": re.compile(
+        r"\b(?i:swift)(?:\s+(?i:code))?\s*(?::\s*)?[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b"
     ),
     "iban": re.compile(r"\b[A-Z]{2}\d{2}\s?[A-Z0-9]{4}(?:\s?\d{4}){2,}(?:\s?[A-Z0-9]{1,4})?\b", _I),
     "postcode": re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b", _I),
@@ -82,7 +88,7 @@ VALUES: dict[str, re.Pattern[str]] = {
     ),
     # A title and a name. "Dr" before column vocabulary ("Dr Amount") is a debit column.
     "holder_name": re.compile(
-        r"^\s*(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+"
+        r"^\s*(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+(?:&\s*(?:mr|mrs|ms|miss|mx|dr)\.?\s+)?"
         r"(?!(?:amount|amt|total|value|balance|debit|credit|cr|dr|ref)\b)[A-Za-z]"
         r"|^\s*(?:statement|prepared)\s+for\b",
         _I,
@@ -117,8 +123,8 @@ def _words(text: str) -> list[str]:
 
 @lru_cache(maxsize=64)
 def _name_forms(names: tuple[str, ...]) -> frozenset[str]:
-    """Each household name as it may be printed: in full, first name and surname, or an
-    initial and surname ("A EXAMPLE", "A. Example")."""
+    """Each household name as it may be printed: in full, first name and surname, an initial
+    and surname ("A EXAMPLE", "A. Example"), or surname first ("Example, Alex", "EXAMPLE A")."""
     forms: set[str] = set()
     for name in names:
         words = _words(name)
@@ -130,6 +136,8 @@ def _name_forms(names: tuple[str, ...]) -> frozenset[str]:
                 f"{words[0]} {words[-1]}",
                 f"{words[0][0]} {words[-1]}",
                 " ".join([words[0][0], *words[1:]]),
+                f"{words[-1]} {words[0]}",
+                f"{words[-1]} {words[0][0]}",
             }
         )
     return frozenset(forms)

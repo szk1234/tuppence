@@ -174,3 +174,19 @@ def test_app_balance_headers_are_held_back_without_a_coverage_error(ingest_env, 
     assert "1,184.56" not in sent and "1184.56" not in sent and "1,084.56" not in sent
     assert "LITTLE CAFE -£12.80" in sent and "CITY WATER -£31.15" in sent
     assert not any("held back" in e for e in out.errors)
+
+
+def test_a_masked_card_ending_is_never_sent(ingest_env):
+    services, scripted = ingest_env
+    rows = [
+        "Current account",
+        "LITTLE CAFE -£12.80",
+        "Card •••• 4242",
+        "Visa Debit ...4242",
+        "Card …4242",
+        "5 Oct CITY WATER -£31.15",
+    ]
+    doc = shot(rows)
+    assert texts(doc, doc.data_refs) == ["LITTLE CAFE -£12.80", "5 Oct CITY WATER -£31.15"]
+    parse_shot(services, rows)
+    assert "4242" not in json.dumps(scripted.requests, ensure_ascii=False)
