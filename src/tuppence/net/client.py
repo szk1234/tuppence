@@ -65,6 +65,9 @@ class GuardedTransport(httpx.BaseTransport):
         local_only: Callable[[], bool],
     ) -> None:
         self.inner, self.ctx, self.log, self.local_only = inner, ctx, log, local_only
+        # A pooled connection is keyed by the pinned address, so one client may only ever
+        # serve one (scheme, hostname, port): each name needs its own verified connection.
+        self._bound: tuple[str, str, int | None] | None = None
 
     def _event(self, request: httpx.Request, host: str, **kw: Any) -> PrivacyEvent:
         base: dict[str, Any] = {
@@ -92,11 +95,15 @@ class GuardedTransport(httpx.BaseTransport):
         found = hosts._system_resolve(host)
         if not found and host == "localhost":
             found = ["127.0.0.1"]
-        # IPv4 first, so the pinned choice is stable.
-        return sorted(found, key=lambda a: (":" in a, a)), False
+        return found, False  # the resolver's order is kept
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         host = _wire_host(request)
+        origin = (request.url.scheme, host, request.url.port)
+        if self._bound is None:
+            self._bound = origin
+        elif self._bound != origin:
+            raise ValueError(f"This connection is set up for {self._bound[1]}")
         addresses, literal = self._vet(host)
         if hosts.is_metadata_name(host) or any(hosts.is_metadata_address(a) for a in addresses):
             self.log.record(
@@ -115,8 +122,7 @@ class GuardedTransport(httpx.BaseTransport):
             raise LocalOnlyBlocked(host, pinned=pinned)
         body = request.read()
         try:
-            self._pin(request, host, addresses, literal)
-            response = self.inner.handle_request(request)
+            response = self._send(request, host, addresses, literal)
             response.read()
         except Exception as exc:
             # Class name only: exception text can echo header values (API keys).
@@ -141,17 +147,27 @@ class GuardedTransport(httpx.BaseTransport):
         )
         return response
 
-    def _pin(self, request: httpx.Request, host: str, addresses: list[str], literal: bool) -> None:
-        """Connect to the address that was vetted, not to whatever the name resolves to later."""
+    def _send(
+        self, request: httpx.Request, host: str, addresses: list[str], literal: bool
+    ) -> httpx.Response:
+        """Try each vetted address in the resolver's order; move on only if none was reached."""
         if literal:
-            return
+            return self.inner.handle_request(request)
         if not addresses:
             if isinstance(self.inner, httpx.HTTPTransport):
                 raise httpx.ConnectError(f"Couldn't resolve {host}")
-            return  # a test transport never resolves names
-        request.url = request.url.copy_with(host=addresses[0])  # Host header is unchanged
+            return self.inner.handle_request(request)  # a test transport never resolves names
         if request.url.scheme == "https":
             request.extensions["sni_hostname"] = host.rstrip(".")
+        for position, address in enumerate(addresses):
+            request.url = request.url.copy_with(host=address)  # Host header is unchanged
+            try:
+                return self.inner.handle_request(request)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                # Raised while connecting, before any request bytes were sent.
+                if position == len(addresses) - 1:
+                    raise
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _record_after_send(self, event: PrivacyEvent) -> None:
         # The request has already left; a log failure must not turn it into a failed call.

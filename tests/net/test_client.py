@@ -131,7 +131,7 @@ def test_suffix_name_resolving_public_is_blocked(log, monkeypatch):
         c.get("http://box.lan/v1")
 
 
-def test_redirect_hop_to_public_host_is_blocked(log):
+def test_redirect_hop_to_another_host_is_refused(log):
     def handler(req):
         if req.url.host == "127.0.0.1":
             return httpx.Response(302, headers={"Location": "http://8.8.8.8/steal"})
@@ -146,10 +146,11 @@ def test_redirect_hop_to_public_host_is_blocked(log):
             timeout=5,
             transport=httpx.MockTransport(handler),
         ) as c,
-        pytest.raises(LocalOnlyBlocked),
+        pytest.raises(ValueError, match="set up for 127.0.0.1"),
     ):
+        # A client serves one hostname, so a hop to another host is refused before connecting.
         c.get("http://127.0.0.1/x", follow_redirects=True)
-    assert [e.outcome for e in reversed(log.list())] == ["sent", "blocked"]
+    assert [e.outcome for e in reversed(log.list())] == ["sent"]
 
 
 def test_error_note_never_contains_secrets(log):
@@ -201,22 +202,24 @@ def test_guard_resolves_the_exact_wire_host(log, monkeypatch):
     seen = []
     monkeypatch.setattr("tuppence.net.hosts._system_resolve", lambda h: seen.append(h) or [])
     ctx = CallContext(purpose="llm", local=True)
-    with make_client(
-        ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
-    ) as c:
-        for url in ("http://ai./v1", "http://localhost./v1", "http://10.0.0.1%25.evil.example/v1"):
-            with pytest.raises(LocalOnlyBlocked):
-                c.get(url)
+    for url in ("http://ai./v1", "http://localhost./v1", "http://10.0.0.1%25.evil.example/v1"):
+        with (
+            make_client(
+                ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
+            ) as c,
+            pytest.raises(LocalOnlyBlocked),
+        ):
+            c.get(url)
     assert seen == ["ai.", "localhost.", "10.0.0.1%25.evil.example"]
 
 
 def test_bracketed_ipv6_literal_through_the_guard(log):
     ctx = CallContext(purpose="llm", local=True)
-    with make_client(
-        ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
-    ) as c:
-        assert c.get("http://[::1]:11434/v1").status_code == 200
-        assert c.get("http://[fe80::1]:11434/v1").status_code == 200
+    for url in ("http://[::1]:11434/v1", "http://[fe80::1]:11434/v1"):
+        with make_client(
+            ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
+        ) as c:
+            assert c.get(url).status_code == 200
 
 
 def test_log_failure_after_send_does_not_fail_the_call(log, caplog):

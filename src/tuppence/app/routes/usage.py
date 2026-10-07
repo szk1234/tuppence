@@ -20,6 +20,8 @@ def usage(services: Svc, month: str | None = None) -> dict[str, Any]:
         try:
             year, mon = (int(x) for x in month.split("-"))
             date(year, mon, 1)
+            if not 2000 <= year <= 2100:
+                raise ValueError(year)
         except ValueError:
             raise InputError("Use the month format YYYY-MM.") from None
     else:

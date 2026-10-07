@@ -260,6 +260,127 @@ def test_embedded_address_unwrapping():
 
 def test_real_local_servers_still_work_under_local_only(log, server):
     ctx = CallContext(purpose="llm", local=True)
-    with make_client(ctx, privacy_log=log, local_only=lambda: True, timeout=5) as c:
-        assert c.get(f"http://127.0.0.1:{server.server_port}/").status_code == 200
-        assert c.get(f"http://localhost:{server.server_port}/").status_code == 200
+    for name in ("127.0.0.1", "localhost"):
+        with make_client(ctx, privacy_log=log, local_only=lambda: True, timeout=5) as c:
+            assert c.get(f"http://{name}:{server.server_port}/").status_code == 200
+
+
+# --- one hostname per client; every vetted address is tried ---------------------------------
+
+
+def test_a_second_hostname_on_the_same_client_is_refused(log, monkeypatch):
+    monkeypatch.setattr(hosts, "_system_resolve", lambda h: ["10.1.2.3"])
+    reached = []
+    inner = httpx.MockTransport(lambda r: reached.append(r.url.host) or httpx.Response(200))
+    ctx = CallContext(purpose="llm", local=True)
+    with make_client(
+        ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=inner
+    ) as c:
+        assert c.get("http://one.example/v1").status_code == 200
+        assert c.get("http://one.example/again").status_code == 200
+        with pytest.raises(ValueError, match="set up for one.example"):
+            c.get("http://two.example/v1")
+        with pytest.raises(ValueError):
+            c.get("https://one.example/v1")
+    assert reached == ["10.1.2.3", "10.1.2.3"]
+
+
+def test_a_localhost_server_on_ipv6_only_works_under_local_only(log):
+    try:
+        srv = HTTPServer(("::1", 0), Hello, bind_and_activate=False)
+        srv.address_family = socket.AF_INET6
+        srv.server_bind()
+        srv.server_activate()
+    except OSError:
+        pytest.skip("no IPv6 loopback")
+    srv.address_family = socket.AF_INET6
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        ctx = CallContext(purpose="llm", local=True)
+        with make_client(ctx, privacy_log=log, local_only=lambda: True, timeout=5) as c:
+            r = c.get(f"http://localhost:{srv.server_port}/x")
+        assert r.status_code == 200
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_the_next_address_is_used_when_the_first_refuses(log, server, monkeypatch):
+    closed = socket.socket()
+    closed.bind(("127.0.0.2", 0))
+    port_closed = closed.getsockname()[1]
+    closed.close()
+    monkeypatch.setattr(hosts, "_system_resolve", lambda h: ["127.0.0.2", "127.0.0.1"])
+    ctx = CallContext(purpose="llm", local=True)
+    # Both addresses share one port number in this check, so serve it on the open address.
+    srv = HTTPServer(("127.0.0.1", port_closed), Hello)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with make_client(ctx, privacy_log=log, local_only=lambda: True, timeout=5) as c:
+            r = c.get(f"http://box.lan:{port_closed}/x")
+        assert r.status_code == 200
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_all_addresses_failing_to_connect_raises_the_last_error(log, monkeypatch):
+    monkeypatch.setattr(hosts, "_system_resolve", lambda h: ["127.0.0.2", "127.0.0.3"])
+    seen = []
+
+    def refuse(req):
+        seen.append(req.url.host)
+        raise httpx.ConnectError("refused")
+
+    ctx = CallContext(purpose="llm", local=True)
+    with (
+        make_client(
+            ctx,
+            privacy_log=log,
+            local_only=lambda: True,
+            timeout=5,
+            transport=httpx.MockTransport(refuse),
+        ) as c,
+        pytest.raises(httpx.ConnectError),
+    ):
+        c.get("http://box.lan/x")
+    assert seen == ["127.0.0.2", "127.0.0.3"]
+
+
+def test_only_connect_errors_fall_through_to_the_next_address(log, monkeypatch):
+    monkeypatch.setattr(hosts, "_system_resolve", lambda h: ["127.0.0.2", "127.0.0.3"])
+    seen = []
+
+    def read_fails(req):
+        seen.append(req.url.host)
+        raise httpx.ReadError("dropped")
+
+    ctx = CallContext(purpose="llm", local=True)
+    with (
+        make_client(
+            ctx,
+            privacy_log=log,
+            local_only=lambda: True,
+            timeout=5,
+            transport=httpx.MockTransport(read_fails),
+        ) as c,
+        pytest.raises(httpx.ReadError),
+    ):
+        c.get("http://box.lan/x")
+    assert seen == ["127.0.0.2"]
+
+
+def test_a_blocked_address_in_the_set_fails_the_whole_request(log, monkeypatch):
+    monkeypatch.setattr(hosts, "_system_resolve", lambda h: ["127.0.0.1", "169.254.169.254"])
+    ctx = CallContext(purpose="llm", local=True)
+    with (
+        make_client(
+            ctx,
+            privacy_log=log,
+            local_only=lambda: True,
+            timeout=5,
+            transport=httpx.MockTransport(lambda r: pytest.fail("reached")),
+        ) as c,
+        pytest.raises(LocalOnlyBlocked),
+    ):
+        c.get("http://mixed.lan/x")

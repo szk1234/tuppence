@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
+
 from tuppence.core.errors import InputError
 
 ApiStyle = Literal["openai", "anthropic", "gemini"]
@@ -75,7 +77,18 @@ PRESETS: dict[str, Preset] = {
 
 def normalise_base_url(url: str, api_style: str) -> str:
     raw = url.strip()
-    parts = urlsplit(raw)
+    if len(raw) > 2048:
+        raise InputError("That address is too long.")
+    try:
+        parts = urlsplit(raw)
+        parts.port  # noqa: B018 - raises ValueError for a bad port
+        if parts.netloc and not parts.hostname:
+            raise ValueError("no host")
+        httpx.URL(raw)
+    except (ValueError, httpx.InvalidURL):
+        raise InputError(
+            "That isn't a valid address. Use something like http://localhost:11434."
+        ) from None
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise InputError("The base URL must start with http:// or https://")
     if parts.username is not None or parts.password is not None or "@" in parts.netloc:

@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from tuppence.app.deps import get_services
+from tuppence.app.deps import get_services, require_admin
 from tuppence.app.services import Services
 from tuppence.core.settings_store import SettingEntry
 
 Svc = Annotated[Services, Depends(get_services)]
+
+ADMIN_PREFIXES = ("llm.", "privacy.")
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -25,7 +27,9 @@ def list_settings(services: Svc) -> dict[str, list[SettingEntry]]:
 
 
 @router.patch("/{key}")
-def update_setting(key: str, body: SettingUpdate, services: Svc) -> SettingEntry:
+def update_setting(key: str, body: SettingUpdate, services: Svc, request: Request) -> SettingEntry:
+    if key.startswith(ADMIN_PREFIXES):
+        require_admin(request)  # shared AI and privacy choices
     try:
         return services.settings.set(key, body.value, expected_version=body.expected_version)
     except KeyError:

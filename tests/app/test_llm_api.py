@@ -338,6 +338,10 @@ def test_non_admin_cannot_change_ai_in_server_mode(client, member, scripted):
         ),
         member.post("/api/llm/try", json={"task": "coach", "prompt": "hi"}),
         member.post("/api/llm/secrets/forget"),
+        member.patch(
+            f"/api/llm/models/{conn['id']}/m-small",
+            json={"context_window": 4096, "expected_version": 1},
+        ),
     ]
     for r in calls:
         assert r.status_code == 403 and r.json()["detail"] == msg, r.request.url
@@ -439,7 +443,37 @@ def test_bad_inputs_are_422_not_500(client, scripted):
     assert neg.status_code == 422
     assert client.post("/api/llm/try", json={"task": "dancing", "prompt": "hi"}).status_code == 422
     assert client.post("/api/llm/try", json={"task": "coach", "prompt": ""}).status_code == 422
+    conn2 = make_conn(client, preset="custom")
+    for bad in ("http://[::1", "http://host:99999999", "http://", "http://" + "a" * 3000):
+        up = client.patch(
+            f"/api/llm/connections/{conn2['id']}",
+            json={"changes": {"base_url": bad}, "expected_version": 1},
+        )
+        assert up.status_code == 422, bad
+    for bad in ("http://[::1", "http://host:99999999"):
+        made = client.post("/api/llm/connections", json={"preset": "custom", "base_url": bad})
+        assert made.status_code == 422, bad
+    assert client.get("/api/usage?month=9999-12").status_code == 422
+    assert client.get("/api/usage?month=0001-01").status_code == 422
     huge = client.patch(
         "/api/settings/llm.monthly_cap_gbp", json={"value": 1e9, "expected_version": 0}
     )
     assert huge.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("llm.mode", "advanced"), ("llm.simple_model", None), ("privacy.local_only", True)],
+)
+def test_non_admin_cannot_change_shared_ai_and_privacy_settings(client, member, key, value):
+    r = member.patch(f"/api/settings/{key}", json={"value": value, "expected_version": 0})
+    assert r.status_code == 403
+    assert r.json()["detail"] == "Only the household admin can change AI connections."
+    ok = client.patch(f"/api/settings/{key}", json={"value": value, "expected_version": 0})
+    assert ok.status_code == 200
+
+
+def test_non_admin_can_still_change_other_settings(client, member):
+    keys = [e["key"] for e in client.get("/api/settings").json()["settings"]]
+    other = [k for k in keys if not k.startswith(("llm.", "privacy."))]
+    assert other  # the permission is about shared AI and privacy keys only

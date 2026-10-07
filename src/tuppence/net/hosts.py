@@ -24,7 +24,7 @@ _LOCAL_NETWORKS = tuple(
 
 def _system_resolve(host: str) -> list[str]:
     try:
-        return sorted({str(info[4][0]) for info in socket.getaddrinfo(host, None)})
+        return list(dict.fromkeys(str(info[4][0]) for info in socket.getaddrinfo(host, None)))
     except (OSError, UnicodeError):
         return []
 
