@@ -4,9 +4,11 @@ broken file can hang or exhaust only the child process, never the app."""
 
 from __future__ import annotations
 
+import base64
+import json
 import multiprocessing
 import os
-import pickle
+import re
 import shutil
 import socket
 import sys
@@ -15,9 +17,11 @@ import time
 from collections.abc import Callable
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 from tuppence.core.errors import UserFacing
+from tuppence.ingest.refusals import MESSAGES, OutOfMemory, ReplyTooLarge
+from tuppence.ingest.results import BadReply, parse_scalar
 
 POLL_S = 0.2
 MAX_RESULT_BYTES = 50 * 1024 * 1024
@@ -100,38 +104,100 @@ def _limit_memory(memory_mb: int) -> None:
         pass  # the watch and the caps still apply
 
 
+def _json_default(value: object) -> object:
+    if isinstance(value, bytes):
+        return {"$b64": base64.b64encode(value).decode("ascii")}
+    raise TypeError(type(value).__name__)
+
+
 def _child(conn: Connection, fn: Callable[..., Any], args: tuple[Any, ...], memory_mb: int) -> None:
+    """Runs `fn` and sends the parent either `{"ok": result}` or `{"error": "<TypeName>"}`,
+    as JSON bytes. The parent never unpickles anything from here."""
     workdir = Path(tempfile.mkdtemp(prefix="tuppence-sandbox-"))
     try:
         os.chdir(workdir)  # anything the reader writes lands in a private, throwaway folder
         _disable_network()
         _limit_memory(memory_mb)
-        payload = pickle.dumps(("ok", fn(*args)), pickle.HIGHEST_PROTOCOL)
+        payload = json.dumps({"ok": fn(*args)}, default=_json_default, allow_nan=False).encode()
         if len(payload) > MAX_RESULT_BYTES:
-            payload = pickle.dumps(
-                ("error", "This file contains more text than Tuppence can handle."),
-                pickle.HIGHEST_PROTOCOL,
-            )
+            raise ReplyTooLarge
         conn.send_bytes(payload)
     except MemoryError:
-        _send_error(conn, "This file needs more memory to read than Tuppence allows.")
+        _send_error(conn, OutOfMemory.__name__)
     except BaseException as exc:  # noqa: BLE001 - every failure goes back to the parent
-        if isinstance(exc, UserFacing):  # our own message, worded for people
-            _send_error(conn, str(exc))
-        else:
-            _send_error(conn, f"This file couldn't be read ({type(exc).__name__}).")
+        _send_error(conn, type(exc).__name__)
     finally:
         conn.close()
         os.chdir(tempfile.gettempdir())
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _send_error(conn: Connection, message: str) -> None:
-    conn.send_bytes(pickle.dumps(("error", message), pickle.HIGHEST_PROTOCOL))
+def _send_error(conn: Connection, name: str) -> None:
+    conn.send_bytes(json.dumps({"error": name}).encode())
 
 
-def run_isolated[T](fn: Callable[..., T], *args: Any, timeout_s: float, memory_mb: int = 2048) -> T:
-    """Call module-level `fn(*args)` in a fresh process. The result must be picklable."""
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,60}")
+
+
+def _error_message(name: object) -> str:
+    """Plain words for an error name from the child. Only names Tuppence registered have
+    their own message; any other name is shown only if it looks like a class name."""
+    if isinstance(name, str) and name in MESSAGES:
+        return MESSAGES[name]
+    if isinstance(name, str) and _NAME.fullmatch(name):
+        return f"This file couldn't be read ({name})."
+    return "This file couldn't be read."
+
+
+def _decode_reply[T](raw: bytes, parse: Callable[[Any], T]) -> T:
+    """The child's reply: JSON, checked by `parse`. Anything else is a failed read."""
+    try:
+        reply = json.loads(raw, parse_constant=_reject_constant)
+        if isinstance(reply, dict) and set(reply) == {"error"}:
+            raise SandboxFailed(_error_message(reply["error"]))
+        if not isinstance(reply, dict) or set(reply) != {"ok"}:
+            raise BadReply("unexpected reply")
+        return parse(reply["ok"])
+    except SandboxFailed:
+        raise
+    except (ValueError, RecursionError, UnicodeDecodeError):  # BadReply is a ValueError
+        raise SandboxFailed("The file reader sent back something unexpected.") from None
+
+
+def _reject_constant(name: str) -> object:
+    raise ValueError(name)  # NaN and Infinity aren't JSON
+
+
+@overload
+def run_isolated(
+    fn: Callable[..., Any], *args: Any, timeout_s: float, memory_mb: int = 2048
+) -> Any: ...
+
+
+@overload
+def run_isolated[T](
+    fn: Callable[..., Any],
+    *args: Any,
+    timeout_s: float,
+    memory_mb: int = 2048,
+    parse: Callable[[Any], T],
+) -> T: ...
+
+
+def run_isolated(
+    fn: Callable[..., Any],
+    *args: Any,
+    timeout_s: float,
+    memory_mb: int = 2048,
+    parse: Callable[[Any], Any] = parse_scalar,
+) -> Any:
+    """Call module-level `fn(*args)` in a fresh process and return `parse(its result)`.
+
+    `args` reach the child through the spawn arguments (the parent is trusted). The
+    child's reply comes back as JSON only: it is size-capped, parsed with `json.loads`
+    and checked by `parse` (a validator from `tuppence.ingest.results`). Nothing the child
+    sends is ever unpickled, so a compromised parser can't run code in the app.
+    """
     ctx = multiprocessing.get_context("spawn")
     parent, child = ctx.Pipe(duplex=False)
     process = ctx.Process(target=_child, args=(child, fn, args, memory_mb), daemon=True)
@@ -148,17 +214,17 @@ def run_isolated[T](fn: Callable[..., T], *args: Any, timeout_s: float, memory_m
                 )
             if parent.poll(min(POLL_S, remaining)):
                 try:
-                    status, value = pickle.loads(  # noqa: S301 - our own child's reply
-                        parent.recv_bytes(MAX_RESULT_BYTES + 4096)
-                    )
-                except (EOFError, OSError):
+                    raw = parent.recv_bytes(MAX_RESULT_BYTES + 4096)
+                except EOFError:
                     raise SandboxFailed(
                         "The file reader stopped unexpectedly. The file may be damaged."
                     ) from None
+                except OSError:  # a reply longer than the cap
+                    raise SandboxFailed("The file reader sent back something unexpected.") from None
                 break
             used = resident_mb(process.pid or 0)
             if used is not None and used > memory_mb:
-                raise SandboxFailed("This file needs more memory to read than Tuppence allows.")
+                raise SandboxFailed(OutOfMemory.message)
             if not process.is_alive() and not parent.poll(0):
                 raise SandboxFailed(
                     "The file reader stopped unexpectedly. The file may be damaged."
@@ -168,6 +234,4 @@ def run_isolated[T](fn: Callable[..., T], *args: Any, timeout_s: float, memory_m
             process.kill()
         process.join(5)
         parent.close()
-    if status == "ok":
-        return value
-    raise SandboxFailed(value)
+    return _decode_reply(raw, parse)

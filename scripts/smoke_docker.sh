@@ -17,12 +17,13 @@ if uv run --quiet python scripts/smoke_http.py "http://127.0.0.1:${PORT}" --time
   docker exec "$NAME" /app/.venv/bin/python -c "
 from PIL import Image, ImageDraw
 from tuppence.ingest.ocr import image_rows
+from tuppence.ingest.results import parse_image_rows
 from tuppence.ingest.sandbox import run_isolated
 if __name__ == '__main__':
     image = Image.new('RGB', (480, 90), 'white')
     ImageDraw.Draw(image).text((10, 20), 'Greenbasket Stores 42.18', fill='black', font_size=32)
     image.save('/tmp/ocr-smoke.png')
-    assert run_isolated(image_rows, '/tmp/ocr-smoke.png', timeout_s=90)['rows']
+    assert run_isolated(image_rows, '/tmp/ocr-smoke.png', timeout_s=90, parse=parse_image_rows).rows
 " || { echo "smoke: FAILED on-device OCR does not run in the image"; exit 1; }
   # the real UI (not the "UI not built" page) must be served at /
   curl -fsS "http://127.0.0.1:${PORT}/" | grep -q 'id="app"' \

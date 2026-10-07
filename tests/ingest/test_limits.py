@@ -47,7 +47,7 @@ def test_a_page_with_a_huge_media_box_is_rendered_within_the_cap(tmp_path):
 def test_a_pdf_with_a_huge_page_tree_is_refused_quickly(tmp_path):
     pdf = hostile_pdfs.many_pages(tmp_path / "many.pdf", 150_000)
     started = time.monotonic()
-    with pytest.raises(SandboxFailed, match=r"150,000 pages.*up to 50"):
+    with pytest.raises(SandboxFailed, match="far more pages than Tuppence reads"):
         extract_document(pdf, "pdf", sha256="x", limits=LIMITS)
     assert time.monotonic() - started < 20
 
@@ -55,17 +55,17 @@ def test_a_pdf_with_a_huge_page_tree_is_refused_quickly(tmp_path):
 def test_a_word_flood_page_is_refused_quickly(tmp_path):
     pdf = hostile_pdfs.word_flood(tmp_path / "flood.pdf", 100_000)
     started = time.monotonic()
-    with pytest.raises(SandboxFailed, match="Page 1 has too much text to read safely"):
+    with pytest.raises(SandboxFailed, match="has too much text to read safely"):
         extract_document(pdf, "pdf", sha256="x", limits=LIMITS)
     assert time.monotonic() - started < 60
 
 
 def test_a_page_with_too_many_words_is_refused(fixtures, monkeypatch):
     from tuppence.ingest import pdftext
-    from tuppence.ingest.pdftext import PdfRefused
+    from tuppence.ingest.refusals import PdfPageTooManyWords
 
     monkeypatch.setattr(pdftext, "MAX_WORDS_PER_PAGE", 50)
-    with pytest.raises(PdfRefused, match="Page 1 has too many words"):
+    with pytest.raises(PdfPageTooManyWords):
         pdftext.pdf_pages(str(fixtures / "pdf" / "card-text.pdf"), 50, True)
 
 

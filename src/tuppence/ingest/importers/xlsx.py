@@ -6,6 +6,7 @@ import zipfile
 from datetime import date, datetime
 
 from tuppence.core.errors import UserFacing
+from tuppence.ingest.refusals import Refusal
 
 MAX_ROWS = 20_000
 MAX_COLUMNS = 200
@@ -17,14 +18,26 @@ class WorkbookRejected(UserFacing, ValueError):
     """The workbook can't be opened safely."""
 
 
+class NotAWorkbook(Refusal, WorkbookRejected):
+    message = "That doesn't look like an Excel workbook."
+
+
+class WorkbookTooLarge(Refusal, WorkbookRejected):
+    message = "That workbook is too large to read safely."
+
+
+class WorkbookTooManyRows(Refusal, WorkbookRejected):
+    message = "That workbook has too many rows to read safely."
+
+
 def _check_zip(path: str) -> None:
     try:
         with zipfile.ZipFile(path) as archive:
             infos = archive.infolist()
     except zipfile.BadZipFile:
-        raise WorkbookRejected("That doesn't look like an Excel workbook.") from None
+        raise NotAWorkbook from None
     if len(infos) > MAX_ENTRIES or sum(i.file_size for i in infos) > MAX_UNPACKED_BYTES:
-        raise WorkbookRejected("That workbook is too large to read safely.")
+        raise WorkbookTooLarge
 
 
 def cell_text(value: object) -> str:
@@ -49,7 +62,7 @@ def xlsx_records(path: str) -> list[tuple[int, str, list[str]]]:
     try:
         book = openpyxl.load_workbook(path, read_only=True, data_only=True)
     except (KeyError, ValueError, OSError, SyntaxError):  # SyntaxError: XML ParseError
-        raise WorkbookRejected("That doesn't look like an Excel workbook.") from None
+        raise NotAWorkbook from None
     try:
         for sheet in book.worksheets:
             out: list[tuple[int, str, list[str]]] = []
@@ -59,7 +72,7 @@ def xlsx_records(path: str) -> list[tuple[int, str, list[str]]]:
                 cells = [cell_text(v) for v in row]
                 if n > MAX_ROWS:
                     if any(cells):
-                        raise WorkbookRejected("That workbook has too many rows to read safely.")
+                        raise WorkbookTooManyRows
                     break
                 while cells and not cells[-1]:
                     cells.pop()

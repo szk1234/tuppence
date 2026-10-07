@@ -137,6 +137,7 @@ def smoke_ocr(root: Path) -> int:
     from PIL import Image, ImageDraw
 
     from tuppence.ingest.ocr import image_rows
+    from tuppence.ingest.results import parse_image_rows
     from tuppence.ingest.sandbox import run_isolated
 
     image = Image.new("RGB", (480, 90), "white")
@@ -144,7 +145,7 @@ def smoke_ocr(root: Path) -> int:
     path = root / "smoke-ocr.png"
     try:
         image.save(path, "PNG")
-        rows = run_isolated(image_rows, str(path), timeout_s=90)["rows"]
+        rows = run_isolated(image_rows, str(path), timeout_s=90, parse=parse_image_rows).rows
     finally:
         path.unlink(missing_ok=True)
     if not rows:

@@ -85,3 +85,61 @@ def udp_blocked():
     finally:
         sock.close()
     return False
+
+
+MARKER_ENV = "TUPPENCE_TEST_MARKER"
+
+
+class _Pwn:
+    """Unpickling this runs os.mkdir(marker): proof that code ran in the unpickler."""
+
+    def __init__(self, marker):
+        self.marker = marker
+
+    def __reduce__(self):
+        return (os.mkdir, (self.marker,))
+
+
+def _send(conn, payload):
+    conn.send_bytes(payload)
+    conn.close()
+
+
+def pickle_child(conn, fn, args, memory_mb):
+    import pickle
+
+    _send(conn, pickle.dumps(_Pwn(args[0])))
+
+
+def wrapped_pickle_child(conn, fn, args, memory_mb):
+    import pickle
+
+    _send(conn, pickle.dumps({"ok": _Pwn(args[0])}))
+
+
+def garbage_child(conn, fn, args, memory_mb):
+    _send(conn, b"\x00\xff not json at all")
+
+
+def oversized_child(conn, fn, args, memory_mb):
+    _send(conn, b"[" * (51 * 1024 * 1024))
+
+
+def nan_child(conn, fn, args, memory_mb):
+    _send(conn, b'{"ok": NaN}')
+
+
+def shape_child(conn, fn, args, memory_mb):
+    import json
+
+    _send(conn, json.dumps({"ok": json.loads(args[0])}).encode())
+
+
+def error_child(conn, fn, args, memory_mb):
+    import json
+
+    _send(conn, json.dumps({"error": args[0]}).encode())
+
+
+def noop(*_args):
+    return None

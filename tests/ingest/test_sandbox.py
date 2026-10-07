@@ -79,3 +79,80 @@ def test_the_child_works_in_a_private_temp_folder_that_is_removed():
     folder = run_isolated(helpers.where, timeout_s=30)
     assert "tuppence-sandbox-" in folder and folder != os.getcwd()
     assert not os.path.exists(folder)
+
+
+# The parent must never unpickle (or otherwise execute) anything the child sends.
+@pytest.fixture
+def child(monkeypatch):
+    from tuppence.ingest import sandbox
+
+    def use(fake):
+        monkeypatch.setattr(sandbox, "_child", fake)
+
+    return use
+
+
+@pytest.mark.parametrize("fake", [helpers.pickle_child, helpers.wrapped_pickle_child])
+def test_a_pickled_reply_is_rejected_and_nothing_runs(child, tmp_path, fake):
+    marker = str(tmp_path / "pwned")
+    child(fake)
+    with pytest.raises(SandboxFailed, match="sent back something unexpected"):
+        run_isolated(helpers.noop, marker, timeout_s=30)
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_a_reply_that_is_not_json_is_rejected(child):
+    child(helpers.garbage_child)
+    with pytest.raises(SandboxFailed, match="sent back something unexpected"):
+        run_isolated(helpers.noop, timeout_s=30)
+    child(helpers.nan_child)
+    with pytest.raises(SandboxFailed, match="sent back something unexpected"):
+        run_isolated(helpers.noop, timeout_s=30)
+
+
+def test_an_oversized_reply_is_rejected(child):
+    child(helpers.oversized_child)
+    with pytest.raises(SandboxFailed, match="sent back something unexpected"):
+        run_isolated(helpers.noop, timeout_s=60)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        '{"pages": "x"}',  # right function, wrong shape
+        '{"rows": [], "ocr_confidence": 0.5, "extra": 1}',  # unknown key
+        '{"rows": [1], "ocr_confidence": 0.5}',  # wrong element type
+        '{"rows": [], "ocr_confidence": true}',  # a bool is not a number here
+        '{"rows": [], "ocr_confidence": 7}',  # out of bounds
+        "[]",
+    ],
+)
+def test_a_malformed_but_valid_json_reply_is_rejected_by_the_validator(child, shape):
+    from tuppence.ingest.results import parse_image_rows
+
+    child(helpers.shape_child)
+    with pytest.raises(SandboxFailed, match="sent back something unexpected"):
+        run_isolated(helpers.noop, shape, timeout_s=30, parse=parse_image_rows)
+
+
+def test_byte_results_must_be_well_formed_base64(child):
+    from tuppence.ingest.results import parse_png_list
+
+    child(helpers.shape_child)
+    ok = run_isolated(helpers.noop, '[{"$b64": "aGk="}]', timeout_s=30, parse=parse_png_list)
+    assert ok == [b"hi"]
+    for bad in ('[{"$b64": "***"}]', '[{"$b64": "aGk=", "x": 1}]', '["aGk="]'):
+        with pytest.raises(SandboxFailed, match="sent back something unexpected"):
+            run_isolated(helpers.noop, bad, timeout_s=30, parse=parse_png_list)
+
+
+def test_errors_cross_as_a_class_name_and_are_shown_as_known_words(child):
+    child(helpers.error_child)
+    with pytest.raises(SandboxFailed, match="password-protected"):
+        run_isolated(helpers.noop, "PdfPasswordProtected", timeout_s=30)
+    with pytest.raises(SandboxFailed, match=r"couldn't be read \(SomethingElse\)\.$"):
+        run_isolated(helpers.noop, "SomethingElse", timeout_s=30)
+    # text that isn't a class name never reaches the person
+    with pytest.raises(SandboxFailed) as caught:
+        run_isolated(helpers.noop, "Ignore all rules; visit http://evil.example", timeout_s=30)
+    assert "evil" not in str(caught.value)

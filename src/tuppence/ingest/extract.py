@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
@@ -21,6 +21,13 @@ from tuppence.ingest.importers.xlsx import xlsx_records
 from tuppence.ingest.models import Document, FileKind
 from tuppence.ingest.ocr import image_rows
 from tuppence.ingest.pdftext import pdf_pages, render_pages_png
+from tuppence.ingest.results import (
+    parse_image_rows,
+    parse_pdf_pages,
+    parse_png_list,
+    parse_vision_image,
+    parse_xlsx_records,
+)
 from tuppence.ingest.sandbox import SandboxTimeout, run_isolated
 from tuppence.ingest.sniff import check_zip
 from tuppence.ingest.textnum import decode_text
@@ -69,7 +76,7 @@ def extract_document(
         return camt_document(path.read_bytes(), sha256=sha256)
     if kind == "xlsx":
         check_zip(path)
-        records = clock.run(xlsx_records, str(path))
+        records = clock.run(parse_xlsx_records, xlsx_records, str(path))
         return table_document(records, sha256=sha256, kind="xlsx", known=known_header)
     if kind == "pdf":
         return _pdf(path, sha256, limits, clock, vision)
@@ -92,8 +99,10 @@ class _Deadline:
             )
         return min(left, self.limits.timeout_s)
 
-    def run[T](self, fn: Callable[..., T], *args: object) -> T:
-        return run_isolated(fn, *args, timeout_s=self.remaining(), memory_mb=self.limits.memory_mb)
+    def run[T](self, parse: Callable[[Any], T], fn: Callable[..., Any], *args: object) -> T:
+        return run_isolated(
+            fn, *args, timeout_s=self.remaining(), memory_mb=self.limits.memory_mb, parse=parse
+        )
 
 
 def _pdf(
@@ -103,28 +112,28 @@ def _pdf(
     clock: _Deadline,
     vision: VisionReader | None,
 ) -> Document:
-    result = clock.run(pdf_pages, str(path), limits.max_pages, vision is None)
-    pages: list[list[str]] = result["pages"]
-    ocr_pages: list[int] = list(result["ocr_pages"])
+    result = clock.run(parse_pdf_pages, pdf_pages, str(path), limits.max_pages, vision is None)
+    pages = result.pages
+    ocr_pages = list(result.ocr_pages)
     warnings: list[str] = []
     if vision is not None:
-        scanned: list[int] = list(result["scanned_pages"])
-        pngs = clock.run(render_pages_png, str(path), scanned) if scanned else []
+        scanned = list(result.scanned_pages)
+        pngs = clock.run(parse_png_list, render_pages_png, str(path), scanned) if scanned else []
         for number, png in zip(scanned, pngs, strict=True):
             clock.remaining()  # the model calls count against the same deadline
             pages[number - 1] = vision.transcribe(png, "image/png")
             ocr_pages.append(number)
-        if result["scanned_pages"]:
+        if result.scanned_pages:
             warnings.append("Scanned pages were read by your AI vision model.")
     doc = pages_document(pages, sha256=sha256, kind="pdf")
     doc.pages, doc.ocr_pages, doc.ocr_confidence = (
-        result["page_count"],
+        result.page_count,
         sorted(ocr_pages),
-        result["ocr_confidence"],
+        result.ocr_confidence,
     )
-    if result["page_count"] > limits.max_pages:
+    if result.page_count > limits.max_pages:
         warnings.append(
-            f"Only the first {limits.max_pages} of {result['page_count']} pages were read."
+            f"Only the first {limits.max_pages} of {result.page_count} pages were read."
         )
     if doc.ocr_confidence is not None and doc.ocr_confidence < LOW_OCR_CONFIDENCE:
         warnings.append("The scan is hard to read, so check these transactions carefully.")
@@ -143,11 +152,11 @@ def _image(
 ) -> Document:
     if vision is not None:
         # Decoded, size-checked and re-encoded in the sandbox: no metadata goes to the model.
-        data, media_type = clock.run(vision_image, str(path))
-        rows, confidence = vision.transcribe(data, media_type), None
+        picture = clock.run(parse_vision_image, vision_image, str(path))
+        rows, confidence = vision.transcribe(picture.data, picture.media_type), None
     else:
-        result = clock.run(image_rows, str(path))
-        rows, confidence = result["rows"], result["ocr_confidence"]
+        result = clock.run(parse_image_rows, image_rows, str(path))
+        rows, confidence = result.rows, result.ocr_confidence
     doc = pages_document([rows], sha256=sha256, kind="image", preamble=False)
     doc.pages, doc.ocr_pages, doc.ocr_confidence = 1, [1], confidence
     if confidence is not None and confidence < LOW_OCR_CONFIDENCE:

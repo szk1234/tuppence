@@ -12,15 +12,11 @@ import math
 from pathlib import Path
 from typing import Any
 
-from tuppence.core.errors import UserFacing
+from tuppence.ingest.refusals import ImageTooLarge, PdfPageHasNoSize
 
 MAX_PIXELS = 40_000_000
 MAX_VISION_SIDE = 2000
 JPEG_QUALITY = 85
-
-
-class ImageRefused(UserFacing, ValueError):
-    """An image or page too big to read safely. The message is safe to show."""
 
 
 def render_scale(width: float, height: float, dpi: int) -> float:
@@ -28,7 +24,7 @@ def render_scale(width: float, height: float, dpi: int) -> float:
     rendered image never exceeds MAX_PIXELS."""
     scale = dpi / 72
     if width <= 0 or height <= 0:
-        raise ImageRefused("This PDF has a page with no size, so it can't be read.")
+        raise PdfPageHasNoSize
     if width * height * scale * scale > MAX_PIXELS:
         scale = math.sqrt(MAX_PIXELS / (width * height)) * 0.999
     return scale
@@ -43,16 +39,11 @@ def open_checked(path: str) -> Any:
     try:
         with Image.open(path) as image:
             if image.width * image.height > MAX_PIXELS:
-                raise ImageRefused(
-                    f"This image is too large to read (over {MAX_PIXELS // 1_000_000} "
-                    "megapixels). Make it smaller and upload it again."
-                )
+                raise ImageTooLarge
             image.load()
             return ImageOps.exif_transpose(image)
     except Image.DecompressionBombError:
-        raise ImageRefused(
-            "This image is too large to read. Make it smaller and upload it again."
-        ) from None
+        raise ImageTooLarge from None
 
 
 def encode_for_vision(image: Any, *, jpeg: bool = False) -> tuple[bytes, str]:

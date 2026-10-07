@@ -4,18 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from tuppence.core.errors import UserFacing
 from tuppence.ingest.imaging import encode_for_vision, render_scale
 from tuppence.ingest.layout_rows import Box, rows_from_boxes
+from tuppence.ingest.refusals import (
+    PdfDamaged,
+    PdfPageTooManyWords,
+    PdfPageTooMuchText,
+    PdfPasswordProtected,
+    PdfTooManyPages,
+)
 
 MIN_WORDS_FOR_TEXT_LAYER = 5
 MAX_WORDS_PER_PAGE = 20_000
 MAX_CHARS_PER_PAGE = 250_000
 PAGE_COUNT_FACTOR = 10  # a PDF with more than this many times max_pages is refused outright
-
-
-class PdfRefused(UserFacing, ValueError):
-    """A PDF Tuppence won't or can't read. The message is safe to show."""
 
 
 def _open(path: str) -> Any:
@@ -26,10 +28,8 @@ def _open(path: str) -> Any:
         return pdfium.PdfDocument(path)
     except pdfium.PdfiumError as exc:
         if getattr(exc, "err_code", None) == pdfium_raw.FPDF_ERR_PASSWORD:
-            raise PdfRefused(
-                "This PDF is password-protected. Remove the password and upload it again."
-            ) from None
-        raise PdfRefused("This PDF couldn't be read. The file may be damaged.") from None
+            raise PdfPasswordProtected from None
+        raise PdfDamaged from None
 
 
 def _render(page: Any, dpi: int) -> Any:
@@ -55,10 +55,7 @@ def pdf_pages(path: str, max_pages: int, ocr: bool, render_dpi: int = 200) -> di
     try:
         count = len(doc)
         if count > max_pages * PAGE_COUNT_FACTOR:
-            raise PdfRefused(
-                f"This PDF has {count:,} pages, which is more than Tuppence reads "
-                f"(it reads up to {max_pages}). Split it and upload the part you need."
-            )
+            raise PdfTooManyPages
         pages: list[list[str]] = []
         ocr_pages: list[int] = []
         scanned: list[int] = []
@@ -67,12 +64,12 @@ def pdf_pages(path: str, max_pages: int, ocr: bool, render_dpi: int = 200) -> di
             for number in range(1, min(count, max_pages) + 1):
                 fast = doc[number - 1]
                 if fast.get_textpage().count_chars() > MAX_CHARS_PER_PAGE:
-                    raise PdfRefused(f"Page {number} has too much text to read safely.")
+                    raise PdfPageTooMuchText
                 words = pdf.pages[number - 1].extract_words(
                     x_tolerance=1.5, y_tolerance=3, keep_blank_chars=False
                 )
                 if len(words) > MAX_WORDS_PER_PAGE:
-                    raise PdfRefused(f"Page {number} has too many words to read safely.")
+                    raise PdfPageTooManyWords
                 if len(words) >= MIN_WORDS_FOR_TEXT_LAYER:
                     pages.append(
                         rows_from_boxes(
