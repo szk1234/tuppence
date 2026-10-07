@@ -107,6 +107,7 @@ class LockedBudget:
 
     def __init__(self, budget: Any) -> None:
         self._budget, self._lock = budget, threading.RLock()
+        self._changed = threading.Condition(self._lock)  # a hold was recorded or dropped
         self._held: dict[int, tuple[int, float]] = {}
 
     @property
@@ -140,18 +141,32 @@ class LockedBudget:
     def over_cap(self, estimated_tokens: int, projected_gbp: float) -> str | None:
         """Why this call doesn't fit. When it does fit, its estimate is held for this thread
         until it records its usage, so parallel calls can't each pass the check and then
-        together overshoot the token or £ cap."""
+        together overshoot the token or £ cap.
+
+        When the call would fit on its own and only other calls' holds are in the way, it
+        waits for them to finish and looks again, so the chunks are then read one at a time
+        instead of the read ending (or the chunk going to another model)."""
         me = threading.get_ident()
-        with self._lock:
-            self._held.pop(me, None)
-            others_tokens = sum(t for t, _ in self._held.values())
-            others_gbp = sum(g for _, g in self._held.values())
-            reason = self._budget.over_cap(
-                estimated_tokens + others_tokens, projected_gbp + others_gbp
-            )
-            if reason is None:
-                self._held[me] = (estimated_tokens, projected_gbp)
-            return reason
+        with self._changed:
+            self._drop(me)
+            while True:
+                others_tokens = sum(t for t, _ in self._held.values())
+                others_gbp = sum(g for _, g in self._held.values())
+                reason = self._budget.over_cap(
+                    estimated_tokens + others_tokens, projected_gbp + others_gbp
+                )
+                if reason is None:
+                    self._held[me] = (estimated_tokens, projected_gbp)
+                    return None
+                alone = self._budget.over_cap(estimated_tokens, projected_gbp)
+                left = self._budget.remaining_seconds()
+                if not self._held or alone is not None or left <= 0:
+                    return reason  # a real refusal: it doesn't fit even by itself
+                self._changed.wait(timeout=min(left, 1.0))
+
+    def _drop(self, thread: int) -> None:
+        if self._held.pop(thread, None) is not None:
+            self._changed.notify_all()
 
     def check(self, estimated_tokens: int, projected_gbp: float = 0.0) -> None:
         with self._lock:
@@ -165,14 +180,14 @@ class LockedBudget:
             self._budget.start_call()
 
     def record(self, tokens: int, gbp: float | None) -> None:
-        with self._lock:
-            self._held.pop(threading.get_ident(), None)
+        with self._changed:
             self._budget.record(tokens, gbp)
+            self._drop(threading.get_ident())
 
     def release(self) -> None:
         """Drop this thread's hold (a call that failed and recorded nothing)."""
-        with self._lock:
-            self._held.pop(threading.get_ident(), None)
+        with self._changed:
+            self._drop(threading.get_ident())
 
 
 def rows_per_chunk_for(context_window: int, configured: int) -> int:

@@ -18,7 +18,8 @@ def fixtures() -> Path:
 
 
 def oracle_handler(scripted: Scripted):
-    """Scripted replies first ({"content": ...}), then the oracle. Model lists as before."""
+    """Scripted replies first ({"content": ...}, or a function of the request body that
+    returns the content), then the oracle. Model lists as before."""
 
     def handle(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/models"):
@@ -29,7 +30,7 @@ def oracle_handler(scripted: Scripted):
             reply = scripted.replies.pop(0)
             if isinstance(reply, httpx.Response):  # a scripted HTTP failure
                 return reply
-            content = reply["content"]
+            content = reply(body) if callable(reply) else reply["content"]
         else:
             content = oracle.reply(body["messages"])
         return httpx.Response(

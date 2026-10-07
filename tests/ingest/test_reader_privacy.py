@@ -3,9 +3,11 @@
 import datetime as dt
 import re
 import threading
+import time
 
 import httpx
 import pytest
+from evals import oracle
 from pydantic import ValidationError
 
 from ingest.helpers import budget, use_local_model
@@ -117,28 +119,54 @@ def test_a_fatal_error_stops_the_chunks_that_have_not_started(ingest_env):
 def test_parallel_calls_reserve_their_estimate():
     inner = RunBudget(max_calls=100, max_tokens=1000, max_gbp=1.0, max_seconds=600)
     shared = LockedBudget(inner)
-    first_in_flight = threading.Event()
-    second_asked = threading.Event()
+    assert shared.over_cap(800, 0.0) is None  # this thread's call is in flight
     answers: dict[str, str | None] = {}
-
-    def first():
-        answers["first"] = shared.over_cap(800, 0.0)
-        first_in_flight.set()
-        second_asked.wait(5)
-        shared.start_call()
-        shared.record(700, 0.0)
-
-    def second():
-        first_in_flight.wait(5)
-        answers["second"] = shared.over_cap(800, 0.0)
-        second_asked.set()
-
-    threads = [threading.Thread(target=first), threading.Thread(target=second)]
-    [t.start() for t in threads]
-    [t.join() for t in threads]
-    assert answers["first"] is None
+    second = threading.Thread(target=lambda: answers.update(second=shared.over_cap(800, 0.0)))
+    second.start()
+    second.join(0.3)
+    assert second.is_alive()  # it would fit alone: it waits for the call in flight
+    shared.start_call()
+    shared.record(700, 0.0)  # the first call's usage: now 700 + 800 is over the cap
+    second.join(5)
     assert answers["second"] and "1,000 tokens" in answers["second"]
     assert inner.tokens == 700 and inner.calls == 1
+
+
+def test_a_refusal_caused_only_by_another_hold_waits_for_it():
+    # m3: another thread's estimate is in the way, not the run's usage. Waiting for it keeps
+    # the cap exact and lets the call go ahead, as reading one chunk at a time would.
+    inner = RunBudget(max_calls=100, max_tokens=1000, max_gbp=1.0, max_seconds=600)
+    shared = LockedBudget(inner)
+    assert shared.over_cap(800, 0.0) is None
+    answers: dict[str, str | None] = {}
+    second = threading.Thread(target=lambda: answers.update(second=shared.over_cap(800, 0.0)))
+    second.start()
+    second.join(0.3)
+    assert second.is_alive()
+    shared.start_call()
+    shared.record(100, 0.0)
+    second.join(5)
+    assert not second.is_alive() and answers["second"] is None
+    assert shared.over_cap(1200, 0.0) is not None  # too big on its own: refused at once
+
+
+def test_a_parallel_read_that_fits_one_chunk_at_a_time_completes(ingest_env):
+    services, scripted = ingest_env
+    use_local_model(services)
+
+    def slow(body):
+        time.sleep(0.1)
+        return oracle.reply(body["messages"])
+
+    results = {}
+    for parallel in (1, 2):
+        scripted.requests.clear()
+        scripted.replies = [slow] * 20
+        inner = RunBudget(max_calls=50, max_tokens=3000, max_gbp=1.0, max_seconds=600)
+        out = read(services, adversarial_doc(), 128_000, run=inner, rows_per_chunk=5,
+                   parallel=parallel)  # fmt: skip
+        results[parallel] = (out.ok, out.chunks, len(scripted.requests), inner.tokens <= 3000)
+    assert results[2] == results[1] and results[2][0] and results[2][1] == results[2][2]
 
 
 def test_a_hold_is_released_when_the_call_records_or_the_thread_finishes():
