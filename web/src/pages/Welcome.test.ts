@@ -357,3 +357,88 @@ it('Back saves typed household input instead of losing it', async () => {
   expect(await screen.findByRole('heading', { level: 1, name: 'Welcome' })).toBeInTheDocument()
   expect(calls.find((c) => c.method === 'POST' && c.url === '/api/household/people')?.body).toEqual({ display_name: 'Sam Example', role: 'adult' })
 })
+
+it('AI step: Back writes no research consent (spec §12.5 opt-in), even with the box pre-selected', async () => {
+  const calls = api('ai')
+  render(Welcome)
+  const box = await screen.findByLabelText(/Research lookups \(recommended: on\)/)
+  await waitFor(() => expect(box).toBeEnabled())
+  expect(box).toBeChecked()
+  await fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+  expect(await screen.findByRole('heading', { level: 1, name: "What you're saving for" })).toBeInTheDocument()
+  expect(calls.some((c) => c.url.startsWith('/api/settings/') && c.method === 'PATCH')).toBe(false)
+})
+
+it('AI step: an explicit untick is recorded at once, so Back keeps the opt-out', async () => {
+  const calls = api('ai', (url, method) => (url === '/api/settings/privacy.research_lookups' && method === 'PATCH' ? json({ key: 'privacy.research_lookups', value: false, version: 1, description: '' }) : undefined))
+  render(Welcome)
+  const box = await screen.findByLabelText(/Research lookups \(recommended: on\)/)
+  await waitFor(() => expect(box).toBeEnabled())
+  await fireEvent.click(box)
+  await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1))
+  await fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+  await screen.findByRole('heading', { level: 1, name: "What you're saving for" })
+  expect(calls.filter((c) => c.method === 'PATCH').map((c) => c.body)).toEqual([{ value: false, expected_version: 0 }])
+})
+
+it('Back on an empty household step does not create "You"', async () => {
+  const calls = api('household', undefined, { people: [] })
+  render(Welcome)
+  await screen.findByLabelText('Your name')
+  await fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+  expect(await screen.findByRole('heading', { level: 1, name: 'Welcome' })).toBeInTheDocument()
+  expect(calls.some((c) => c.method === 'POST')).toBe(false)
+})
+
+it('the welcome step reloads the household after a conflict, so Continue can succeed', async () => {
+  let version = 1
+  let patches = 0
+  const calls = api('welcome', (url, method, body) => {
+    if (url === '/api/household' && method === 'GET') return json({ ...household(), version })
+    if (url === '/api/household' && method === 'PATCH') {
+      patches += 1
+      if (body.expected_version !== version) return json({ detail: 'This was changed somewhere else. Reload and try again.', current_version: version }, 409)
+      return json({ ...household('wales'), version: version + 1 })
+    }
+  })
+  render(Welcome)
+  await waitFor(() => expect(screen.getByLabelText('Nation')).toBeEnabled())
+  version = 2 // changed in another tab after the page loaded
+  await fireEvent.change(screen.getByLabelText('Nation'), { target: { value: 'wales' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByText('This was changed somewhere else. Reload and try again.')).toBeInTheDocument()
+  await waitFor(() => expect(calls.filter((c) => c.url === '/api/household' && c.method === 'GET')).toHaveLength(2))
+  expect(screen.getByLabelText('Nation')).toHaveValue('wales')
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByRole('heading', { level: 1, name: "Who's in your household" })).toBeInTheDocument()
+  expect(patches).toBe(2)
+  expect(calls.filter((c) => c.method === 'PATCH').map((c) => c.body.expected_version)).toEqual([1, 2])
+})
+
+it('Home: a failure part-way reloads what is stored, so the retry sends no stale value', async () => {
+  const entries: Array<Record<string, unknown>> = []
+  let failOnce = true
+  const calls = api('home', (url, method, body) => {
+    if (url.startsWith('/api/household/timeline') && method === 'GET') return json({ entries })
+    if (url === '/api/household/timeline' && method === 'POST') {
+      if (body.attribute === 'housing_monthly_pence' && failOnce) { failOnce = false; return json({ detail: 'Something broke.' }, 500) }
+      const stored = entries.find((e) => e.attribute === body.attribute)?.value ?? null
+      if (body.expected_current !== stored) return json({ detail: 'This was changed somewhere else. Reload and try again.', current_version: 1 }, 409)
+      entries.push({ id: entries.length + 1, subject_type: 'household', subject_id: '1', attribute: body.attribute, value: body.value, valid_from: body.valid_from, valid_to: null, source: 'user', version: 1 })
+      return json(entries[entries.length - 1], 201)
+    }
+  }, { nation: 'england' })
+  render(Welcome)
+  await screen.findByLabelText('Council tax band')
+  await waitFor(() => expect(screen.getByLabelText('Housing')).toBeEnabled())
+  await fireEvent.change(screen.getByLabelText('Housing'), { target: { value: 'renting' } })
+  await fireEvent.input(screen.getByLabelText('Monthly housing cost'), { target: { value: '950' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByText('Something broke.')).toBeInTheDocument()
+  expect(screen.getByLabelText('Monthly housing cost')).toHaveValue('950') // what is typed stays
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled())
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByRole('heading', { level: 1, name: 'Accounts and cards' })).toBeInTheDocument()
+  const posts = calls.filter((c) => c.url === '/api/household/timeline' && c.method === 'POST').map((c) => c.body.attribute)
+  expect(posts).toEqual(['housing_tenure', 'housing_monthly_pence', 'housing_monthly_pence'])
+})

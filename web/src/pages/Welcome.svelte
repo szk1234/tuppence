@@ -15,8 +15,13 @@
   import WelcomeStep from './welcome/WelcomeStep.svelte'
   import WorkIncomeStep from './welcome/WorkIncomeStep.svelte'
 
-  /** A step may offer `save()`, which Continue calls first; false keeps the user on the step. */
-  type StepApi = { save?: () => Promise<boolean> }
+  /**
+   * A step may offer `save(intent)`, which Continue ('continue') and Back ('back') call first; false keeps the user on
+   * the step. Back keeps what was typed, but only Continue confirms a step's choices: Back never adds the default
+   * adult and never records the research-lookups consent.
+   */
+  type Intent = 'continue' | 'back'
+  type StepApi = { save?: (intent: Intent) => Promise<boolean> }
   const STEP_COMPONENTS: Record<string, Component<any, StepApi>> = {
     welcome: WelcomeStep, household: HouseholdStep, work_income: WorkIncomeStep, home: HomeStep, accounts: AccountsStep,
     debts: DebtsStep, goals: GoalsStep, ai: AIStep, first_upload: FirstUploadStep,
@@ -46,7 +51,7 @@
     if (!step || busy) return
     error = ''; busy = true
     try {
-      if (status === 'done' && stepRef?.save && !(await stepRef.save())) return
+      if (status === 'done' && stepRef?.save && !(await stepRef.save('continue'))) return
       onboarding = await api<OnboardingState>(`/api/onboarding/steps/${step.id}`, { method: 'POST', body: { status } })
       if (last) navigate('/')
       else index += 1
@@ -58,7 +63,7 @@
     error = ''
     if (index === 0 || busy) return
     busy = true
-    try { if (stepRef?.save && !(await stepRef.save())) return; index -= 1 } finally { busy = false }
+    try { if (stepRef?.save && !(await stepRef.save('back'))) return; index -= 1 } finally { busy = false }
   }
 </script>
 

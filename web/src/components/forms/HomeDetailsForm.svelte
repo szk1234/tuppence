@@ -36,9 +36,13 @@
     return result
   }
 
-  async function load() {
+  async function loadEntries() {
     const res = await api<{ entries: TimelineEntry[] }>(`/api/household/timeline?subject_type=household&subject_id=${HOUSEHOLD_ID}`)
     entries = Array.isArray(res?.entries) ? res.entries : []
+  }
+
+  async function load() {
+    await loadEntries()
     const today = todayISO()
     const now = (attr: string) => valueOn(entries, attr, today)
     tenure = (now('housing_tenure') as string | null) ?? ''
@@ -83,7 +87,9 @@
       if (written) onsaved?.()
     } catch (err) {
       error = errorText(err)
-      if (isConflict(err)) await load().catch(() => {})
+      // Each detail is its own write, so some may have saved: reload what is stored, so a retry doesn't send a stale
+      // expected_current. A conflict also resets the form to the stored values; any other failure keeps what is typed.
+      await (isConflict(err) ? load() : loadEntries()).catch(() => {})
     } finally { saving = false }
   }
 </script>

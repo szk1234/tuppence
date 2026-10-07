@@ -95,17 +95,31 @@
     await loadRouting().catch(() => {})
   }
 
-  /** Called by the wizard before it records this step: applies the agent preset and the research-lookups choice. */
-  export async function save(): Promise<boolean> {
+  /** Writes the research-lookups choice when it differs from what is stored (or was never chosen). */
+  async function writeResearch(value: boolean) {
+    if (!researchSetting || (researchSetting.version > 0 && researchSetting.value === value)) return
+    researchSetting = await api<Setting>(`/api/settings/${RESEARCH}`, { method: 'PATCH', body: { value, expected_version: researchSetting.version } })
+  }
+
+  /** Research lookups are opt-in (spec §12.5): unticking records the opt-out at once; ticking waits for Continue. */
+  async function researchChanged(checked: boolean) {
+    if (checked) return
+    error = ''
+    try { await writeResearch(false) } catch (e) { fail(e) }
+  }
+
+  /**
+   * Called by the wizard before it moves: the agent preset is kept on Continue and Back (nothing is lost), but the
+   * research-lookups consent is written only by Continue, never by Back.
+   */
+  export async function save(intent: 'continue' | 'back' = 'continue'): Promise<boolean> {
     if (!canEdit) return true
     error = ''
     try {
       if (presetSetting && presetSetting.value !== agentPreset) {
         presetSetting = await api<Setting>(`/api/settings/${PRESET}`, { method: 'PATCH', body: { value: agentPreset, expected_version: presetSetting.version } })
       }
-      if (researchSetting && (researchSetting.version === 0 || researchSetting.value !== research)) {
-        researchSetting = await api<Setting>(`/api/settings/${RESEARCH}`, { method: 'PATCH', body: { value: research, expected_version: researchSetting.version } })
-      }
+      if (intent === 'continue') await writeResearch(research)
       return true
     } catch (e) { fail(e); return false }
   }
@@ -168,7 +182,7 @@
     <h2>Privacy</h2>
     <fieldset class="bare" disabled={!loaded || researchSetting === null}>
       <div class="toggle">
-        <label><input type="checkbox" bind:checked={research} /> Research lookups (recommended: on)</label>
+        <label><input type="checkbox" bind:checked={research} onchange={(e) => researchChanged(e.currentTarget.checked)} /> Research lookups (recommended: on)</label>
         <p class="hint">Look up unknown merchant names online so more transactions are understood. Only merchant names are looked up — never amounts or your details. You can change this any time in Settings › Privacy.</p>
       </div>
     </fieldset>

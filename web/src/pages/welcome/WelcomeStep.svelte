@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import Notice from '../../components/Notice.svelte'
   import { api } from '../../lib/api'
-  import { errorText } from '../../lib/form'
+  import { errorText, isConflict } from '../../lib/form'
   import { NATIONS } from '../../lib/profile'
   import type { Household } from '../../lib/types'
 
@@ -32,7 +32,12 @@
       household = await api<Household>('/api/household', { method: 'PATCH', body: { changes, expected_version: household.version } })
       district = household.postcode_district ?? ''
       return true
-    } catch (err) { error = errorText(err); return false }
+    } catch (err) {
+      error = errorText(err)
+      // Changed elsewhere: take the stored household as the new baseline (what is typed stays), so Continue can retry.
+      if (isConflict(err)) household = await api<Household>('/api/household').catch(() => household)
+      return false
+    }
   }
 </script>
 

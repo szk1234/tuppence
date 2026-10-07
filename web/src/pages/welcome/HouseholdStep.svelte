@@ -67,10 +67,13 @@
   }
   async function addDependant(e: SubmitEvent) { e.preventDefault(); await addDependantNow() }
 
-  /** Continue: the signed-in adult always ends up in the household, and a partner or dependant typed but not added is added. */
-  export async function save(): Promise<boolean> {
-    if (!loaded) return false
-    if (adults.length === 0 && !(await add({ display_name: youName.trim() || 'You', role: 'adult' }))) return false
+  /**
+   * Continue: the signed-in adult always ends up in the household, and a partner or dependant typed but not added is
+   * added. Back only keeps what was typed (it never creates "You").
+   */
+  export async function save(intent: 'continue' | 'back' = 'continue'): Promise<boolean> {
+    if (!loaded) return intent === 'back'
+    if (intent === 'continue' && adults.length === 0 && !(await add({ display_name: youName.trim() || 'You', role: 'adult' }))) return false
     if (family && !(await addPartnerNow())) return false
     return addDependantNow()
   }
