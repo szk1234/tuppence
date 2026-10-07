@@ -1,36 +1,33 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { fetchHealth, type Health } from './lib/health'
+  import Nav from './components/Nav.svelte'
+  import { router } from './lib/router.svelte'
+  import { loadSession, session } from './lib/session.svelte'
+  import Home from './pages/Home.svelte'
+  import LaunchExpired from './pages/LaunchExpired.svelte'
+  import Login from './pages/Login.svelte'
+  import NotFound from './pages/NotFound.svelte'
+  import Setup from './pages/Setup.svelte'
+  import Agents from './pages/settings/Agents.svelte'
+  import Household from './pages/settings/Household.svelte'
 
-  let health = $state<Health | null>(null)
-  let error = $state(false)
-
-  onMount(async () => {
-    try {
-      health = await fetchHealth()
-    } catch {
-      error = true
-    }
-  })
+  const routes: Record<string, typeof Home> = { '/': Home, '/settings/household': Household, '/settings/agents': Agents }
+  let failed = $state(false)
+  onMount(() => { loadSession().catch(() => { failed = true }) })
+  const Page = $derived(routes[router.path] ?? NotFound)
 </script>
 
-<main>
-  <h1>Tuppence</h1>
-  <p class="tagline">A private AI money coach for UK households. Your statements never leave your machine.</p>
-  {#if health}
-    <p class="status ok">Connected · v{health.version} · {health.mode}</p>
-  {:else if error}
-    <p class="status err">Can't reach the Tuppence service. Is it running?</p>
-  {:else}
-    <p class="status">Connecting…</p>
-  {/if}
-</main>
-
-<style>
-  main { font-family: system-ui, sans-serif; max-width: 44rem; margin: 4rem auto; padding: 0 1rem; }
-  h1 { font-size: 2.5rem; margin: 0 0 .5rem; }
-  .tagline { color: #555; }
-  .status { margin-top: 2rem; font-size: .95rem; }
-  .ok { color: #1b7a3a; }
-  .err { color: #a02020; }
-</style>
+{#if failed}
+  <main><p class="status err">Can't reach the Tuppence service. Is it running?</p></main>
+{:else if !session.loaded}
+  <main><p class="status">Loading…</p></main>
+{:else if !session.authenticated}
+  <main>
+    {#if session.mode !== 'server'}<LaunchExpired />
+    {:else if session.needsSetup}<Setup />
+    {:else}<Login />{/if}
+  </main>
+{:else}
+  <Nav />
+  <main><Page /></main>
+{/if}
