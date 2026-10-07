@@ -35,3 +35,33 @@ def test_patch_unknown_key_is_404(client):
 def test_database_created_in_data_dir(tmp_path, make_app):
     make_app()
     assert (tmp_path / "data" / "tuppence.db").exists()
+
+
+def test_raw_infinity_is_never_stored(client):
+    r = client.patch(
+        "/api/settings/llm.monthly_cap_gbp",
+        content='{"value": Infinity, "expected_version": 0}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code in (400, 422)
+    listing = client.get("/api/settings")
+    assert listing.status_code == 200
+    cap = next(s for s in listing.json()["settings"] if s["key"] == "llm.monthly_cap_gbp")
+    assert cap["version"] == 0 and cap["value"] == 10.0
+
+
+def test_bad_stored_value_get_ok_and_patch_fixes(client):
+    services = client.app.state.services
+    with services.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value, version, updated_at) "
+            "VALUES ('llm.monthly_cap_gbp', 'Infinity', 4, 'x')"
+        )
+    r = client.get("/api/settings")
+    assert r.status_code == 200
+    cap = next(s for s in r.json()["settings"] if s["key"] == "llm.monthly_cap_gbp")
+    assert cap["value"] == 10.0 and cap["version"] == 4
+    fixed = client.patch(
+        "/api/settings/llm.monthly_cap_gbp", json={"value": 5, "expected_version": 4}
+    )
+    assert fixed.status_code == 200 and fixed.json()["value"] == 5.0

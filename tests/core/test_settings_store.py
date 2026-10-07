@@ -51,3 +51,34 @@ def test_all_lists_every_defined_setting(store):
         "config.preset",
         "llm.monthly_cap_gbp",
     } <= keys
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+@pytest.mark.parametrize("key", ["llm.monthly_cap_gbp", "llm.run_cap_gbp", "llm.usd_to_gbp"])
+def test_non_finite_floats_rejected(store, key, bad):
+    with pytest.raises(SettingInvalid):
+        store.set(key, bad, expected_version=0)
+    assert store.entry(key).version == 0
+
+
+def _raw(store, key, text, version=1):
+    with store.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value, version, updated_at) VALUES (?, ?, ?, 'x')",
+            [key, text, version],
+        )
+
+
+def test_bad_stored_values_fall_back_to_default(store, caplog):
+    _raw(store, "privacy.local_only", '"oops"', 3)
+    _raw(store, "llm.monthly_cap_gbp", "Infinity", 2)
+    _raw(store, "config.preset", "{not json", 5)
+    with caplog.at_level("WARNING", logger="tuppence"):
+        e = store.entry("privacy.local_only")
+        assert e.value is False and e.version == 3
+        assert store.entry("llm.monthly_cap_gbp").value == 10.0
+        assert store.entry("config.preset").version == 5
+    assert "privacy.local_only" in caplog.text
+    assert "oops" not in caplog.text and "Infinity" not in caplog.text
+    assert len(store.all()) >= 3
+    assert store.set("privacy.local_only", True, expected_version=3).value is True

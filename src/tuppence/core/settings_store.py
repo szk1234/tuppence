@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
@@ -20,6 +21,8 @@ class SettingDef:
     adapter: TypeAdapter[Any]
     description: str
 
+
+log = logging.getLogger("tuppence")
 
 SETTINGS: dict[str, SettingDef] = {}
 
@@ -63,16 +66,22 @@ define(
     "How much work the agents do.",
 )
 define(
-    "llm.monthly_cap_gbp", Annotated[float, Field(ge=0)], 10.0, "Monthly AI spending cap in pounds."
+    "llm.monthly_cap_gbp",
+    Annotated[float, Field(ge=0, allow_inf_nan=False)],
+    10.0,
+    "Monthly AI spending cap in pounds.",
 )
 define(
     "llm.run_cap_gbp",
-    Annotated[float, Field(ge=0)],
+    Annotated[float, Field(ge=0, allow_inf_nan=False)],
     1.0,
     "Spending cap for one analysis run, in pounds.",
 )
 define(
-    "llm.usd_to_gbp", Annotated[float, Field(gt=0)], 0.75, "Exchange rate used to price AI usage."
+    "llm.usd_to_gbp",
+    Annotated[float, Field(gt=0, allow_inf_nan=False)],
+    0.75,
+    "Exchange rate used to price AI usage.",
 )
 
 
@@ -109,7 +118,11 @@ class SettingsStore:
             return SettingEntry(
                 key=key, value=d.default, default=d.default, version=0, description=d.description
             )
-        value = d.adapter.validate_python(json.loads(row["value"]))
+        try:
+            value = d.adapter.validate_python(json.loads(row["value"]))
+        except (ValueError, ValidationError):
+            log.warning("Stored value for setting %s is invalid; using the default", key)
+            value = d.default
         return SettingEntry(
             key=key,
             value=value,
@@ -130,7 +143,7 @@ class SettingsStore:
             clean = d.adapter.validate_python(value)
         except ValidationError as exc:
             raise SettingInvalid(key, exc.errors()[0]["msg"]) from exc
-        payload = json.dumps(d.adapter.dump_python(clean, mode="json"))
+        payload = json.dumps(d.adapter.dump_python(clean, mode="json"), allow_nan=False)
         now = to_iso(utcnow())
         with self.db.transaction() as conn:
             row = conn.execute("SELECT version FROM app_settings WHERE key = ?", [key]).fetchone()
