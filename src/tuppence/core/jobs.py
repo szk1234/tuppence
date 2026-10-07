@@ -168,7 +168,7 @@ class JobQueue:
             self._supersede(conn, job_id, run_after)
 
     def _supersede(self, conn: sqlite3.Connection, job_id: int, run_after: str) -> None:
-        """A newer queued job exists for this scope: merge into it (if a merge is set), then cancel."""
+        """Fold this job into the newer queued one (if a merge is set), then cancel it."""
         old = conn.execute(
             "SELECT kind, scope_key, payload FROM job WHERE id = ?", [job_id]
         ).fetchone()
