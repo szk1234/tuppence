@@ -30,6 +30,10 @@ class RulePreview(BaseModel):
 
 _PLAIN = {
     "name": "Give this income a name of up to 60 characters.",
+    "net_amount": "Enter the amount as pounds, like 2345.67.",
+    "person_id": "Choose a person from your household.",
+    "pay_rule": "That pay schedule isn't valid. Choose how often you're paid and when.",
+    "account_id": "Choose an account from your list, or leave it blank.",
     "kind": "Choose what kind of income this is.",
     "variable_components": "Variable pay can be bonus, overtime or commission.",
 }
@@ -39,7 +43,7 @@ def _input_error(exc: ValidationError) -> InputError:
     err = exc.errors()[0]
     field = ".".join(str(p) for p in err["loc"])
     plain = _PLAIN.get(str(err["loc"][0])) if err["loc"] else None
-    if plain and err["type"] != "extra_forbidden":
+    if plain:
         return InputError(plain)
     return InputError(f"{field}: {err['msg']}")
 
@@ -62,17 +66,22 @@ def create_income(body: dict[str, Any], services: Svc) -> Income:
 def upcoming(services: Svc, days: Annotated[int, Query(ge=1, le=366)] = 35) -> dict[str, Any]:
     rows = services.income.upcoming(services.income.today(), days)
     return {
+        "calendar_assumed": services.income.calendar_assumed(),
         "upcoming": [
             {"income_id": inc.id, "label": inc.name, "date": d, "amount": inc.net_amount}
             for d, inc in rows
-        ]
+        ],
     }
 
 
 @router.post("/preview-rule")
 def preview_rule(body: RulePreview, services: Svc) -> dict[str, Any]:
     description, dates = services.income.preview_rule(body.pay_rule)
-    return {"description": description, "next_dates": dates}
+    return {
+        "description": description,
+        "next_dates": dates,
+        "calendar_assumed": services.income.calendar_assumed(),
+    }
 
 
 @router.patch("/{income_id}")

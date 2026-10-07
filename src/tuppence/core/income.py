@@ -72,6 +72,8 @@ class Income(BaseModel):
     pay_rule_description: str
     variable_components: list[Component]
     next_pay_date: date | None
+    person_left: bool = False
+    calendar_assumed: bool = False
     status: Literal["active", "ended"]
     version: int
 
@@ -94,9 +96,14 @@ class IncomeService:
     def _nation(self) -> str | None:
         return self.household.get().nation
 
-    def _build(self, r: sqlite3.Row, nation: str | None) -> Income:
+    def calendar_assumed(self) -> bool:
+        """True when no nation is set, so England and Wales bank holidays are assumed."""
+        return self._nation() is None
+
+    def _build(self, r: sqlite3.Row, nation: str | None, current_people: set[str]) -> Income:
         rule = parse_rule(json.loads(r["pay_rule"]))
-        active = r["status"] == "active"
+        left = r["person_id"] not in current_people
+        active = r["status"] == "active" and not left
         nxt = next_pay_date(rule, self.today() - timedelta(days=1), nation) if active else None
         return Income(
             id=r["id"],
@@ -109,6 +116,8 @@ class IncomeService:
             pay_rule_description=describe(rule),
             variable_components=json.loads(r["variable_components"]),
             next_pay_date=nxt,
+            person_left=left,
+            calendar_assumed=nation is None,
             status=r["status"],
             version=r["version"],
         )
@@ -116,19 +125,23 @@ class IncomeService:
     def list(self, include_ended: bool = False) -> list[Income]:
         where = "" if include_ended else " WHERE status = 'active'"
         nation = self._nation()
+        current = {p.id for p in self.household.list_people()}
         with self.db.connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM income_source" + where + " ORDER BY created_at, rowid"  # noqa: S608
             ).fetchall()
-        return [self._build(r, nation) for r in rows]
+        built = [self._build(r, nation, current) for r in rows]
+        # People who've left keep their income rows, but they stay out of day-to-day lists.
+        return built if include_ended else [i for i in built if not i.person_left]
 
     def get(self, income_id: str) -> Income:
         nation = self._nation()
+        current = {p.id for p in self.household.list_people()}
         with self.db.connection() as conn:
             r = conn.execute("SELECT * FROM income_source WHERE id = ?", [income_id]).fetchone()
         if r is None:
             raise NotFound("income", income_id)
-        return self._build(r, nation)
+        return self._build(r, nation, current)
 
     def upcoming(self, after: date, days: int = 35) -> list[tuple[date, Income]]:
         """Pay dates from `after` (inclusive) for `days` days, all active sources, in order."""
@@ -149,16 +162,19 @@ class IncomeService:
         return describe(rule), dates[:5]
 
     # -- validation ------------------------------------------------------------------------
-    def _columns(self, state: dict[str, Any]) -> dict[str, Any]:
-        people = {p.id: p for p in self.household.list_people()}
-        person = people.get(state["person_id"])
-        if person is None:
+    def _columns(
+        self, state: dict[str, Any], *, check_person: bool = True, check_account: bool = True
+    ) -> dict[str, Any]:
+        """Columns for a whole income state. Edits only check the person and account when
+        those changed, so renaming an income whose account has closed still works."""
+        if check_person and state["person_id"] not in {p.id for p in self.household.list_people()}:
             raise InputError("Choose a person from your household.")
         pence = parse_pounds(state["net_amount"])
         if state["kind"] == "salary" and pence <= 0:
             raise InputError("Enter what you take home from this job, more than £0.")
         account_id = state.get("account_id")
-        if account_id is not None:
+        if account_id is not None and check_account:
+            person = self.household.get_person(state["person_id"])
             try:
                 acct = self.accounts.get(account_id)
             except NotFound:
@@ -167,7 +183,7 @@ class IncomeService:
                 raise InputError(f"Choose an account that {person.display_name} owns or shares.")
         rule = parse_rule(state["pay_rule"])
         return {
-            "person_id": person.id,
+            "person_id": state["person_id"],
             "kind": state["kind"],
             "name": state["name"],
             "net_pence": pence,
@@ -202,8 +218,16 @@ class IncomeService:
             raise InputError("This income has ended. Add a new one instead.")
         state = {f: getattr(current, f) for f in _FIELDS}
         state.update(data)
-        cols = self._columns(state)
-        old = self._columns({f: getattr(current, f) for f in _FIELDS})
+        person_changed = "person_id" in data and data["person_id"] != current.person_id
+        account_changed = "account_id" in data and data["account_id"] != current.account_id
+        cols = self._columns(
+            state,
+            check_person=person_changed,
+            check_account=account_changed or (person_changed and state["account_id"] is not None),
+        )
+        old = self._columns(
+            {f: getattr(current, f) for f in _FIELDS}, check_person=False, check_account=False
+        )
         changed = {k: v for k, v in cols.items() if old[k] != v}
         if not changed:
             with self.db.connection() as conn:

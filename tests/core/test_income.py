@@ -5,7 +5,7 @@ import pytest
 from tuppence.core.accounts import AccountIn, AccountService
 from tuppence.core.db import Database
 from tuppence.core.errors import InputError
-from tuppence.core.household import HouseholdService, PersonIn
+from tuppence.core.household import HouseholdPatch, HouseholdService, PersonIn
 from tuppence.core.income import IncomeIn, IncomeService
 from tuppence.core.migrate import migrate
 from tuppence.core.records import VersionConflict
@@ -107,3 +107,36 @@ def test_upcoming_merges_people_in_order(env):
         (date(2026, 12, 24), "Alex pay"),
         (date(2026, 12, 31), "Sam pay"),
     ]
+
+
+def test_rename_after_account_closed(env):
+    svc, a, _, joint, sams = env
+    inc = svc.create(_salary(a, joint))
+    svc.accounts.close(joint.id, joint.version)
+    renamed = svc.update(inc.id, {"name": "Alex salary"}, 1)
+    assert renamed.name == "Alex salary" and renamed.account_id == joint.id
+    with pytest.raises(InputError, match="owns or shares"):
+        svc.update(inc.id, {"account_id": sams.id}, 2)  # relinking is still checked
+
+
+def test_person_who_left_is_left_out(env):
+    svc, a, b, *_ = env
+    svc.create(_salary(a, name="Alex pay"))
+    svc.create(_salary(b, name="Sam pay"))
+    svc.household.retire_person(a.id, svc.household.get_person(a.id).version)
+    assert [i.name for i in svc.list()] == ["Sam pay"]
+    assert [i.name for _, i in svc.upcoming(date(2026, 12, 1))] == ["Sam pay"]
+    everyone = {i.name: i for i in svc.list(include_ended=True)}
+    assert everyone["Alex pay"].person_left and everyone["Alex pay"].next_pay_date is None
+    assert everyone["Alex pay"].status == "active"  # kept, not ended
+    assert not everyone["Sam pay"].person_left
+    alex = everyone["Alex pay"]
+    assert svc.update(alex.id, {"name": "Alex old pay"}, alex.version).name == "Alex old pay"
+
+
+def test_calendar_assumed_flag(env):
+    svc, a, *_ = env
+    assert svc.create(_salary(a)).calendar_assumed is True
+    assert svc.calendar_assumed()
+    svc.household.update(HouseholdPatch(nation="scotland"), svc.household.get().version)
+    assert svc.list()[0].calendar_assumed is False

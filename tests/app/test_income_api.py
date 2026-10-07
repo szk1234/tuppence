@@ -64,3 +64,22 @@ def test_income_validation_is_422(client):
     assert bad_money.status_code == 422
     bad_kind = client.post("/api/income", json={**base, "kind": "lottery", "pay_rule": RULE})
     assert bad_kind.status_code == 422
+
+
+def test_calendar_assumed_in_responses(client):
+    a = _person(client)
+    client.post(
+        "/api/income",
+        json={"person_id": a, "kind": "salary", "name": "Pay", "net_amount": "1", "pay_rule": RULE},
+    )
+    assert client.get("/api/income").json()["income"][0]["calendar_assumed"] is True
+    assert client.get("/api/income/upcoming").json()["calendar_assumed"] is True
+    assert (
+        client.post("/api/income/preview-rule", json={"pay_rule": RULE}).json()["calendar_assumed"]
+        is True
+    )
+    bad = client.post(
+        "/api/income",
+        json={"person_id": a, "kind": "salary", "name": "P", "net_amount": 5, "pay_rule": RULE},
+    )
+    assert bad.status_code == 422 and "pounds" in bad.json()["detail"]
