@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from tuppence.config.service import ConfigService
+from tuppence.core.accounts import AccountService
 from tuppence.core.auth import LoginLimiter, Sessions, Users, prune_auth
 from tuppence.core.backup import daily_backup
 from tuppence.core.clock import months_ago, to_iso, utcnow
@@ -60,6 +61,7 @@ class Services:
     usage: UsageLedger
     breakers: BreakerBoard
     llm: LLMClient
+    accounts: AccountService
     periodic: list[Periodic] = field(default_factory=list)
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _launch_used: bool = field(default=False, repr=False)
@@ -166,6 +168,7 @@ def build_services(runtime: RuntimeSettings) -> Services:
         usage=usage,
         breakers=breakers,
         llm=llm,
+        accounts=AccountService(db, household),
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
     services.sessions.purge_kind("launch")

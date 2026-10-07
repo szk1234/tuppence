@@ -5,11 +5,22 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from tuppence.app.deps import require_session
-from tuppence.app.routes import auth, config, household, jobs, llm, privacy, settings, usage
+from tuppence.app.routes import (
+    accounts,
+    auth,
+    config,
+    household,
+    jobs,
+    llm,
+    privacy,
+    settings,
+    usage,
+)
 
 PROTECTED = [
     settings.router,
     household.router,
+    accounts.router,
     config.router,
     jobs.router,
     privacy.router,
