@@ -1,0 +1,125 @@
+"""Provider-neutral chat types and errors."""
+
+from __future__ import annotations
+
+from typing import Any, Literal, Protocol
+
+import httpx
+from pydantic import BaseModel, Field
+
+Role = Literal["system", "user", "assistant", "tool"]
+
+
+class ToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+class Message(BaseModel):
+    role: Role
+    content: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_call_id: str | None = None
+    name: str | None = None
+
+
+class ToolSpec(BaseModel):
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class ChatRequest(BaseModel):
+    model: str
+    messages: list[Message]
+    tools: list[ToolSpec] = Field(default_factory=list)
+    json_schema: dict[str, Any] | None = None
+    schema_name: str = "result"
+    max_tokens: int = 4096
+    temperature: float | None = 0.0
+
+
+class Usage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class ChatResponse(BaseModel):
+    text: str
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    usage: Usage = Field(default_factory=Usage)
+    model: str
+    finish_reason: str | None = None
+
+
+class ProviderModel(BaseModel):
+    id: str
+    display_name: str | None = None
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    supports_tools: bool | None = None
+    supports_json_schema: bool | None = None
+    supports_vision: bool | None = None
+    price_in_usd_per_mtok: float | None = None
+    price_out_usd_per_mtok: float | None = None
+
+
+class Provider(Protocol):
+    api_style: str
+    client: httpx.Client
+
+    def list_models(self) -> list[ProviderModel]: ...
+    def chat(self, req: ChatRequest) -> ChatResponse: ...
+
+
+class LLMError(Exception):
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+class LLMHTTPError(LLMError):
+    def __init__(self, status: int, body: str, retry_after: float | None = None) -> None:
+        super().__init__(f"HTTP {status}: {body}", retryable=status == 429 or status >= 500)
+        self.status, self.body, self.retry_after = status, body, retry_after
+
+
+class LLMConnectionError(LLMError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retryable=True)
+
+
+class LLMTimeout(LLMError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retryable=True)
+
+
+class LLMRefused(LLMError):
+    pass
+
+
+class LLMBadResponse(LLMError):
+    pass
+
+
+class NoticeRequired(LLMError):
+    pass
+
+
+class BudgetExceeded(LLMError):
+    pass
+
+
+class ContextTooLarge(LLMError):
+    pass
+
+
+class NoModelConfigured(LLMError):
+    pass
+
+
+class AllModelsFailed(LLMError):
+    def __init__(self, attempts: list[str]) -> None:
+        super().__init__("No AI model could answer: " + "; ".join(attempts))
+        self.attempts = attempts
