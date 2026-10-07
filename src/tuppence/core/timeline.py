@@ -13,15 +13,15 @@ import json
 import sqlite3
 from collections.abc import Callable
 from datetime import date
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.errors import InputError
 from tuppence.core.postcode import normalise_district
-from tuppence.core.records import NotFound
+from tuppence.core.records import NotFound, VersionConflict
 
 SubjectType = Literal["household", "person", "account", "income_source"]
 
@@ -38,6 +38,12 @@ ALLOWED_ATTRIBUTES: dict[str, dict[str, TypeAdapter[Any]]] = {
     "household": {
         "nation": TypeAdapter(Literal["england", "wales", "scotland", "northern_ireland"]),
         "postcode_district": TypeAdapter(str),
+        "housing_tenure": TypeAdapter(
+            Literal["renting", "mortgage", "owned", "living_with_family"]
+        ),
+        "housing_monthly_pence": TypeAdapter(Annotated[int, Field(ge=0)]),
+        "bedrooms": TypeAdapter(Annotated[int, Field(ge=0, le=20)]),
+        "council_tax_band": TypeAdapter(Literal["A", "B", "C", "D", "E", "F", "G", "H", "I"]),
     },
 }
 
@@ -56,6 +62,7 @@ class TimelineEntry(BaseModel):
     valid_from: date
     valid_to: date | None
     source: str
+    version: int = 1
 
 
 def _validate(subject_type: str, attribute: str, value: Any) -> Any:
@@ -81,6 +88,7 @@ def _row(row: Any) -> TimelineEntry:
         valid_from=date.fromisoformat(row["valid_from"]),
         valid_to=date.fromisoformat(row["valid_to"]) if row["valid_to"] else None,
         source=row["source"],
+        version=row["version"],
     )
 
 
@@ -105,7 +113,7 @@ def _put(conn: sqlite3.Connection, key: list[str], payload: str, start: str, sou
     ).fetchone()
     if same is not None:
         conn.execute(
-            "UPDATE profile_entry SET value = ?, source = ? WHERE id = ?",
+            "UPDATE profile_entry SET value = ?, source = ?, version = version + 1 WHERE id = ?",
             [payload, source, same["id"]],
         )
         return int(same["id"])
@@ -185,6 +193,19 @@ def sync_household_row(conn: sqlite3.Connection, today: date, *, now: str) -> No
         )
 
 
+_UNSET: Any = object()
+
+
+def _current_version(conn: sqlite3.Connection, key: list[str], day: date) -> int:
+    row = conn.execute(
+        f"SELECT version FROM profile_entry WHERE {_KEY}"  # noqa: S608 - constant clause
+        " AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)"
+        " ORDER BY valid_from DESC LIMIT 1",
+        [*key, day.isoformat(), day.isoformat()],
+    ).fetchone()
+    return 0 if row is None else int(row["version"])
+
+
 class Timeline:
     def __init__(self, db: Database, *, today: Callable[[], date] = date.today) -> None:
         self.db = db
@@ -209,16 +230,55 @@ class Timeline:
         valid_from: date,
         *,
         source: str = "user",
+        expected_current: Any = _UNSET,
     ) -> TimelineEntry:
+        """Record a value from `valid_from`.
+
+        With `expected_current` (the value the caller believes is current on `valid_from`, or
+        None for nothing), a different stored value raises `VersionConflict`.
+        """
         clean = _validate(subject_type, attribute, value)
         self._require_subject(subject_type, subject_id)
         key = [subject_type, subject_id, attribute]
         with self.db.transaction() as conn:
+            if expected_current is not _UNSET:
+                expected = (
+                    None
+                    if expected_current is None
+                    else _validate(subject_type, attribute, expected_current)
+                )
+                if _value_on(conn, key, valid_from.isoformat()) != expected:
+                    raise VersionConflict(
+                        "profile_entry", tuple(key), 0, _current_version(conn, key, valid_from)
+                    )
             entry_id = _put(conn, key, json.dumps(clean), valid_from.isoformat(), source)
             if subject_type == "household":
                 sync_household_row(conn, self.today(), now=to_iso(utcnow()))
             row = conn.execute("SELECT * FROM profile_entry WHERE id = ?", [entry_id]).fetchone()
         return _row(row)
+
+    def delete(self, entry_id: int, expected_version: int) -> None:
+        """Remove one entry; the one before it carries on until the next recorded change."""
+        with self.db.transaction() as conn:
+            row = conn.execute("SELECT * FROM profile_entry WHERE id = ?", [entry_id]).fetchone()
+            if row is None:
+                raise NotFound("profile_entry", entry_id)
+            if row["version"] != expected_version:
+                raise VersionConflict("profile_entry", entry_id, expected_version, row["version"])
+            conn.execute("DELETE FROM profile_entry WHERE id = ?", [entry_id])
+            conn.execute(
+                "UPDATE profile_entry SET valid_to = ?, version = version + 1"
+                " WHERE subject_type=? AND subject_id=? AND attribute=? AND valid_to = ?",
+                [
+                    row["valid_to"],
+                    row["subject_type"],
+                    row["subject_id"],
+                    row["attribute"],
+                    row["valid_from"],
+                ],
+            )
+            if row["subject_type"] == "household":
+                sync_household_row(conn, self.today(), now=to_iso(utcnow()))
 
     def end(self, subject_type: str, subject_id: str, attribute: str, valid_to: date) -> None:
         with self.db.transaction() as conn:
@@ -255,5 +315,5 @@ class Timeline:
             sql += " AND attribute = ?"
             params.append(attribute)
         with self.db.connection() as conn:
-            rows = conn.execute(sql + " ORDER BY attribute, valid_from", params).fetchall()
+            rows = conn.execute(sql + " ORDER BY valid_from, attribute, id", params).fetchall()
         return [_row(r) for r in rows]

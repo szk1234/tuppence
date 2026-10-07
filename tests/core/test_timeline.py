@@ -90,3 +90,52 @@ def test_subject_must_exist(tl):
         tl.set("person", "p_nobody", "household_member", True, date(2026, 1, 1))
     with pytest.raises(NotFound):
         tl.set("household", "2", "nation", "wales", date(2026, 1, 1))
+
+
+def test_home_attributes_validated(tl):
+    tl.set("household", "1", "housing_tenure", "renting", date(2025, 1, 1))
+    tl.set("household", "1", "council_tax_band", "D", date(2025, 1, 1))
+    tl.set("household", "1", "housing_monthly_pence", 95000, date(2025, 1, 1))
+    for attribute, bad in [
+        ("housing_tenure", "squatting"),
+        ("council_tax_band", "Z"),
+        ("bedrooms", 21),
+        ("housing_monthly_pence", -1),
+    ]:
+        with pytest.raises(InputError):
+            tl.set("household", "1", attribute, bad, date(2025, 1, 1))
+
+
+def test_expected_current_conflict_and_match(tl):
+    from tuppence.core.records import VersionConflict
+
+    tl.set("household", "1", "bedrooms", 2, date(2025, 1, 1))
+    with pytest.raises(VersionConflict):
+        tl.set("household", "1", "bedrooms", 3, date(2026, 1, 1), expected_current=None)
+    with pytest.raises(VersionConflict):
+        tl.set("household", "1", "bedrooms", 3, date(2026, 1, 1), expected_current=5)
+    tl.set("household", "1", "bedrooms", 3, date(2026, 1, 1), expected_current=2)
+    tl.set("household", "1", "council_tax_band", "C", date(2026, 1, 1), expected_current=None)
+
+
+def test_delete_extends_previous_and_checks_version(tl):
+    from tuppence.core.records import NotFound, VersionConflict
+
+    tl.set("household", "1", "bedrooms", 2, date(2024, 1, 1))
+    mid = tl.set("household", "1", "bedrooms", 3, date(2025, 1, 1))
+    tl.set("household", "1", "bedrooms", 4, date(2026, 1, 1))
+    with pytest.raises(VersionConflict):
+        tl.delete(mid.id, mid.version + 1)
+    tl.delete(mid.id, mid.version)
+    hist = tl.history("household", "1", "bedrooms")
+    assert [(h.value, h.valid_to) for h in hist] == [(2, date(2026, 1, 1)), (4, None)]
+    with pytest.raises(NotFound):
+        tl.delete(mid.id, 1)
+
+
+def test_history_is_chronological(tl):
+    tl.set("household", "1", "bedrooms", 2, date(2026, 1, 1))
+    tl.set("household", "1", "housing_tenure", "owned", date(2024, 1, 1))
+    tl.set("household", "1", "bedrooms", 1, date(2025, 1, 1))
+    hist = tl.history("household", "1")
+    assert [h.valid_from for h in hist] == sorted(h.valid_from for h in hist)

@@ -138,3 +138,33 @@ def test_past_timeline_entry_shows_on_the_household(client):
     )
     assert future.status_code == 201
     assert client.get("/api/household").json()["nation"] == "scotland"
+
+
+def test_timeline_expected_current_conflict_and_versioned_delete(client):
+    base = {"subject_type": "household", "subject_id": "1", "attribute": "bedrooms"}
+    first = client.post(
+        "/api/household/timeline",
+        json={**base, "value": 2, "valid_from": "2024-01-01", "expected_current": None},
+    )
+    assert first.status_code == 201
+    stale = client.post(
+        "/api/household/timeline",
+        json={**base, "value": 3, "valid_from": "2025-01-01", "expected_current": None},
+    )
+    assert stale.status_code == 409 and "current_version" in stale.json()
+    ok = client.post(
+        "/api/household/timeline",
+        json={**base, "value": 3, "valid_from": "2025-01-01", "expected_current": 2},
+    )
+    assert ok.status_code == 201
+    entry = ok.json()
+    wrong = client.delete(
+        f"/api/household/timeline/{entry['id']}", params={"expected_version": entry["version"] + 1}
+    )
+    assert wrong.status_code == 409
+    gone = client.delete(
+        f"/api/household/timeline/{entry['id']}", params={"expected_version": entry["version"]}
+    )
+    assert gone.status_code == 204
+    entries = client.get("/api/household/timeline", params=base | {}).json()["entries"]
+    assert [e["value"] for e in entries] == [2] and entries[0]["valid_to"] is None

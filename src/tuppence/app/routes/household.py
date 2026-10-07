@@ -37,6 +37,7 @@ class TimelineIn(BaseModel):
     attribute: str
     value: Any
     valid_from: date
+    expected_current: Any = None
 
 
 def _parse(model: type[BaseModel], data: dict[str, Any]) -> Any:
@@ -87,6 +88,14 @@ def timeline(subject_type: str, subject_id: str, services: Svc) -> dict[str, lis
 
 @router.post("/timeline", status_code=201)
 def add_timeline(body: TimelineIn, services: Svc) -> TimelineEntry:
+    extra: dict[str, Any] = {}
+    if "expected_current" in body.model_fields_set:
+        extra["expected_current"] = body.expected_current
     return services.timeline.set(
-        body.subject_type, body.subject_id, body.attribute, body.value, body.valid_from
+        body.subject_type, body.subject_id, body.attribute, body.value, body.valid_from, **extra
     )
+
+
+@router.delete("/timeline/{entry_id}", status_code=204)
+def delete_timeline_entry(entry_id: int, expected_version: int, services: Svc) -> None:
+    services.timeline.delete(entry_id, expected_version)
