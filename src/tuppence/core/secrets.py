@@ -9,7 +9,7 @@ import secrets as pysecrets
 import sqlite3
 import stat
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -20,6 +20,7 @@ from tuppence.core.db import Database
 
 SERVICE = "Tuppence"
 META_KEY = "store"
+REF_PREFIX = "ref:"
 log = logging.getLogger("tuppence")
 
 
@@ -40,11 +41,13 @@ class SecretUnreadable(SecretError):
 
 
 class SecretStore(Protocol):
-    kind: str
+    @property
+    def kind(self) -> str: ...
 
     def put(self, value: str, ref: str | None = None) -> str: ...
     def get(self, ref: str) -> str | None: ...
     def delete(self, ref: str) -> None: ...
+    def forget_all(self) -> None: ...
 
 
 def _new_ref() -> str:
@@ -66,6 +69,10 @@ class KeyringStore:
         if self.db is not None:
             with self.db.transaction() as conn:
                 _record_kind(conn, self.kind)
+                conn.execute(
+                    "INSERT OR IGNORE INTO secret_meta (key, value) VALUES (?, '1')",
+                    [REF_PREFIX + ref],
+                )
         return ref
 
     def get(self, ref: str) -> str | None:
@@ -79,12 +86,29 @@ class KeyringStore:
 
         with contextlib.suppress(PasswordDeleteError):
             keyring.delete_password(self.service, ref)
+        if self.db is not None:
+            with self.db.transaction() as conn:
+                conn.execute("DELETE FROM secret_meta WHERE key = ?", [REF_PREFIX + ref])
+                left = conn.execute(
+                    "SELECT 1 FROM secret_meta WHERE key LIKE ? LIMIT 1", [REF_PREFIX + "%"]
+                ).fetchone()
+                if left is None:
+                    conn.execute("DELETE FROM secret_meta WHERE key = ?", [META_KEY])
+
+    def forget_all(self) -> None:
+        for ref in _keychain_refs(self.db):
+            self.delete(ref)
+        _clear_meta(self.db)
 
 
 class UnavailableStore:
     """Stands in when saved keys live in a keychain this session can't reach."""
 
     kind = "keychain"
+
+    def __init__(self, db: Database | None = None) -> None:
+        self.db = db
+
     MESSAGE = (
         "Your saved AI keys are in this computer's keychain, which isn't available right now. "
         "Open Tuppence from your desktop session."
@@ -99,17 +123,31 @@ class UnavailableStore:
     def delete(self, ref: str) -> None:
         raise SecretStoreUnavailable(self.MESSAGE)
 
+    def forget_all(self) -> None:
+        """Escape hatch: drop what Tuppence remembers, even though the keychain can't be reached."""
+        _clear_meta(self.db)
+
 
 class EncryptedDbStore:
     kind = "encrypted-db"
 
-    def __init__(self, db: Database, key: bytes) -> None:
+    def __init__(self, db: Database, key: bytes | Callable[[], bytes]) -> None:
         self.db = db
-        self.fernet = Fernet(key)
+        self._key = key
+        self._fernet: Fernet | None = None
+
+    @property
+    def fernet(self) -> Fernet:
+        """Loaded on first use, so a lost key file never stops Tuppence starting."""
+        if self._fernet is None:
+            key = self._key() if callable(self._key) else self._key
+            self._fernet = Fernet(key)
+        return self._fernet
 
     def put(self, value: str, ref: str | None = None) -> str:
         ref = ref or _new_ref()
-        token = self.fernet.encrypt(value.encode())
+        fernet = self.fernet
+        token = fernet.encrypt(value.encode())
         with self.db.transaction() as conn:
             conn.execute(
                 "INSERT INTO secret (ref, ciphertext, created_at) VALUES (?, ?, ?)"
@@ -135,9 +173,32 @@ class EncryptedDbStore:
         with self.db.transaction() as conn:
             conn.execute("DELETE FROM secret WHERE ref = ?", [ref])
 
+    def forget_all(self) -> None:
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM secret")
+        _clear_meta(self.db)
+        self._fernet = None
+
 
 def _record_kind(conn: sqlite3.Connection, kind: str) -> None:
     conn.execute("INSERT OR IGNORE INTO secret_meta (key, value) VALUES (?, ?)", [META_KEY, kind])
+
+
+def _clear_meta(db: Database | None) -> None:
+    if db is None:
+        return
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM secret_meta")
+
+
+def _keychain_refs(db: Database | None) -> list[str]:
+    if db is None:
+        return []
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT key FROM secret_meta WHERE key LIKE ?", [REF_PREFIX + "%"]
+        ).fetchall()
+    return [str(r[0])[len(REF_PREFIX) :] for r in rows]
 
 
 def _recorded_kind(db: Database) -> str | None:
@@ -224,8 +285,9 @@ def load_or_create_key(
 
 def _missing(path: Path) -> SecretKeyMissing:
     return SecretKeyMissing(
-        f"Tuppence's secret key file is missing or empty ({path}), but saved AI keys depend on "
-        "it. Restore that file from a backup, or re-enter your AI keys."
+        f"Tuppence can't find the key file that unlocks your saved AI keys ({path}). "
+        "Put that file back, or choose \u201cForget saved AI keys\u201d in Settings \u2192 AI "
+        "and enter them again."
     )
 
 
@@ -255,12 +317,57 @@ def keyring_usable() -> bool:
         return False
 
 
+class AutoStore:
+    """Picks the concrete store on first use and again after `forget_all`."""
+
+    def __init__(self, mode: str, db: Database, data_dir: Path) -> None:
+        self.mode = mode
+        self.db = db
+        self.data_dir = data_dir
+        self._inner: SecretStore | None = None
+
+    def _resolve(self) -> SecretStore:
+        if self._inner is None:
+            self._inner = self._choose()
+        return self._inner
+
+    def _choose(self) -> SecretStore:
+        recorded = _recorded_kind(self.db)
+        has_rows = _has_secrets(self.db)
+        if self.mode in ("local", "desktop") and recorded != "encrypted-db" and not has_rows:
+            if keyring_usable():
+                return KeyringStore(db=self.db)
+            if recorded == "keychain":
+                return UnavailableStore(self.db)
+        data_dir, db = self.data_dir, self.db
+
+        def load() -> bytes:
+            return load_or_create_key(data_dir, has_secrets=_has_secrets(db))
+
+        store = EncryptedDbStore(db, load)
+        if "TUPPENCE_SECRET_KEY_FILE" in os.environ:
+            store.fernet  # noqa: B018 - an explicitly configured key file is checked at start-up
+        return store
+
+    @property
+    def kind(self) -> str:
+        return self._resolve().kind
+
+    def put(self, value: str, ref: str | None = None) -> str:
+        return self._resolve().put(value, ref)
+
+    def get(self, ref: str) -> str | None:
+        return self._resolve().get(ref)
+
+    def delete(self, ref: str) -> None:
+        self._resolve().delete(ref)
+
+    def forget_all(self) -> None:
+        self._resolve().forget_all()
+        self._inner = None
+
+
 def choose_secret_store(mode: str, db: Database, data_dir: Path) -> SecretStore:
-    recorded = _recorded_kind(db)
-    has_rows = _has_secrets(db)
-    if mode in ("local", "desktop") and recorded != "encrypted-db" and not has_rows:
-        if keyring_usable():
-            return KeyringStore(db=db)
-        if recorded == "keychain":
-            return UnavailableStore()
-    return EncryptedDbStore(db, load_or_create_key(data_dir, has_secrets=has_rows))
+    store = AutoStore(mode, db, data_dir)
+    store._resolve()  # noqa: SLF001 - settle the choice (and check a configured key file) now
+    return store

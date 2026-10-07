@@ -169,10 +169,14 @@ def test_encrypted_choice_stays_when_keyring_appears(db, tmp_path, monkeypatch):
 
 def test_missing_key_file_with_rows_is_refused(db, tmp_path, monkeypatch):
     monkeypatch.delenv("TUPPENCE_SECRET_KEY_FILE", raising=False)
-    sec.EncryptedDbStore(db, sec.load_or_create_key(tmp_path, env={})).put("abc")
+    ref = sec.EncryptedDbStore(db, sec.load_or_create_key(tmp_path, env={})).put("abc")
     (tmp_path / "secret.key").unlink()
+    store = sec.choose_secret_store("server", db, tmp_path)  # start-up is not blocked
     with pytest.raises(sec.SecretKeyMissing, match="secret.key"):
-        sec.choose_secret_store("server", db, tmp_path)
+        store.get(ref)
+    with pytest.raises(sec.SecretKeyMissing, match="Forget saved AI keys"):
+        store.put("new")
+    assert store.get("sec_nothing") is None
     assert not (tmp_path / "secret.key").exists()
     (tmp_path / "secret.key").write_bytes(b"")
     with pytest.raises(sec.SecretKeyMissing):
@@ -260,3 +264,65 @@ def test_loose_key_file_is_tightened(tmp_path, caplog):
     assert stat.S_IMODE(os.stat(tmp_path / "secret.key").st_mode) == 0o600
     assert "0600" in caplog.text
     assert key.decode() not in caplog.text
+
+
+def test_forget_all_encrypted_then_put_with_fresh_key(db, tmp_path, monkeypatch):
+    monkeypatch.delenv("TUPPENCE_SECRET_KEY_FILE", raising=False)
+    monkeypatch.setattr(sec, "keyring_usable", lambda: False)
+    store = sec.choose_secret_store("desktop", db, tmp_path)
+    ref = store.put("abc")
+    old_key = (tmp_path / "secret.key").read_bytes()
+    (tmp_path / "secret.key").unlink()
+    store.forget_all()
+    with db.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM secret").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM secret_meta").fetchone()[0] == 0
+    assert store.get(ref) is None
+    ref2 = store.put("def")
+    assert store.get(ref2) == "def"
+    assert (tmp_path / "secret.key").read_bytes() != old_key
+
+
+def test_forget_all_keychain_clears_entries_and_kind(db, tmp_path, monkeypatch):
+    monkeypatch.delenv("TUPPENCE_SECRET_KEY_FILE", raising=False)
+    monkeypatch.setattr(sec, "keyring_usable", lambda: True)
+    mem = MemoryKeyring()
+    previous = keyring.get_keyring()
+    keyring.set_keyring(mem)
+    try:
+        store = sec.choose_secret_store("desktop", db, tmp_path)
+        store.put("a")
+        store.put("b")
+        assert len(mem.data) == 2
+        store.forget_all()
+        assert mem.data == {}
+        assert sec._recorded_kind(db) is None  # noqa: SLF001
+        monkeypatch.setattr(sec, "keyring_usable", lambda: False)
+        assert store.put("c")  # chosen afresh: now the encrypted database
+        assert store.kind == "encrypted-db"
+    finally:
+        keyring.set_keyring(previous)
+
+
+def test_unavailable_keychain_can_be_forgotten(db, tmp_path, monkeypatch):
+    monkeypatch.delenv("TUPPENCE_SECRET_KEY_FILE", raising=False)
+    monkeypatch.setattr(sec, "keyring_usable", lambda: True)
+    monkeypatch.setattr(keyring, "set_password", lambda *a: None)
+    sec.choose_secret_store("desktop", db, tmp_path).put("a")
+    monkeypatch.setattr(sec, "keyring_usable", lambda: False)
+    store = sec.choose_secret_store("desktop", db, tmp_path)
+    store.forget_all()
+    assert store.put("b")
+
+
+def test_deleting_last_keychain_secret_clears_kind(db, tmp_path, monkeypatch):
+    monkeypatch.delenv("TUPPENCE_SECRET_KEY_FILE", raising=False)
+    monkeypatch.setattr(sec, "keyring_usable", lambda: True)
+    monkeypatch.setattr(keyring, "set_password", lambda *a: None)
+    monkeypatch.setattr(keyring, "delete_password", lambda *a: None)
+    store = sec.choose_secret_store("desktop", db, tmp_path)
+    r1, r2 = store.put("a"), store.put("b")
+    store.delete(r1)
+    assert sec._recorded_kind(db) == "keychain"  # noqa: SLF001
+    store.delete(r2)
+    assert sec._recorded_kind(db) is None  # noqa: SLF001

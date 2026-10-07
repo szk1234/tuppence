@@ -45,7 +45,9 @@ def test_bad_secret_key_file_exits_2(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("TUPPENCE_SECRET_KEY_FILE", str(bad))
     rc = main(["serve", "--no-browser", "--mode", "server", "--data-dir", str(tmp_path / "d")])
     assert rc == 2
-    assert str(bad) in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert str(bad) in err
+    assert "backup" not in err.lower()
 
 
 def _ipv6_loopback_usable() -> bool:

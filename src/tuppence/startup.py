@@ -29,7 +29,9 @@ ERROR_FILE = "startup-error.txt"
 
 
 def startup_failure(data_dir: Path, exc: BaseException) -> str:
-    if isinstance(exc, MigrationError | SecretError):
+    if isinstance(exc, SecretError):
+        return f"Tuppence couldn't start: {exc}"
+    if isinstance(exc, MigrationError):
         detail = str(exc)
     elif isinstance(exc, sqlite3.DatabaseError):
         detail = f"its database couldn't be opened ({exc}). The file may be damaged."
