@@ -65,15 +65,17 @@ def extract_document(
     limits: ExtractLimits,
     known_header: Callable[[Sequence[str]], bool] | None = None,
     vision: VisionReader | None = None,
+    names: Sequence[str] = (),
 ) -> Document:
     """One overall deadline (`limits.timeout_s`) covers every step of one extraction,
-    including each vision call, so a long scan can't run for hours."""
+    including each vision call, so a long scan can't run for hours. `names` are the
+    household's own names: a line that is only one of them is withheld from the AI."""
     path = path.resolve()  # the sandbox works in its own folder
     clock = _Deadline(limits)
     if kind == "csv":
         return csv_document(path.read_bytes(), sha256=sha256, known=known_header)
     if kind == "text":
-        return text_document(decode_text(path.read_bytes()), sha256=sha256)
+        return text_document(decode_text(path.read_bytes()), sha256=sha256, names=names)
     if kind == "ofx":
         return ofx_document(decode_text(path.read_bytes()), sha256=sha256)
     if kind == "qif":
@@ -87,8 +89,8 @@ def extract_document(
         records = clock.run(parse_xlsx_records, xlsx_records, str(path))
         return table_document(records, sha256=sha256, kind="xlsx", known=known_header)
     if kind == "pdf":
-        return _pdf(path, sha256, limits, clock, vision)
-    return _image(path, sha256, limits, clock, vision)
+        return _pdf(path, sha256, limits, clock, vision, names)
+    return _image(path, sha256, limits, clock, vision, names)
 
 
 def read_camt(path: Path, limits: ExtractLimits) -> CamtFacts:
@@ -125,6 +127,7 @@ def _pdf(
     limits: ExtractLimits,
     clock: _Deadline,
     vision: VisionReader | None,
+    names: Sequence[str] = (),
 ) -> Document:
     result = clock.run(parse_pdf_pages, pdf_pages, str(path), limits.max_pages, vision is None)
     pages = result.pages
@@ -143,7 +146,7 @@ def _pdf(
                 ocr_pages.append(number)
         if result.scanned_pages:
             warnings.append("Scanned pages were read by your AI vision model.")
-    doc = pages_document(pages, sha256=sha256, kind="pdf")
+    doc = pages_document(pages, sha256=sha256, kind="pdf", names=names)
     doc.pages, doc.ocr_pages, doc.ocr_confidence = (
         result.page_count,
         sorted(ocr_pages),
@@ -167,6 +170,7 @@ def _image(
     limits: ExtractLimits,
     clock: _Deadline,
     vision: VisionReader | None,
+    names: Sequence[str] = (),
 ) -> Document:
     if vision is not None:
         # Decoded, size-checked and re-encoded in the sandbox: no metadata goes to the model.
@@ -175,7 +179,8 @@ def _image(
     else:
         result = clock.run(parse_image_rows, image_rows, str(path))
         rows, confidence = result.rows, result.ocr_confidence
-    doc = pages_document([rows], sha256=sha256, kind="image")
+    # Screenshot withholding (textprep.split_screenshot, with the shared classifier).
+    doc = pages_document([rows], sha256=sha256, kind="image", names=names)
     doc.pages, doc.ocr_pages, doc.ocr_confidence = 1, [1], confidence
     if confidence is not None and confidence < LOW_OCR_CONFIDENCE:
         doc.warnings.append(

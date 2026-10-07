@@ -43,7 +43,8 @@ def user_messages(scripted):
         ("+£250.00", "<AMOUNT:+£12.30>"),
         ("12.30-", "<AMOUNT:12.30->"),
         ("12345678", "<NUMBER:8 digits>"),
-        ("12-34-56", "<NUMBER:6 digits>"),
+        ("12-34-56", "<HIDDEN>"),  # a sort code: hidden outright
+        ("404784", "<NUMBER:6 digits>"),
         ("GREENBASKET STORES 0873", "<TEXT>"),
         ("Alex Example", "<TEXT>"),
     ],

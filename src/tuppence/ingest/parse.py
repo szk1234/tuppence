@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -154,9 +155,11 @@ def parse_document(
     today: dt.date,
     limits: ReaderLimits,
     prompts_dir: Path | None = None,
+    names: Sequence[str] = (),
 ) -> ParseOutcome:
     """`context_window` is the read model's, or None when no model is set up (an AI step then
-    raises NoModelConfigured through `llm`)."""
+    raises NoModelConfigured through `llm`). `names` are the household's own names, hidden
+    from layout learning like any account detail."""
     level = level_for(doc)
     if doc.kind in ("ofx", "qif", "camt053"):
         try:
@@ -198,6 +201,7 @@ def parse_document(
             llm=llm,
             run=run,
             account_kind=account_kind,
+            names=names,
             max_attempts=limits.max_attempts_per_chunk,
             prompt=load_prompt("csv_mapping", prompts_dir),
         )

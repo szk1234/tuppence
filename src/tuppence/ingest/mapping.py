@@ -28,7 +28,7 @@ from tuppence.ingest.models import AccountKind, Document
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, tidy
 from tuppence.ingest.registry import CsvLayout, data_records, header_cells, header_key, norm
-from tuppence.ingest.textprep import is_sensitive
+from tuppence.ingest.sensitive import HIDDEN, classify, holds_details, mask
 from tuppence.llm.types import LLMBadResponse, Message
 
 SAMPLE_ROWS = 5
@@ -63,7 +63,6 @@ _FORMAT_NAMES = {
     "%M": "mm",
     "%S": "ss",
 }
-HIDDEN = "<HIDDEN>"
 
 
 class MappingOut(BaseModel):
@@ -103,7 +102,6 @@ _AMOUNT = re.compile(
     re.IGNORECASE,
 )
 _NUMBERISH = re.compile(rf"^[{_SIGN}'\s]*\d[\d\s.,/'{_SIGN}]*$")
-_DIGIT_RUN = re.compile(r"\d{4,}")
 
 
 def _format_name(fmt: str) -> str:
@@ -120,11 +118,14 @@ def _date_format(cell: str) -> str | None:
     return None
 
 
-def cell_token(cell: str) -> str:
-    """What the model sees of one cell: its type and how it is written, never its value."""
+def cell_token(cell: str, *, names: Sequence[str] = ()) -> str:
+    """What the model sees of one cell: its type and how it is written, never its value.
+    A cell holding account details is HIDDEN outright."""
     text = " ".join(cell.split())
     if not text:
         return "<EMPTY>"
+    if classify(text, names=names):
+        return HIDDEN
     fmt = _date_format(text)
     if fmt is not None:
         return f"<DATE:{_format_name(fmt)}>"
@@ -146,15 +147,11 @@ def cell_token(cell: str) -> str:
     return "<TEXT>"
 
 
-def shown_heading(cell: str) -> str:
+def shown_heading(cell: str, *, names: Sequence[str] = ()) -> str:
     """A column heading as the model sees it: hidden when it names account details (a sort
     code or account number column, say), with any run of four or more digits replaced."""
     text = " ".join(cell.split())
-    if not text:
-        return ""
-    if is_sensitive(text):
-        return HIDDEN
-    return _DIGIT_RUN.sub("<NUM>", text)
+    return mask(text, names=names) if text else ""
 
 
 _HEADING_WORDS = re.compile(
@@ -163,28 +160,16 @@ _HEADING_WORDS = re.compile(
     r"|money|withdrawals?|deposits?|counter\s*party|currency|spend|received)\b",
     re.IGNORECASE,
 )
-_TITLED_NAME = re.compile(
-    r"^\s*(?:(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+[A-Za-z]|(?:statement|prepared)\s+for\b)",
-    re.IGNORECASE,
-)
 
 
-def _holds_details(cell: str) -> bool:
-    """A heading cell that carries an identifier or a name, not just a label like 'Sort Code'."""
-    if not is_sensitive(cell):
-        return False
-    titled = _TITLED_NAME.match(cell) is not None and not _HEADING_WORDS.search(cell)
-    return titled or any(ch.isdigit() for ch in cell)
-
-
-def header_problem(header: Sequence[str]) -> str | None:
+def header_problem(header: Sequence[str], *, names: Sequence[str] = ()) -> str | None:
     """Why this row can't be the file's column headings, in plain words, or None.
 
     A real header has three or more headings, at least two of them recognisable column names,
     no account details, and no 'Label:' cells (a key/value preamble such as `Name,Alex Example`
     above the table)."""
     filled = [" ".join(c.split()) for c in header if c.strip()]
-    if any(_holds_details(c) for c in filled):
+    if any(holds_details(c, names=names) for c in filled):
         return (
             "This file's column headings include account details, so its layout can't be "
             "worked out automatically."
@@ -201,10 +186,13 @@ def header_problem(header: Sequence[str]) -> str | None:
     return None
 
 
-def sketch(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+def sketch(
+    header: Sequence[str], rows: Sequence[Sequence[str]], *, names: Sequence[str] = ()
+) -> str:
     """The text the model gets: headings, then one row of type tokens per sample row."""
-    return f"HEADINGS:\n{json.dumps([shown_heading(h) for h in header])}\nROWS:\n" + "\n".join(
-        json.dumps([cell_token(c) for c in row]) for row in rows
+    headings = [shown_heading(h, names=names) for h in header]
+    return f"HEADINGS:\n{json.dumps(headings)}\nROWS:\n" + "\n".join(
+        json.dumps([cell_token(c, names=names) for c in row]) for row in rows
     )
 
 
@@ -236,6 +224,7 @@ def mapping_to_layout(
     rows: Sequence[Sequence[str]],
     *,
     account_kind: AccountKind | None = None,
+    names: Sequence[str] = (),
 ) -> CsvLayout:
     """A CsvLayout from the model's answer, or a MappingError naming what's wrong.
 
@@ -243,7 +232,7 @@ def mapping_to_layout(
     A hidden heading can't be chosen. The date format comes from every value in the date
     column (`rows` is every data row). On a bank account, a single amount column read as a
     card's (purchases positive) contradicts the account type and is refused."""
-    shown = [shown_heading(h) for h in header]
+    shown = [shown_heading(h, names=names) for h in header]
     index: dict[str, int] = {}
     for i, name in enumerate(shown):
         if name and name != HIDDEN:
@@ -340,10 +329,12 @@ def summarise_checks(errors: Sequence[str]) -> list[str]:
     return [f"{label} ({_plural(n)})" for label, n in counts.items()]
 
 
-def _describe(problems: Sequence[str], layout: CsvLayout, header: Sequence[str]) -> list[str]:
+def _describe(
+    problems: Sequence[str], layout: CsvLayout, header: Sequence[str], names: Sequence[str]
+) -> list[str]:
     """Rows the importer couldn't read, counted by column. Problems quote cells, so only
     their kind is used."""
-    shown = {h: shown_heading(h) for h in header}
+    shown = {h: shown_heading(h, names=names) for h in header}
 
     def name(column: str | None) -> str:
         return shown.get(column or "", "") or "?"
@@ -381,9 +372,11 @@ def propose_layout(
     llm: StructuredLLM,
     run: Any,
     account_kind: AccountKind | None = None,
+    names: Sequence[str] = (),
     max_attempts: int = 3,
     prompt: str | None = None,
 ) -> MappingOutcome:
+    """`names` are the household's own names: a heading or cell that is one is hidden."""
     header = header_cells(doc)
     if header is None:
         return MappingOutcome(
@@ -394,11 +387,11 @@ def propose_layout(
                 "worked out automatically."
             ],
         )
-    problem = header_problem(header)
+    problem = header_problem(header, names=names)
     if problem is not None:
         return MappingOutcome(layout=None, result=None, errors=[problem])
     rows = [cells for _, cells in data_records(doc)]
-    base = sketch(header, rows[:SAMPLE_ROWS])
+    base = sketch(header, rows[:SAMPLE_ROWS], names=names)
     system = Message(role="system", content=prompt or load_prompt("csv_mapping"))
     errors: list[str] = []
     previous: str | None = None
@@ -426,7 +419,9 @@ def propose_layout(
             continue
         previous = tidy(mapping.model_dump_json(), 2000)
         try:
-            layout = mapping_to_layout(mapping, header, rows, account_kind=account_kind)
+            layout = mapping_to_layout(
+                mapping, header, rows, account_kind=account_kind, names=names
+            )
             last = parse_with_layout(doc, layout)
         except MappingError as exc:
             errors = [tidy(safe_error_text(exc))]
@@ -434,7 +429,7 @@ def propose_layout(
         except LayoutMismatch:
             errors = ["One of the columns in that answer isn't in the file"]
             continue
-        errors = _describe(last.problems, layout, header) + summarise_checks(
+        errors = _describe(last.problems, layout, header, names) + summarise_checks(
             check_document(doc, last.parsed)
         )
         if not errors:

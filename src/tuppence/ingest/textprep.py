@@ -16,6 +16,7 @@ from collections.abc import Callable, Sequence
 from pydantic import BaseModel
 
 from tuppence.core.errors import UserFacing
+from tuppence.ingest import sensitive
 from tuppence.ingest.models import Document, FileKind, Line
 from tuppence.ingest.textnum import decode_text, parse_date, parse_money
 
@@ -60,26 +61,6 @@ _MONTH = (
 _NUMERIC_DATE = re.compile(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b")
 _NAMED_DATE = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{_MONTH}\b\.?", re.IGNORECASE)
 _MONEY_TOKEN = re.compile(r"(?<![\w.])[-−]?[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d)")
-_STREET = (
-    r"road|rd|street|st|lane|ln|avenue|ave|close|drive|way|gardens|court|place|terrace"
-    r"|crescent|square|hill|grove|mews|walk"
-)
-# Lines that identify the holder or the account. Never data, wherever they appear.
-_SENSITIVE = re.compile(
-    r"\b(?:account|acct?|a/c)\.?\s*(?:no\.?|num(?:ber)?|name|holders?|type)\b"
-    r"|\b(?:customer|membership|roll)\s*(?:no\.?|num(?:ber)?|id)\b"
-    r"|(?<![\w/])(?:account|acct?|a/c|s/c|s\.c\.)\.?\s*:?\s*#?\s*\d[\d -]{4,}\d"
-    r"|\bsort\s*code\b|\b\d{2}-\d{2}-\d{2}\b"
-    r"|\bcard\s+(?:ending|number|no\.?)\b|\bending\s+(?:in\s+)?\d{4}\b"
-    r"|\*{2,}[\s-]*\d{2,4}|(?<![a-z])x{2,}[\s-]*\d{4}\b|\b\d{4}[\s-]*\*{2,}"
-    r"|\b(?:\d[ -]?){12,18}\d\b"
-    r"|\biban\b|\bbic\b|\b[A-Z]{2}\d{2}\s?[A-Z0-9]{4}(?:\s?\d{4}){2,}(?:\s?[A-Z0-9]{1,4})?\b"
-    r"|\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b"
-    rf"|(?<![\d/.-])\d{{1,3}}[a-z]?,?\s+(?:[A-Za-z']+\s+){{1,2}}(?:{_STREET})\b"
-    r"|^\s*(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+[A-Za-z]"
-    r"|^\s*(?:statement\s+for|prepared\s+for|holder)\b",
-    re.IGNORECASE,
-)
 # "Opening balance 1,000.00", "Money in 1,200.00 Money out 800.00": figures, not rows.
 _SUMMARY = re.compile(
     r"\b(?:opening|closing|start|end)\s+balance\b|\bmoney\s+(?:in|out)\b"
@@ -203,9 +184,10 @@ def _has_date(text: str) -> bool:
     return any(1 <= int(m.group(1)) <= 31 for m in _NAMED_DATE.finditer(text))
 
 
-def is_sensitive(text: str) -> bool:
-    """Account numbers, sort codes, card endings, IBANs, addresses and holder names."""
-    return _SENSITIVE.search(text) is not None
+def is_sensitive(text: str, *, names: Sequence[str] = ()) -> bool:
+    """Account numbers, sort codes, card endings, IBANs, addresses and holder names (the
+    shared classifier in `ingest.sensitive`; `names` are the household's own names)."""
+    return sensitive.is_sensitive(text, names=names)
 
 
 def is_summary(text: str) -> bool:
@@ -242,17 +224,8 @@ def _normal(text: str) -> str:
     return " ".join(_PAGE_NO.sub(" ", text).casefold().split())
 
 
-_TITLE = re.compile(r"^(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+", re.IGNORECASE)
-_NAME_LINE = re.compile(r"^(?:[A-Z][A-Za-z'’-]*)(?:\s+[A-Z][A-Za-z'’-]*){1,3}$")
 _PAGE_REF = re.compile(r"P(\d+)L\d+")
-
-
-def _name_key(text: str) -> str | None:
-    """Normalised form of a line that looks like a person's name, else None."""
-    stripped = _TITLE.sub("", text.strip())
-    if not _NAME_LINE.fullmatch(stripped) or any(ch.isdigit() for ch in stripped):
-        return None
-    return " ".join(stripped.casefold().split())
+_name_key = sensitive.name_key
 
 
 def _page_edge_repeats(lines: Sequence[Line]) -> set[str]:
@@ -303,7 +276,7 @@ def split_preamble(
         name_repeat = plain and _name_key(text) in known_names and _name_key(text) is not None
         if (
             (first is not None and i < first)
-            or is_sensitive(text)
+            or is_sensitive(text, names=names)
             or is_summary(text)
             or furniture
             or name_repeat
@@ -322,7 +295,9 @@ def has_amount(text: str) -> bool:
     return _MONEY_TOKEN.search(text) is not None or _CURRENCY_FIGURE.search(text) is not None
 
 
-def split_screenshot(lines: Sequence[Line]) -> tuple[list[str], list[str]]:
+def split_screenshot(
+    lines: Sequence[Line], *, names: Sequence[str] = ()
+) -> tuple[list[str], list[str]]:
     """(withheld refs, data refs) for a screenshot from a banking app.
 
     Apps list pending and "Today" rows without a date, so only the lines above the first line
@@ -336,7 +311,7 @@ def split_screenshot(lines: Sequence[Line]) -> tuple[list[str], list[str]]:
     withheld: list[str] = []
     data: list[str] = []
     for i, line in enumerate(lines):
-        if i < first or is_sensitive(line.text) or _name_key(line.text) is not None:
+        if i < first or is_sensitive(line.text, names=names) or _name_key(line.text) is not None:
             withheld.append(line.ref)
         else:
             data.append(line.ref)
@@ -371,7 +346,7 @@ def pages_document(
     if not preamble:
         pre, data = [], [ln.ref for ln in lines]
     elif kind == "image":
-        pre, data = split_screenshot(lines)
+        pre, data = split_screenshot(lines, names=names)
     else:
         pre, data = split_preamble(lines, names=names)
     return Document(
