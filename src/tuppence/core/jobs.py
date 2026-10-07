@@ -65,6 +65,25 @@ class JobQueue:
         self.db = db
         self.clock = clock
         self.merges = merges or {}
+        # In-process wake-up for idle workers: enqueue() bumps the generation and notifies.
+        self._work = threading.Condition()
+        self._generation = 0
+
+    @property
+    def work_generation(self) -> int:
+        return self._generation
+
+    def notify_work(self) -> None:
+        with self._work:
+            self._generation += 1
+            self._work.notify_all()
+
+    def wait_for_work(self, seen: int, timeout: float) -> int:
+        """Wait up to `timeout` s unless work was announced since generation `seen`."""
+        with self._work:
+            if self._generation == seen:
+                self._work.wait(timeout)
+            return self._generation
 
     def enqueue(
         self,
@@ -91,14 +110,17 @@ class JobQueue:
                     "UPDATE job SET payload = ?, run_after = max(run_after, ?) WHERE id = ?",
                     [json.dumps(merged), run_after, row["id"]],
                 )
-                return int(row["id"])
-            cur = conn.execute(
-                "INSERT INTO job"
-                " (kind, scope_key, payload, status, max_attempts, run_after, created_at)"
-                " VALUES (?, ?, ?, 'queued', ?, ?, ?)",
-                [kind, scope_key, json.dumps(payload), max_attempts, run_after, to_iso(now)],
-            )
-            return int(cur.lastrowid or 0)
+                job_id = int(row["id"])
+            else:
+                cur = conn.execute(
+                    "INSERT INTO job"
+                    " (kind, scope_key, payload, status, max_attempts, run_after, created_at)"
+                    " VALUES (?, ?, ?, 'queued', ?, ?, ?)",
+                    [kind, scope_key, json.dumps(payload), max_attempts, run_after, to_iso(now)],
+                )
+                job_id = int(cur.lastrowid or 0)
+        self.notify_work()  # after commit, so a woken worker can see the row
+        return job_id
 
     def claim(
         self, *, exclusive_kinds: frozenset[str] = frozenset(), kinds: frozenset[str] | None = None
@@ -255,13 +277,14 @@ class Worker:
         exclusive_kinds: frozenset[str] = frozenset(),
         threads: int = 2,
         poll_interval: float = 0.5,
+        max_idle_interval: float = 5.0,
     ) -> None:
+        """Idle workers poll after `poll_interval` s, doubling up to `max_idle_interval` s until
+        a job is claimed; JobQueue.enqueue wakes them at once (in this process)."""
         self.queue, self.handlers = queue, handlers
-        self.exclusive_kinds, self.threads, self.poll_interval = (
-            exclusive_kinds,
-            threads,
-            poll_interval,
-        )
+        self.exclusive_kinds, self.threads = exclusive_kinds, threads
+        self.poll_interval = poll_interval
+        self.max_idle_interval = max(max_idle_interval, poll_interval)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -301,14 +324,19 @@ class Worker:
                 self._stop.wait(delay)
 
     def _loop(self) -> None:
+        delay = self.poll_interval
         while not self._stop.is_set():
+            seen = self.queue.work_generation  # read before claiming: no lost wake-ups
             try:
                 worked = self.run_once()
             except Exception:  # noqa: BLE001
                 log.exception("worker loop error")
                 worked = False
-            if not worked:
-                self._stop.wait(self.poll_interval)
+            if worked:
+                delay = self.poll_interval
+                continue
+            self.queue.wait_for_work(seen, delay)
+            delay = min(delay * 2, self.max_idle_interval)
 
     def start(self) -> None:
         self._stop.clear()
@@ -321,6 +349,7 @@ class Worker:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
+        self.queue.notify_work()  # end any idle wait now
         for t in self._threads:
             t.join(timeout)
 

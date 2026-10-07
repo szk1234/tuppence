@@ -350,3 +350,65 @@ def test_raising_merge_cancels_old_job_and_keeps_queued_payload(tmp_path, path, 
     assert old.status == "cancelled" and old.error == "Superseded; its work couldn't be merged"
     assert q.get(newer).status == "queued" and q.get(newer).payload == {"ids": [2]}
     assert "[1]" not in caplog.text and "[2]" not in caplog.text
+
+
+def test_idle_backoff_doubles_to_the_cap_and_resets_after_a_job(env):
+    q, _ = env
+    w = Worker(q, {"echo": lambda j: None}, threads=1, poll_interval=0.5, max_idle_interval=5.0)
+    waits = []
+
+    def fake_wait(seen, timeout):  # records the idle waits without sleeping
+        waits.append(timeout)
+        if len(waits) == 6:
+            q.enqueue("echo")
+        if len(waits) == 8:
+            w._stop.set()
+        return seen
+
+    q.wait_for_work = fake_wait
+    w._loop()
+    assert waits == [0.5, 1.0, 2.0, 4.0, 5.0, 5.0, 0.5, 1.0]
+
+
+def test_enqueue_wakes_an_idle_worker_promptly_after_backoff_grew(env):
+    import threading
+    import time
+
+    q, _ = env
+    done = threading.Event()
+    w = Worker(
+        q, {"echo": lambda j: done.set()}, threads=1, poll_interval=0.25, max_idle_interval=30.0
+    )
+    timeouts = []
+    real_wait = q.wait_for_work
+
+    def spy(seen, timeout):
+        timeouts.append(timeout)
+        return real_wait(seen, timeout)
+
+    q.wait_for_work = spy
+    w.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not (timeouts and timeouts[-1] >= 2.0) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert timeouts[-1] >= 2.0  # now in a 2 s idle wait
+        start = time.monotonic()
+        q.enqueue("echo")
+        assert done.wait(1.0)
+        assert time.monotonic() - start < 1.0
+    finally:
+        w.stop()
+
+
+def test_stop_is_prompt_during_a_long_idle_wait(env):
+    import time
+
+    q, _ = env
+    w = Worker(q, {"echo": lambda j: None}, poll_interval=30.0, max_idle_interval=30.0)
+    w.start()
+    time.sleep(0.1)
+    start = time.monotonic()
+    w.stop()
+    assert time.monotonic() - start < 1.0
+    assert not any(t.is_alive() for t in w._threads)
