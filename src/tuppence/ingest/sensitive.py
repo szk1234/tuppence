@@ -5,8 +5,9 @@ withholds such a line from an app screenshot, and CSV layout learning hides a he
 that holds one. Keeping a single list means a spelling caught by one filter is caught by all.
 
 Classes come in two kinds. A *label* names a detail without giving it ("Sort code",
-"Account number", "IBAN"); a *value* gives it (12-34-56, ****4242, a holder's name, a postcode).
-Lines are withheld for either; a CSV heading row is refused only for a value.
+"Account number", "IBAN"); a *value* gives it (12-34-56, ****4242, a holder's name, a postcode,
+a balance line such as "Available balance £1,184.56"). Lines are withheld for either; a CSV
+heading row is refused only for a value.
 """
 
 from __future__ import annotations
@@ -52,8 +53,22 @@ VALUES: dict[str, re.Pattern[str]] = {
     "address": re.compile(
         rf"(?<![\d/.-])\d{{1,3}}[a-z]?,?\s+(?:[A-Za-z']+\s+){{1,2}}(?:{_STREET})\b", _I
     ),
+    # A title and a name. "Dr" before column vocabulary ("Dr Amount") is a debit column.
     "holder_name": re.compile(
-        r"^\s*(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+[A-Za-z]|^\s*(?:statement|prepared)\s+for\b",
+        r"^\s*(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+"
+        r"(?!(?:amount|amt|total|value|balance|debit|credit|cr|dr|ref)\b)[A-Za-z]"
+        r"|^\s*(?:statement|prepared)\s+for\b",
+        _I,
+    ),
+    # A balance line: a balance or limit label and one figure, nothing else (no date, no
+    # description), so it can't be a transaction.
+    "balance_line": re.compile(
+        r"^\s*(?:(?:available|current|account|cleared|running|opening|closing|new|previous"
+        r"|starting|ending)\s+)?"
+        r"(?:balance(?:\s+after)?|available(?:\s+to\s+spend)?|overdraft\s+limit|credit\s+limit)"
+        r"\s*:?\s*\(?\s*[-+\u2212\u2013]?\s*[£$€]?\s*[-+\u2212\u2013]?\s*"
+        r"\d{1,3}(?:,\d{3})*(?:\.\d{2})?\s*\)?\s*[-\u2212]?"
+        r"(?:\s*(?:CR|DR|D|OD|O/D|in\s+credit|overdrawn))?\.?\s*$",
         _I,
     ),
 }
@@ -125,6 +140,11 @@ def classify(text: str, *, names: Sequence[str] = ()) -> set[str]:
     if _is_holder(text, names):
         found.add("holder_name")
     return found
+
+
+def is_balance_line(text: str) -> bool:
+    """A line that is only a balance or limit and its figure ("Balance £1,234.56")."""
+    return VALUES["balance_line"].search(text) is not None
 
 
 def is_sensitive(text: str, *, names: Sequence[str] = ()) -> bool:

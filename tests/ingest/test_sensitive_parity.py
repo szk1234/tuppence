@@ -67,6 +67,17 @@ CORPUS = [
     "Customer number 998877",
     "Roll number 4455",
     "Membership no. 1234567",
+    # balance lines: a label and one figure, nothing else (R-M3-16)
+    "Balance £1,234.56",
+    "Balance: -£12.00",
+    "Available balance £1,184.56",
+    "Current balance 105.00 D",
+    "Available to spend £50.00",
+    "Balance after £957.82",
+    "Overdraft limit £500.00",
+    "Credit limit £3,000.00",
+    "New balance 909.85",
+    "Previous balance (100.00)",
 ]
 # The corpus R-M3-7 added at 8ca14cc, unchanged.
 SPELLINGS_8CA14CC = [
@@ -107,7 +118,19 @@ PLAIN = [
     "02 Oct 2026 Shop 4.00",
     "Date Description Paid out Paid in Balance",
     "TRANSFER FROM ALEX EXAMPLE 50.00",
+    "BALANCE TRANSFER £100.00",
+    "5 Oct Balance £20.00",
+    # column vocabulary is not a titled name (R-M3-16)
+    "Dr Amount",
+    "Cr Amount",
+    "DR/CR",
+    "Dr",
+    "Ref",
+    "Debit",
+    "Credit",
 ]
+# Deliberate narrowings of the 8ca14cc list: column names it took for a titled name.
+NARROWED = {"Dr Amount"}
 
 
 def withheld_by_textprep(text):
@@ -192,7 +215,7 @@ REGRESSION = [
 
 @pytest.mark.parametrize("text", REGRESSION)
 def test_never_weaker_than_the_8ca14cc_list(text):
-    if SENSITIVE_8CA14CC.search(text):
+    if SENSITIVE_8CA14CC.search(text) and text not in NARROWED:
         assert classify(text), text
         assert withheld_by_textprep(text)
 

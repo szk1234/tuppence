@@ -28,6 +28,7 @@ from tuppence.ingest.models import AccountKind, CheckLevel, Document, ParsedStat
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, read_document, tidy
 from tuppence.ingest.registry import CsvLayout, LayoutRegistry
+from tuppence.ingest.sensitive import is_balance_line
 from tuppence.ingest.textnum import decode_text
 from tuppence.ingest.textprep import has_amount
 
@@ -122,9 +123,13 @@ def sign_doubt(
 
 def _held_back_amounts(doc: Document) -> str | None:
     """A screenshot's withheld lines that show an amount may be transactions: say so (without
-    quoting them) instead of losing them silently."""
+    quoting them) instead of losing them silently. A balance line is not a transaction."""
     by_ref = doc.by_ref()
-    count = sum(1 for ref in doc.preamble_refs if ref in by_ref and has_amount(by_ref[ref].text))
+    count = sum(
+        1
+        for ref in doc.preamble_refs
+        if ref in by_ref and has_amount(text := by_ref[ref].text) and not is_balance_line(text)
+    )
     if count == 0:
         return None
     if count == 1:

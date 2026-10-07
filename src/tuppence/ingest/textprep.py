@@ -301,11 +301,17 @@ def split_screenshot(
     """(withheld refs, data refs) for a screenshot from a banking app.
 
     Apps list pending and "Today" rows without a date, so only the lines above the first line
-    with a date or an amount are the header. After it, a line is withheld when it shows
-    account details or is only a name. A withheld line with an amount on it may be a
-    transaction: the parse step reports it rather than lose it silently."""
+    with a date or an amount (a balance line doesn't count) are the header. After it, a line
+    is withheld when it shows account details or a balance, or is only a name. A withheld
+    line with an amount on it, other than a balance line, may be a transaction: the parse
+    step reports it rather than lose it silently."""
     first = next(
-        (i for i, ln in enumerate(lines) if _has_date(ln.text) or has_amount(ln.text)),
+        (
+            i
+            for i, ln in enumerate(lines)
+            if (_has_date(ln.text) or has_amount(ln.text))
+            and not sensitive.is_balance_line(ln.text)
+        ),
         len(lines),
     )
     withheld: list[str] = []

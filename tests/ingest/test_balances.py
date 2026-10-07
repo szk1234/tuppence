@@ -236,3 +236,19 @@ def test_the_read_prompt_says_how_overdrawn_balances_are_marked():
 
     prompt = load_prompt("read")
     assert all(marker in prompt for marker in ("105.00 D", "OD", "overdrawn"))
+
+
+def test_a_balance_line_after_the_table_is_withheld_and_read_here():
+    page = [
+        "Card statement",
+        "Statement for 29 Sep 2026 to 28 Oct 2026",
+        "Date Description Amount",
+        "30 Sep 2026 Greenbasket Stores 30.00",
+        "Previous balance 100.00",
+        "New balance 130.00",
+    ]
+    doc = pages_document([page], sha256="x", kind="pdf")
+    texts = [line.text for line in doc.lines if line.ref in doc.data_refs]
+    assert "New balance 130.00" not in texts and "Previous balance 100.00" not in texts
+    found = local_balances(doc, perspective="card")
+    assert (found.opening, found.closing) == (10000, 13000)

@@ -244,7 +244,5 @@ def test_screenshots_withhold_names_and_account_numbers(ingest_env):
         context_window=128_000,
     )
     sent = user_text(scripted)
-    # The app's balance line is the first line with an amount, so it is read like a row (and
-    # skipped as a balance); only the lines above it, and account details, are held back.
-    assert [s for s in ("Alex Example", "12-34-56", "12345678") if s in sent] == []
+    assert [s for s in ("Alex Example", "12-34-56", "12345678", "1,234.56") if s in sent] == []
     assert "GREENBASKET" in sent and len(out.parsed.rows) == 2

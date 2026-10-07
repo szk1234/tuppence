@@ -283,3 +283,13 @@ def test_the_date_format_is_worked_out_on_this_device():
     assert mapping_to_layout(out, header, uk).date_formats == ["%d/%m/%Y"]  # UK first
     with pytest.raises(ValueError, match="'Description' \\(date_column\\)"):
         mapping_to_layout(_out(mapping(date_column="Description", balance_column=None)), header, uk)
+
+
+def test_debit_and_credit_column_names_are_headings_not_names():
+    header = ["Date", "Description", "Dr Amount", "Cr Amount", "DR/CR", "Ref", "Balance"]
+    assert header_problem(header) is None
+    assert [shown_heading(h) for h in header] == header
+    for column in ("Dr", "Cr", "Debit", "Credit"):
+        assert header_problem(["Date", "Description", column, "Balance"]) is None
+    assert header_problem(["Date", "Description", "Amount", "Dr Alex Example"]) is not None
+    assert shown_heading("Dr Alex Example") == HIDDEN

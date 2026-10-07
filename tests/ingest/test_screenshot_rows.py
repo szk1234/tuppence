@@ -122,3 +122,28 @@ def test_undated_rows_are_sent_with_how_to_date_them(ingest_env):
     user = scripted.requests[0]["messages"][-1]["content"]
     assert "GREENBASKET STORES -£3.40" in user
     assert "no date of its own is still a transaction" in user
+
+
+def test_balance_lines_are_held_back_without_a_coverage_error(ingest_env):
+    services, scripted = ingest_env
+    rows = [
+        "Current account",
+        "Balance £1,234.56",
+        "Available to spend £1,184.56",
+        "Pending",
+        "GREENBASKET STORES -£3.40",
+        "5 Oct CITY WATER -£31.15",
+        "Overdraft limit £500.00",
+    ]
+    doc = shot(rows)
+    assert texts(doc, doc.preamble_refs) == [
+        "Current account",
+        "Balance £1,234.56",
+        "Available to spend £1,184.56",
+        "Pending",
+        "Overdraft limit £500.00",
+    ]
+    out = parse_shot(services, rows)
+    sent = json.dumps(scripted.requests)
+    assert "1,234.56" not in sent and "1,184.56" not in sent and "500.00" not in sent
+    assert not any("held back" in e for e in out.errors)
