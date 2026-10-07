@@ -24,3 +24,18 @@ def test_needs_session_and_csrf(anon_client, client):
     assert anon_client.post("/api/onboarding/reset").status_code == 401
     bad = client.post("/api/onboarding/reset", headers={"X-CSRF-Token": "wrong"})
     assert bad.status_code == 403
+
+
+def test_reset_is_admin_only_in_server_mode(client):
+    from fastapi.testclient import TestClient
+
+    client.app.state.services.users.create("member", "another-long-password", is_admin=False)
+    m = TestClient(client.app)
+    r = m.post("/api/auth/login", json={"username": "member", "password": "another-long-password"})
+    m.headers["X-CSRF-Token"] = r.json()["csrf_token"]
+    client.post("/api/onboarding/steps/welcome", json={"status": "done"})
+    denied = m.post("/api/onboarding/reset")
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "Only the household admin can reset onboarding."
+    assert m.get("/api/onboarding").json()["started"] is True  # unchanged
+    assert m.post("/api/onboarding/steps/household", json={"status": "skipped"}).status_code == 200

@@ -189,5 +189,52 @@ def test_advanced_route_chain_counts_as_ai_model(env):
             "INSERT INTO llm_route (task, chain, local_only, version, updated_at)"
             ' VALUES (\'coach\', \'[{"connection_id": "c", "model_id": "m"}]\', 0, 1, \'x\')'
         )
-    settings.set("llm.mode", "advanced", expected_version=0)
-    assert "ai_model" not in ids(svc.state())
+    assert "ai_model" not in ids(svc.state())  # a chain counts in either mode
+
+
+def _fill(env):
+    svc, household, timeline, accounts, settings = env
+    a = household.create_person(PersonIn(display_name="Alex", role="adult"))
+    household.update(HouseholdPatch(nation="england", postcode_district="LS6"), 1)
+    timeline.set("person", a.id, "employment_status", "employed", date(2020, 1, 1))
+    timeline.set("person", a.id, "income_band", "12570_50270", date(2020, 1, 1))
+    timeline.set("household", "1", "housing_tenure", "renting", date(2020, 1, 1))
+    acc = accounts.create(
+        AccountIn(
+            provider="other", provider_name="B", kind="current", nickname="M", owner_ids=[a.id]
+        )
+    )
+    svc.income.create(
+        IncomeIn(
+            person_id=a.id,
+            kind="salary",
+            name="Pay",
+            net_amount="2000",
+            account_id=acc.id,
+            pay_rule={"type": "monthly_day", "day": 25, "adjust": "previous_working_day"},
+        )
+    )
+    settings.set("llm.simple_model", {"connection_id": "c1", "model_id": "m"}, expected_version=0)
+    return a
+
+
+def test_realistic_profile_with_some_steps_reaches_70(env):
+    svc = env[0]
+    _fill(env)
+    for step in STEPS[:4]:
+        svc.mark(step, "done")
+    assert svc.state().completeness == round(100 * 12 / 17) >= 70
+
+
+def test_adding_people_or_cards_can_lower_completeness(env):
+    svc, household, *_ = env
+    _fill(env)
+    before = svc.state().completeness
+    household.create_person(PersonIn(display_name="Sam", role="child"))
+    assert svc.state().completeness < before
+
+
+def test_dependent_adults_have_no_prompts(env):
+    svc, household, *_ = env
+    d = household.create_person(PersonIn(display_name="Nan", role="dependent_adult"))
+    assert not any(d.id in i for i in ids(svc.state()))

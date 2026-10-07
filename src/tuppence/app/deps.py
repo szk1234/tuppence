@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from typing import Literal
 
 from fastapi import HTTPException, Request
@@ -49,7 +50,10 @@ def require_session(request: Request) -> Principal:
     return principal
 
 
-def require_admin(request: Request) -> None:
+AI_ADMIN_MESSAGE = "Only the household admin can change AI connections."
+
+
+def require_admin(request: Request, message: str = AI_ADMIN_MESSAGE) -> None:
     """Server mode: only an admin account. Local and desktop: the one user is the admin."""
     services = get_services(request)
     if services.runtime.mode != "server":
@@ -61,9 +65,16 @@ def require_admin(request: Request) -> None:
         else None
     )
     if user is None or not user.is_admin:
-        raise HTTPException(
-            status_code=403, detail="Only the household admin can change AI connections."
-        )
+        raise HTTPException(status_code=403, detail=message)
+
+
+def admin_only(message: str) -> Callable[[Request], None]:
+    """A dependency that needs an admin, with its own 403 wording."""
+
+    def check(request: Request) -> None:
+        require_admin(request, message)
+
+    return check
 
 
 def check_same_origin(request: Request) -> None:
@@ -78,6 +89,7 @@ def check_same_origin(request: Request) -> None:
 __all__ = [
     "SESSION_COOKIE",
     "Principal",
+    "admin_only",
     "check_same_origin",
     "get_services",
     "require_admin",

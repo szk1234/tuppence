@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from tuppence.app.deps import get_services, require_admin
+from tuppence.app.deps import admin_only, get_services
 from tuppence.app.services import Services
 from tuppence.core.onboarding import OnboardingState
 
@@ -28,6 +28,8 @@ def mark_step(step: str, body: StepIn, services: Svc) -> OnboardingState:
     return services.onboarding.mark(step, body.status)
 
 
-@router.post("/reset", dependencies=[Depends(require_admin)])
+@router.post(
+    "/reset", dependencies=[Depends(admin_only("Only the household admin can reset onboarding."))]
+)
 def reset(services: Svc) -> OnboardingState:
     return services.onboarding.reset()

@@ -12,11 +12,14 @@ is how many of those are met. Every check and every step is worth one point:
   chosen (`llm.simple_model` in simple mode, or any task chain in advanced mode).
 * Per active adult: work status and income band. Per active child: birth year.
   Every active credit card also adds one check: its purchase APR.
+* Dependent adults get no checks: they have no work or income questions of their own and no
+  birth-year-driven entitlement checks, so a prompt would only nag.
 * One per wizard step that is done or skipped (skipping counts as progress).
 
 People who have left the household never add checks, and incomes of people who left do not
-count. The checks grow with the household, so the meter never rewards an empty profile: a fresh
-install scores 0, and a typical household reaches the 70% "well set up" mark only once most
+count. The checks grow with the household, so the meter never rewards an empty profile (and, by
+design, adding an adult, a child or a card can lower the percentage until its new checks are met):
+a fresh install scores 0, and a typical household reaches the 70% "well set up" mark only once most
 checks are met. Each unmet check is also an unlock prompt (what it enables and where to fix it).
 
 Step progress has no `version`: only this service writes it, `mark()` is idempotent per step
@@ -126,9 +129,7 @@ class OnboardingService:
 
     def ai_model_chosen(self) -> bool:
         view = self.router.view()
-        if view.simple_model is not None:
-            return True
-        return view.mode == "advanced" and any(t.chain for t in view.tasks.values())
+        return view.simple_model is not None or any(t.chain for t in view.tasks.values())
 
     def _checks(self) -> list[tuple[bool, Prompt]]:
         """Every profile check as (met, the prompt to show while it isn't)."""
