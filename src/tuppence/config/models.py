@@ -10,7 +10,8 @@ Task = Literal["read", "categorise", "review", "research", "coach", "report", "v
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Budgets and thresholds are runaway-loop caps: inf/NaN would silently disable them.
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class ModelRef(_Strict):

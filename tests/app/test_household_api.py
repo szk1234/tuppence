@@ -97,3 +97,44 @@ def test_null_required_field_422_and_stale_empty_patch_409(client):
         f"/api/household/people/{pid}", json={"changes": {}, "expected_version": 1}
     )
     assert stale.status_code == 409
+
+
+def _nation_entries(client):
+    q = {"subject_type": "household", "subject_id": "1"}
+    entries = client.get("/api/household/timeline", params=q).json()["entries"]
+    return [
+        (e["value"], e["valid_from"], e["valid_to"]) for e in entries if e["attribute"] == "nation"
+    ]
+
+
+def test_household_patch_and_timeline_agree(client):
+    from datetime import date
+
+    today = date.today().isoformat()
+    h = client.get("/api/household").json()
+    r = client.patch(
+        "/api/household", json={"changes": {"nation": "wales"}, "expected_version": h["version"]}
+    )
+    assert r.status_code == 200
+    assert _nation_entries(client) == [("wales", today, None)]
+    base = {"subject_type": "household", "subject_id": "1", "attribute": "nation"}
+    past = client.post(
+        "/api/household/timeline", json={**base, "value": "scotland", "valid_from": "2020-01-01"}
+    )
+    assert past.status_code == 201
+    assert client.get("/api/household").json()["nation"] == "wales"  # today's entry wins
+    assert _nation_entries(client)[-1] == ("wales", today, None)
+
+
+def test_past_timeline_entry_shows_on_the_household(client):
+    base = {"subject_type": "household", "subject_id": "1", "attribute": "nation"}
+    r = client.post(
+        "/api/household/timeline", json={**base, "value": "scotland", "valid_from": "2020-01-01"}
+    )
+    assert r.status_code == 201
+    assert client.get("/api/household").json()["nation"] == "scotland"
+    future = client.post(
+        "/api/household/timeline", json={**base, "value": "england", "valid_from": "2099-01-01"}
+    )
+    assert future.status_code == 201
+    assert client.get("/api/household").json()["nation"] == "scotland"

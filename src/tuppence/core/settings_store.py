@@ -59,9 +59,12 @@ define(
 define(
     "privacy.datapack_updates", bool, True, "Download updated UK data packs (tax, benefits, rents)."
 )
+# Must match the preset files in tuppence/config/defaults/presets (tested).
+PresetName = Literal["frugal", "balanced", "thorough"]
+
 define(
     "config.preset",
-    Literal["frugal", "balanced", "thorough"],
+    PresetName,
     "balanced",
     "How much work the agents do.",
 )

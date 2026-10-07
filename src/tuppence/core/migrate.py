@@ -30,6 +30,11 @@ def available_migrations() -> list[tuple[str, str]]:
     return sorted(found)
 
 
+def _has_pre_backup(backups_dir: Path, version: str) -> bool:
+    # version is regex-validated, so it has no glob metacharacters.
+    return backups_dir.is_dir() and any(backups_dir.glob(f"tuppence-pre-{version}-*.db"))
+
+
 def migrate(db: Database, backups_dir: Path) -> list[str]:
     with db.connection() as conn:
         conn.execute(
@@ -37,10 +42,22 @@ def migrate(db: Database, backups_dir: Path) -> list[str]:
             " (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
         done = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
-    todo = [(v, sql) for v, sql in available_migrations() if v not in done]
+    available = available_migrations()
+    unknown = sorted(done - {v for v, _ in available})
+    if unknown:
+        raise MigrationError(
+            "This data was created by a newer version of Tuppence "
+            f"(it has update {unknown[-1]}, which this version doesn't know). "
+            "Install the latest Tuppence, or restore a backup made by this version."
+        )
+    todo = [(v, sql) for v, sql in available if v not in done]
     if not todo:
         return []
-    if done:
+    # One backup per pending version: if an earlier start already took it and the migration
+    # then failed, nothing has written the database since, so that copy is still the true
+    # pre-migration state. (Stops a failing migration under a restart policy from copying
+    # the whole database on every start.)
+    if done and not _has_pre_backup(backups_dir, todo[0][0]):
         backup_db(db.path, backups_dir, f"pre-{todo[0][0]}")
     applied: list[str] = []
     for version, sql in todo:

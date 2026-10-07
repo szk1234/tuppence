@@ -122,3 +122,33 @@ def test_export(env):
     cfg, _, _ = env
     out = cfg.export()
     assert out["preset"] == "balanced" and set(out["agents"]) == EXPECTED
+
+
+@pytest.mark.parametrize(
+    "agent,text",
+    [
+        ("linter", "[budgets]\nmax_gbp = inf\n"),
+        ("coach", "[budgets]\nmax_gbp = nan\n"),
+        ("backlog_sweep", "[thresholds]\nrevisit_below_confidence = nan\n"),
+    ],
+)
+def test_user_toml_with_non_finite_number_is_reported_and_ignored(env, agent, text):
+    import math
+
+    cfg, _, user_dir = env
+    expected = cfg.get(agent)
+    (user_dir / "agents" / f"{agent}.toml").write_text(text, encoding="utf-8")
+    view = cfg.view(agent)
+    assert view.user_file_error and f"{agent}.toml" in view.user_file_error
+    assert view.manifest == expected
+    assert math.isfinite(view.manifest.budgets.max_gbp)
+
+
+def test_preset_setting_choices_match_preset_files():
+    from typing import get_args
+
+    from tuppence.config.service import preset_names
+    from tuppence.core.settings_store import SETTINGS, PresetName
+
+    assert set(get_args(PresetName)) == set(preset_names())
+    assert SETTINGS["config.preset"].default in preset_names()

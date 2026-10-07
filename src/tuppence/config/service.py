@@ -63,6 +63,12 @@ def _remove_path(data: dict[str, Any], path: str) -> dict[str, Any]:
     return out
 
 
+def preset_names() -> list[str]:
+    """Preset files shipped with Tuppence (the `config.preset` setting's choices must match)."""
+    folder = resources.files(DEFAULTS).joinpath("presets")
+    return sorted(p.name[:-5] for p in folder.iterdir() if p.name.endswith(".toml"))
+
+
 def _load_toml_resource(*parts: str) -> dict[str, Any]:
     node = resources.files(DEFAULTS)
     for part in parts:
@@ -88,8 +94,7 @@ class ConfigService:
         return sorted(p.name[:-5] for p in folder.iterdir() if p.name.endswith(".toml"))
 
     def presets(self) -> list[str]:
-        folder = resources.files(DEFAULTS).joinpath("presets")
-        return sorted(p.name[:-5] for p in folder.iterdir() if p.name.endswith(".toml"))
+        return preset_names()
 
     def _defaults(self, name: str) -> dict[str, Any]:
         if name not in self.agent_names():
@@ -156,7 +161,7 @@ class ConfigService:
             current = 0 if row is None else int(row["version"])
             if current != expected_version:
                 raise VersionConflict("agent_override", name, expected_version, current)
-            payload = json.dumps(layer)
+            payload = json.dumps(layer, allow_nan=False)
             if row is None:
                 conn.execute(
                     "INSERT INTO agent_override (name, value, version, updated_at) "

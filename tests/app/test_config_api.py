@@ -38,3 +38,24 @@ def test_agents_api(client):
 
 def test_unknown_agent_404(client):
     assert client.get("/api/config/agents/nope").status_code == 404
+
+
+def test_raw_infinity_override_rejected_and_export_still_works(client):
+    for literal in ("Infinity", "NaN", "-Infinity"):
+        r = client.patch(
+            "/api/config/agents/linter",
+            content='{"changes": {"budgets": {"max_gbp": LIT}}, "expected_version": 0}'.replace(
+                "LIT", literal
+            ),
+            headers={"content-type": "application/json"},
+        )
+        assert r.status_code == 422, literal
+    r = client.patch(
+        "/api/config/agents/backlog_sweep",
+        content='{"changes": {"thresholds": {"revisit_below_confidence": NaN}},'
+        ' "expected_version": 0}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422
+    assert client.get("/api/config/export").status_code == 200
+    assert client.get("/api/config/agents/linter").json()["version"] == 0

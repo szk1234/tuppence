@@ -72,3 +72,39 @@ def test_schema_constraints(tmp_path):
                 " VALUES ('person','p1','employment_status','\"employed\"',"
                 "'2026-05-01','2026-04-01','x')"
             )
+
+
+def test_failed_migration_rerun_keeps_one_pre_backup(tmp_path, monkeypatch):
+    # A deterministic failure under a restart policy must not copy the database every start.
+    from datetime import UTC, datetime, timedelta
+
+    from tuppence.core import backup
+
+    db = Database(tmp_path / "tuppence.db")
+    first = mig.available_migrations()[:1]
+    monkeypatch.setattr(mig, "available_migrations", lambda: first)
+    mig.migrate(db, tmp_path / "backups")
+    bad = ("9999_bad", "CREATE TABLE twice (x INTEGER); CREATE TABLE twice (x INTEGER);")
+    monkeypatch.setattr(mig, "available_migrations", lambda: [*first, bad])
+    stamps = iter(datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=i) for i in range(10))
+    monkeypatch.setattr(backup, "utcnow", lambda: next(stamps))
+    for _ in range(3):
+        with pytest.raises(mig.MigrationError):
+            mig.migrate(db, tmp_path / "backups")
+    assert len(list((tmp_path / "backups").glob("tuppence-pre-9999_bad-*.db"))) == 1
+    # A different pending version still gets its own backup.
+    monkeypatch.setattr(mig, "available_migrations", lambda: [*first, ("9998_ok", "SELECT 1;")])
+    assert mig.migrate(db, tmp_path / "backups") == ["9998_ok"]
+    assert len(list((tmp_path / "backups").glob("tuppence-pre-9998_ok-*.db"))) == 1
+
+
+def test_refuses_data_from_a_newer_version(tmp_path):
+    db = Database(tmp_path / "tuppence.db")
+    mig.migrate(db, tmp_path / "backups")
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES ('9999_future', 'x')"
+        )
+    with pytest.raises(mig.MigrationError, match="newer version of Tuppence"):
+        mig.migrate(db, tmp_path / "backups")
+    assert not any((tmp_path / "backups").glob("*.db"))

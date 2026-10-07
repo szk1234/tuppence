@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+from collections.abc import Callable
 from datetime import date
 from typing import Annotated, Literal
 
@@ -14,6 +15,11 @@ from tuppence.core.db import Database
 from tuppence.core.errors import InputError
 from tuppence.core.postcode import normalise_district
 from tuppence.core.records import NotFound, VersionConflict, update_versioned
+from tuppence.core.timeline import (
+    HOUSEHOLD_ROW_FIELDS,
+    record_household_change,
+    sync_household_row,
+)
 
 Nation = Literal["england", "wales", "scotland", "northern_ireland"]
 Role = Literal["adult", "child", "dependent_adult"]
@@ -92,16 +98,17 @@ class Household(BaseModel):
 
 
 class HouseholdService:
-    def __init__(self, db: Database) -> None:
+    """The household row. Its nation and postcode district cache the timeline's value as of
+    today (the timeline is the source of truth, ruling R14)."""
+
+    def __init__(self, db: Database, *, today: Callable[[], date] = date.today) -> None:
         self.db = db
+        self.today = today
 
     def get(self) -> Household:
-        now = to_iso(utcnow())
         with self.db.transaction() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO household (id, created_at, updated_at) VALUES (1, ?, ?)",
-                [now, now],
-            )
+            # Creates the row on first use, and picks up a dated change that took effect.
+            sync_household_row(conn, self.today(), now=to_iso(utcnow()))
             row = conn.execute("SELECT * FROM household WHERE id = 1").fetchone()
         return Household(**{k: row[k] for k in Household.model_fields})
 
@@ -121,6 +128,9 @@ class HouseholdService:
                 update_versioned(
                     conn, "household", "id", 1, expected_version, data, now=to_iso(utcnow())
                 )
+                for attribute in HOUSEHOLD_ROW_FIELDS:
+                    if attribute in data:
+                        record_household_change(conn, attribute, data[attribute], self.today())
         return self.get()
 
     def list_people(self, include_retired: bool = False) -> list[Person]:
