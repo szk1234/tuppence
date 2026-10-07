@@ -25,6 +25,17 @@
   let band = $state('')
   let from = $state(todayISO())
 
+
+  let formEl: HTMLFormElement
+  let result = false
+  let pending: Promise<unknown> = Promise.resolve()
+  /** Submit what is typed (the wizard's Continue). False when validation or the save failed; the form shows why. */
+  export async function save(): Promise<boolean> {
+    formEl.requestSubmit()
+    await pending
+    return result
+  }
+
   async function load() {
     const res = await api<{ entries: TimelineEntry[] }>(`/api/household/timeline?subject_type=household&subject_id=${HOUSEHOLD_ID}`)
     entries = Array.isArray(res?.entries) ? res.entries : []
@@ -38,8 +49,9 @@
   }
   onMount(() => { load().catch((err) => { error = errorText(err) }) })
 
-  async function submit(e: SubmitEvent) {
-    e.preventDefault(); error = ''; saved = ''
+  function submit(e: SubmitEvent) { e.preventDefault(); pending = run() }
+  async function run() {
+    result = false; error = ''; saved = ''
     if (!from) { error = 'Choose the date these details apply from.'; return }
     const wanted: [string, unknown][] = []
     if (tenure) wanted.push(['housing_tenure', tenure])
@@ -67,6 +79,7 @@
       }
       await load()
       saved = written ? 'Home details saved.' : 'Nothing to change.'
+      result = true
       if (written) onsaved?.()
     } catch (err) {
       error = errorText(err)
@@ -75,7 +88,7 @@
   }
 </script>
 
-<form class="card" onsubmit={submit} novalidate aria-busy={!loaded || saving}>
+<form class="card" bind:this={formEl} onsubmit={submit} novalidate aria-busy={!loaded || saving}>
   <h2>Your home</h2>
   <Notice message={error} />
   <Notice message={saved} kind="ok" />

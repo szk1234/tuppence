@@ -22,7 +22,7 @@ const alex = { id: 'p_1', display_name: 'Alex Example', role: 'adult', birth_yea
 const household = (nation: string | null = null) => ({ nation, postcode_district: null, version: 1 })
 
 /** Routes shared by every step; `extra` wins. */
-function api(next: string | null, extra: (url: string, method: string, body: any) => Response | undefined = () => undefined, opts: { nation?: string | null; people?: unknown[] } = {}) {
+function api(next: string | null, extra: (url: string, method: string, body: any) => Response | undefined = () => undefined, opts: { nation?: string | null; people?: unknown[]; researchVersion?: number } = {}) {
   let current = state(next)
   const calls = stubApi((url, method, body) => {
     const custom = extra(url, method, body)
@@ -47,7 +47,8 @@ function api(next: string | null, extra: (url: string, method: string, body: any
     if (url === '/api/llm/connections') return json({ connections: [] })
     if (url === '/api/llm/models') return json({ models: [] })
     if (url === '/api/llm/routing') return json({ mode: 'simple', mode_version: 0, simple_model: null, simple_version: 0, tasks: {} })
-    if (url === '/api/settings') return json({ settings: [{ key: 'privacy.research_lookups', value: false, version: 3, description: '' }] })
+    if (url === '/api/config/presets') return json({ presets: ['frugal', 'balanced', 'thorough'] })
+    if (url === '/api/settings') return json({ settings: [{ key: 'privacy.research_lookups', value: false, version: opts.researchVersion ?? 0, description: '' }, { key: 'config.preset', value: 'balanced', version: 2, description: '' }] })
   })
   return calls
 }
@@ -109,6 +110,7 @@ it('Back returns to the previous step without recording anything', async () => {
   const calls = api('household')
   render(Welcome)
   await screen.findByRole('heading', { level: 1, name: "Who's in your household" })
+  await screen.findByText('Alex Example')
   await fireEvent.click(screen.getByRole('button', { name: 'Back' }))
   expect(await screen.findByRole('heading', { level: 1, name: 'Welcome' })).toBeInTheDocument()
   expect(calls.some((c) => c.method === 'POST')).toBe(false)
@@ -221,7 +223,7 @@ it('AI step: research lookups is recommended and pre-selected, and Continue save
   await waitFor(() => expect(box).toBeEnabled())
   await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
   expect(await screen.findByRole('heading', { level: 1, name: 'Your first statements' })).toBeInTheDocument()
-  expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ value: true, expected_version: 3 })
+  expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ value: true, expected_version: 0 })
 })
 
 it('AI step: a non-admin in server mode sees the admin message and no connection controls', async () => {
@@ -247,4 +249,100 @@ it('AI step: a cloud connection offers the notice and acknowledges it', async ()
   await fireEvent.click(screen.getByRole('button', { name: 'I understand' }))
   await waitFor(() => expect(screen.queryByRole('button', { name: "Review what's sent" })).toBeNull())
   expect(calls.find((c) => c.url.endsWith('acknowledge-notice'))?.body).toEqual({ expected_version: 3 })
+})
+
+it('AI step: a research opt-out made earlier is kept (not pre-selected, not written)', async () => {
+  const calls = api('ai', undefined, { researchVersion: 5 })
+  render(Welcome)
+  const box = await screen.findByLabelText(/Research lookups \(recommended: on\)/)
+  await waitFor(() => expect(box).toBeEnabled())
+  expect(box).not.toBeChecked()
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByRole('heading', { level: 1, name: 'Your first statements' })).toBeInTheDocument()
+  expect(calls.some((c) => c.method === 'PATCH')).toBe(false)
+})
+
+it('AI step: unticking research on the default writes the opt-out explicitly', async () => {
+  const calls = api('ai', (url, method) => (url === '/api/settings/privacy.research_lookups' && method === 'PATCH' ? json({ key: 'privacy.research_lookups', value: false, version: 1, description: '' }) : undefined))
+  render(Welcome)
+  const box = await screen.findByLabelText(/Research lookups \(recommended: on\)/)
+  await waitFor(() => expect(box).toBeEnabled())
+  await fireEvent.click(box)
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  await screen.findByRole('heading', { level: 1, name: 'Your first statements' })
+  expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ value: false, expected_version: 0 })
+})
+
+it('AI step: shows the agent preset (current pre-selected) and saves a change on Continue', async () => {
+  const calls = api('ai', (url, method) => (url === '/api/settings/config.preset' && method === 'PATCH' ? json({ key: 'config.preset', value: 'frugal', version: 3, description: '' }) : undefined), { researchVersion: 1 })
+  render(Welcome)
+  const select = await screen.findByLabelText('Agent preset')
+  await waitFor(() => expect(select.querySelectorAll('option')).toHaveLength(3))
+  expect(select).toHaveValue('balanced')
+  expect(screen.getAllByText(/Fewest AI calls/).length).toBeGreaterThan(0)
+  await fireEvent.change(select, { target: { value: 'frugal' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  await screen.findByRole('heading', { level: 1, name: 'Your first statements' })
+  expect(calls.find((c) => c.url === '/api/settings/config.preset')?.body).toEqual({ value: 'frugal', expected_version: 2 })
+})
+
+it('Continue on Home saves the typed details to the timeline before recording the step', async () => {
+  const order: string[] = []
+  const calls = api('home', (url, method, body) => {
+    if (url === '/api/household/timeline' && method === 'POST') { order.push(`timeline:${body.attribute}`); return json({ id: 1 }) }
+    if (/^\/api\/onboarding\/steps\/home$/.test(url)) order.push('step:home')
+    return undefined
+  }, { nation: 'england' })
+  render(Welcome)
+  await screen.findByLabelText('Council tax band')
+  await waitFor(() => expect(screen.getByLabelText('Housing')).toBeEnabled())
+  await fireEvent.change(screen.getByLabelText('Housing'), { target: { value: 'renting' } })
+  await fireEvent.input(screen.getByLabelText('Monthly housing cost'), { target: { value: '950' } })
+  await fireEvent.change(screen.getByLabelText('Council tax band'), { target: { value: 'C' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByRole('heading', { level: 1, name: 'Accounts and cards' })).toBeInTheDocument()
+  expect(order).toEqual(['timeline:housing_tenure', 'timeline:housing_monthly_pence', 'timeline:council_tax_band', 'step:home'])
+  expect(calls.find((c) => c.url === '/api/household/timeline' && c.body.attribute === 'housing_monthly_pence')?.body.value).toBe('950.00')
+})
+
+it('an invalid amount on Home blocks Continue and the step is not recorded', async () => {
+  const calls = api('home')
+  render(Welcome)
+  await screen.findByLabelText('Council tax band')
+  await waitFor(() => expect(screen.getByLabelText('Housing')).toBeEnabled())
+  await fireEvent.input(screen.getByLabelText('Monthly housing cost'), { target: { value: 'lots' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect((await screen.findAllByText(/Enter (an amount|the monthly cost)/)).length).toBeGreaterThan(0)
+  expect(calls.some((c) => c.url === '/api/onboarding/steps/home')).toBe(false)
+  expect(screen.getByRole('heading', { level: 1, name: 'Your home' })).toBeInTheDocument()
+})
+
+it('Continue on Debts saves a filled form first; an invalid one blocks; an untouched one just continues', async () => {
+  const calls = api('debts', (url, method) => (url === '/api/debts' && method === 'POST' ? json({ id: 'd_1', kind: 'personal_loan', lender: 'Bank', balance: '500.00', balance_date: '2026-10-07', apr: null, monthly_payment: null, end_date: null, student_loan_plan: null, details: {}, car_finance_redress_window: false, status: 'active', version: 1 }, 201) : undefined))
+  render(Welcome)
+  await screen.findByLabelText('Lender')
+  await fireEvent.input(screen.getByLabelText('Lender'), { target: { value: 'Bank' } })
+  await fireEvent.input(screen.getByLabelText('Current balance'), { target: { value: 'abc' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByText(/Enter the current balance/)).toBeInTheDocument()
+  expect(calls.some((c) => c.url === '/api/onboarding/steps/debts')).toBe(false)
+  await fireEvent.input(screen.getByLabelText('Current balance'), { target: { value: '500' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByRole('heading', { level: 1, name: "What you're saving for" })).toBeInTheDocument()
+  expect(calls.find((c) => c.url === '/api/debts' && c.method === 'POST')?.body).toMatchObject({ lender: 'Bank', balance: '500.00' })
+  await screen.findByLabelText('Goal name')
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(await screen.findByRole('heading', { level: 1, name: 'Choose your AI' })).toBeInTheDocument()
+  expect(calls.filter((c) => c.method === 'POST' && c.url === '/api/goals')).toHaveLength(0)
+})
+
+it('Back saves typed household input instead of losing it', async () => {
+  const calls = api('household', (url, method, body) => (url === '/api/household/people' && method === 'POST' ? json({ ...alex, id: 'p_2', display_name: body.display_name }) : undefined))
+  render(Welcome)
+  await screen.findByText('Alex Example')
+  await fireEvent.click(screen.getByLabelText('Family'))
+  await fireEvent.input(screen.getByLabelText("Partner's name"), { target: { value: 'Sam Example' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+  expect(await screen.findByRole('heading', { level: 1, name: 'Welcome' })).toBeInTheDocument()
+  expect(calls.find((c) => c.method === 'POST' && c.url === '/api/household/people')?.body).toEqual({ display_name: 'Sam Example', role: 'adult' })
 })

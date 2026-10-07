@@ -16,6 +16,13 @@
   let addKey = $state(0)
   let linking = $state(false)
 
+  /** The form below holds typed-but-unsaved input; Continue saves it first (an untouched form just continues). */
+  let form = $state<{ save: () => Promise<boolean> }>()
+  let dirty = false
+  export async function save(): Promise<boolean> {
+    if (!dirty || !form) return true
+    return form.save()
+  }
   const active = $derived(accounts.filter((a) => a.status === 'active'))
   const unplaced = $derived(incomes.filter((i) => i.status === 'active' && !i.account_id && !i.person_left))
   const options = (i: Income) => active.filter((a) => a.owner_ids.includes(i.person_id))
@@ -33,7 +40,7 @@
     error = ''; saved = ''
     try {
       const a = await api<Account>('/api/accounts', { method: 'POST', body })
-      accounts = [...accounts, a]; saved = `${a.nickname} added.`; addKey += 1
+      accounts = [...accounts, a]; saved = `${a.nickname} added.`; addKey += 1; dirty = false
       return true
     } catch (err) { error = errorText(err); return false }
   }
@@ -85,5 +92,5 @@
 
 <div class="card">
   <h2>Add an account</h2>
-  {#if loaded}{#key addKey}<AccountForm {people} onsubmit={add} />{/key}{:else}<p class="hint">Loading…</p>{/if}
+  {#if loaded}<div oninput={() => (dirty = true)} onchange={() => (dirty = true)}>{#key addKey}<AccountForm bind:this={form} {people} onsubmit={add} />{/key}</div>{:else}<p class="hint">Loading…</p>{/if}
 </div>

@@ -19,6 +19,13 @@
   let saved = $state('')
   let addKey = $state(0)
 
+  /** The form below holds typed-but-unsaved input; Continue saves it first (an untouched form just continues). */
+  let form = $state<{ save: () => Promise<boolean> }>()
+  let dirty = false
+  export async function save(): Promise<boolean> {
+    if (!dirty || !form) return true
+    return form.save()
+  }
   const earners = $derived(people.filter((p) => p.role !== 'child'))
   const active = $derived(incomes.filter((i) => i.status === 'active'))
   const who = (i: Income) => people.find((p) => p.id === i.person_id)?.display_name ?? 'Someone who has left'
@@ -62,7 +69,7 @@
     error = ''; saved = ''
     try {
       const i = await api<Income>('/api/income', { method: 'POST', body })
-      incomes = [...incomes, i]; saved = `${i.name} added.`; addKey += 1
+      incomes = [...incomes, i]; saved = `${i.name} added.`; addKey += 1; dirty = false
       return true
     } catch (err) { error = errorText(err); return false }
   }
@@ -101,7 +108,7 @@
   </ul>
   {#if loaded && earners.length > 0}
     <h3>Add income</h3>
-    {#key addKey}<IncomeForm {people} {accounts} onsubmit={addIncome} />{/key}
+    <div oninput={() => (dirty = true)} onchange={() => (dirty = true)}>{#key addKey}<IncomeForm bind:this={form} {people} {accounts} onsubmit={addIncome} />{/key}</div>
     <p class="hint">Not added your accounts yet? Leave "Paid into" as it is: you'll be asked in the Accounts step.</p>
   {/if}
 </div>

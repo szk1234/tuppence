@@ -46,6 +46,17 @@
   let problem = $state('')
   let saving = $state(false)
 
+
+  let formEl: HTMLFormElement
+  let result = false
+  let pending: Promise<unknown> = Promise.resolve()
+  /** Submit what is typed (the wizard's Continue). False when validation or the save failed; the form shows why. */
+  export async function save(): Promise<boolean> {
+    formEl.requestSubmit()
+    await pending
+    return result
+  }
+
   const isCar = $derived(kind === 'car_finance_pcp' || kind === 'car_finance_hp')
 
   function money(text: string, what: string): string | null | undefined {
@@ -74,8 +85,9 @@
     return out
   }
 
-  async function submit(e: SubmitEvent) {
-    e.preventDefault(); problem = ''
+  function submit(e: SubmitEvent) { e.preventDefault(); pending = run() }
+  async function run() {
+    result = false; problem = ''
     if (!lender.trim()) { problem = 'Enter who the debt is with.'; return }
     const bal = parsePoundsInput(balance)
     if (bal === null) { problem = 'Enter the current balance like 1450 or 1,450.50.'; return }
@@ -96,7 +108,7 @@
       if (!d) {
         const given = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null))
         const keep = Object.fromEntries(Object.entries(details).filter(([, v]) => v !== null))
-        await onsubmit(Object.keys(keep).length ? { ...given, details: keep } : given)
+        result = await onsubmit(Object.keys(keep).length ? { ...given, details: keep } : given)
         return
       }
       const before: Record<string, unknown> = {
@@ -111,12 +123,12 @@
         if (JSON.stringify(old) !== JSON.stringify(value)) sentDetails[key] = value
       }
       if (Object.keys(sentDetails).length) diff.details = sentDetails
-      await onsubmit(diff)
+      result = await onsubmit(diff)
     } finally { saving = false }
   }
 </script>
 
-<form class="stack" onsubmit={submit} novalidate aria-busy={saving}>
+<form class="stack" bind:this={formEl} onsubmit={submit} novalidate aria-busy={saving}>
   <Notice message={problem} />
   <fieldset class="bare" disabled={saving || disabled}>
     <label for={`${uid}-kind`}>Type of debt</label>

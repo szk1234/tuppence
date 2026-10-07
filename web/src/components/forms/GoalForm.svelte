@@ -28,13 +28,25 @@
   let problem = $state('')
   let saving = $state(false)
 
-  async function send(run: () => Promise<boolean>) {
-    saving = true
-    try { await run() } finally { saving = false }
+
+  let formEl: HTMLFormElement
+  let result = false
+  let pending: Promise<unknown> = Promise.resolve()
+  /** Submit what is typed (the wizard's Continue). False when validation or the save failed; the form shows why. */
+  export async function save(): Promise<boolean> {
+    formEl.requestSubmit()
+    await pending
+    return result
   }
 
-  function submit(e: SubmitEvent) {
-    e.preventDefault(); problem = ''
+  async function send(run: () => Promise<boolean>): Promise<void> {
+    saving = true
+    try { result = await run() } finally { saving = false }
+  }
+
+  function submit(e: SubmitEvent) { e.preventDefault(); pending = Promise.resolve(run()) }
+  function run(): Promise<void> | undefined {
+    result = false; problem = ''
     if (!name.trim()) { problem = 'Enter a name for this goal.'; return }
     const targetPounds = target.trim() === '' ? null : parsePoundsInput(target)
     if (target.trim() !== '' && targetPounds === null) { problem = 'Enter the target like 5000 or 5,000.'; return }
@@ -59,7 +71,7 @@
   </div>
 {/if}
 
-<form class="stack" onsubmit={submit} novalidate aria-busy={saving}>
+<form class="stack" bind:this={formEl} onsubmit={submit} novalidate aria-busy={saving}>
   <Notice message={problem} />
   <fieldset class="bare" disabled={saving || disabled}>
     <label for={`${uid}-name`}>Goal name</label>

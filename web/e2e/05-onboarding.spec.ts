@@ -63,8 +63,7 @@ test.describe('onboarding wizard @fresh', () => {
     await page.getByLabel('Bedrooms', { exact: true }).fill('2')
     await expect(page.getByLabel('Council tax band').getByRole('option', { name: 'Band I' })).toHaveCount(1)
     await page.getByLabel('Council tax band').selectOption('C')
-    await page.getByRole('button', { name: 'Save home details' }).click()
-    await expect(page.getByText('Home details saved.')).toBeVisible()
+    // No separate save: Continue saves what is typed.
     await next(page)
 
     // Accounts: a joint Monzo (which the salary is then paid into), and a Barclaycard with a 0% promotion.
@@ -90,8 +89,6 @@ test.describe('onboarding wizard @fresh', () => {
     await page.getByLabel('Purchase APR (%)').fill('24.9')
     await page.getByLabel('Promotional APR (%)').fill('0')
     await page.getByLabel('Promotional rate ends').fill(isoFromToday(180))
-    await page.getByRole('button', { name: 'Add account' }).click()
-    await expect(page.getByText('Barclaycard added.')).toBeVisible()
     await next(page)
 
     // Debts: a PCP arranged through a broker, in the redress window.
@@ -115,12 +112,11 @@ test.describe('onboarding wizard @fresh', () => {
     await page.getByLabel('Type of goal').selectOption('house_deposit')
     await page.getByLabel('Target amount (optional)').fill('20000')
     await page.getByLabel('Target date (optional)').fill(isoFromToday(2 * 365))
-    await page.getByRole('button', { name: 'Add goal' }).click()
-    await expect(page.getByText('House deposit added.')).toBeVisible()
     await next(page)
 
     // AI: skipped (no model is chosen, so Home still asks for one).
     await heading(page, 'Choose your AI')
+    await expect(page.getByLabel('Agent preset')).toHaveValue('balanced')
     await expect(page.getByLabel(/Research lookups \(recommended: on\)/)).toBeChecked()
     await page.getByRole('button', { name: 'Skip this step' }).click()
 
@@ -136,6 +132,14 @@ test.describe('onboarding wizard @fresh', () => {
     const pct = Number(/(\d+)%/.exec((await title.textContent()) ?? '')![1])
     expect(pct).toBeGreaterThanOrEqual(70)
     await expect(page.getByRole('link', { name: 'Choose an AI model' })).toBeVisible()
+
+    // What Continue saved (no explicit Add/Save press) is really stored.
+    const accounts = await (await page.request.get('/api/accounts')).json()
+    expect(accounts.accounts.map((a: { nickname: string }) => a.nickname).sort()).toEqual(['Barclaycard', 'Joint Monzo'])
+    const goals = await (await page.request.get('/api/goals')).json()
+    expect(goals.goals.map((g: { name: string }) => g.name).sort()).toEqual(['Emergency fund', 'House deposit'])
+    const hh = await (await page.request.get('/api/household/timeline?subject_type=household&subject_id=1')).json()
+    expect(hh.entries.map((e: { attribute: string }) => e.attribute)).toContain('council_tax_band')
   })
 
   test('resume: a new wizard reopens at the next step, household intact', async ({ page }) => {

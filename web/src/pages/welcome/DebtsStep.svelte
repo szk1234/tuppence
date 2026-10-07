@@ -13,6 +13,13 @@
   let error = $state('')
   let saved = $state('')
   let addKey = $state(0)
+  /** The form below holds typed-but-unsaved input; Continue saves it first (an untouched form just continues). */
+  let form = $state<{ save: () => Promise<boolean> }>()
+  let dirty = false
+  export async function save(): Promise<boolean> {
+    if (!dirty || !form) return true
+    return form.save()
+  }
   const active = $derived(debts.filter((d) => d.status === 'active'))
 
   onMount(async () => {
@@ -27,7 +34,7 @@
     error = ''; saved = ''
     try {
       const d = await api<Debt>('/api/debts', { method: 'POST', body })
-      debts = [...debts, d]; saved = `${d.lender} added.`; addKey += 1
+      debts = [...debts, d]; saved = `${d.lender} added.`; addKey += 1; dirty = false
       return true
     } catch (err) { error = errorText(err); return false }
   }
@@ -53,5 +60,5 @@
 
 <div class="card">
   <h2>Add a debt</h2>
-  {#if loaded}{#key addKey}<DebtForm {people} onsubmit={add} />{/key}{:else}<p class="hint">Loading…</p>{/if}
+  {#if loaded}<div oninput={() => (dirty = true)} onchange={() => (dirty = true)}>{#key addKey}<DebtForm bind:this={form} {people} onsubmit={add} />{/key}</div>{:else}<p class="hint">Loading…</p>{/if}
 </div>

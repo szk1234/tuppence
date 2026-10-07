@@ -47,6 +47,17 @@
     providers.filter((p) => showAll || p.kinds.includes(kind) || p.id === provider),
   )
 
+
+  let formEl: HTMLFormElement
+  let result = false
+  let pending: Promise<unknown> = Promise.resolve()
+  /** Submit what is typed (the wizard's Continue). False when validation or the save failed; the form shows why. */
+  export async function save(): Promise<boolean> {
+    formEl.requestSubmit()
+    await pending
+    return result
+  }
+
   function toggleOwner(id: string, on: boolean) {
     owners = on ? [...owners, id] : owners.filter((x) => x !== id)
   }
@@ -88,19 +99,20 @@
     return out
   }
 
-  async function submit(e: SubmitEvent) {
-    e.preventDefault(); problem = ''
+  function submit(e: SubmitEvent) { e.preventDefault(); pending = run() }
+  async function run() {
+    result = false; problem = ''
     const body = snapshot()
     if (typeof body === 'string') { problem = body; return }
     saving = true
     try {
       const payload = a ? changes(before(), body) : Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null))
-      await onsubmit(payload)
+      result = await onsubmit(payload)
     } finally { saving = false }
   }
 </script>
 
-<form class="stack" onsubmit={submit} novalidate aria-busy={saving || !ready}>
+<form class="stack" bind:this={formEl} onsubmit={submit} novalidate aria-busy={saving || !ready}>
   <Notice message={loadError} />
   <Notice message={problem} />
   <fieldset class="bare" disabled={saving || !ready || disabled}>

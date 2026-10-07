@@ -14,6 +14,13 @@
   let error = $state('')
   let saved = $state('')
   let addKey = $state(0)
+  /** The form below holds typed-but-unsaved input; Continue saves it first (an untouched form just continues). */
+  let form = $state<{ save: () => Promise<boolean> }>()
+  let dirty = false
+  export async function save(): Promise<boolean> {
+    if (!dirty || !form) return true
+    return form.save()
+  }
   const active = $derived(goals.filter((g) => g.status === 'active'))
 
   async function load() {
@@ -27,7 +34,7 @@
     error = ''; saved = ''
     try {
       const g = await api<Goal>('/api/goals', { method: 'POST', body })
-      goals = [...goals, g]; saved = `${g.name} added.`; addKey += 1
+      goals = [...goals, g]; saved = `${g.name} added.`; addKey += 1; dirty = false
     } catch (err) { error = errorText(err); return false }
     suggest = await api<{ emergency_fund: boolean }>('/api/goals/suggestions').then((r) => r.emergency_fund === true).catch(() => suggest)
     return true
@@ -50,5 +57,5 @@
 
 <div class="card">
   <h2>Add a goal</h2>
-  {#if loaded}{#key addKey}<GoalForm suggestEmergencyFund={suggest} onsubmit={add} />{/key}{:else}<p class="hint">Loading…</p>{/if}
+  {#if loaded}<div oninput={() => (dirty = true)} onchange={() => (dirty = true)}>{#key addKey}<GoalForm bind:this={form} suggestEmergencyFund={suggest} onsubmit={add} />{/key}</div>{:else}<p class="hint">Loading…</p>{/if}
 </div>

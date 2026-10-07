@@ -53,7 +53,13 @@
     } catch (err) { error = errorText(err) } finally { busy = false }
   }
 
-  function back() { error = ''; if (index > 0) index -= 1 }
+  /** Back saves what is typed first, so nothing entered is lost; if it can't be saved the user stays to fix it. */
+  async function back() {
+    error = ''
+    if (index === 0 || busy) return
+    busy = true
+    try { if (stepRef?.save && !(await stepRef.save())) return; index -= 1 } finally { busy = false }
+  }
 </script>
 
 <section>

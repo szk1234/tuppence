@@ -33,14 +33,26 @@
 
   const owned = $derived(accounts.filter((a) => a.status === 'active' && personId !== '' && a.owner_ids.includes(personId)))
 
+
+  let formEl: HTMLFormElement
+  let result = false
+  let pending: Promise<unknown> = Promise.resolve()
+  /** Submit what is typed (the wizard's Continue). False when validation or the save failed; the form shows why. */
+  export async function save(): Promise<boolean> {
+    formEl.requestSubmit()
+    await pending
+    return result
+  }
+
   function setPerson(id: string) {
     personId = id
     if (accountId && !accounts.some((a) => a.id === accountId && a.owner_ids.includes(id))) accountId = ''
   }
   function toggle(key: string, on: boolean) { variable = on ? [...variable, key] : variable.filter((x) => x !== key) }
 
-  async function submit(e: SubmitEvent) {
-    e.preventDefault(); problem = ''
+  function submit(e: SubmitEvent) { e.preventDefault(); pending = run() }
+  async function run() {
+    result = false; problem = ''
     if (!personId) { problem = 'Choose who receives this income.'; return }
     if (!name.trim()) { problem = 'Enter a name for this income.'; return }
     const amount = parsePoundsInput(net)
@@ -57,16 +69,16 @@
           person_id: i.person_id, kind: i.kind, name: i.name, net_amount: i.net_amount, account_id: i.account_id,
           pay_rule: i.pay_rule, variable_components: [...i.variable_components].sort(),
         }
-        await onsubmit(changes(before, body))
+        result = await onsubmit(changes(before, body))
       } else {
         if (body.account_id === null) delete body.account_id
-        await onsubmit(body)
+        result = await onsubmit(body)
       }
     } finally { saving = false }
   }
 </script>
 
-<form class="stack" onsubmit={submit} novalidate aria-busy={saving}>
+<form class="stack" bind:this={formEl} onsubmit={submit} novalidate aria-busy={saving}>
   <Notice message={problem} />
   <fieldset class="bare" disabled={saving || disabled}>
     <label for={`${uid}-person`}>Who receives this income?</label>

@@ -47,23 +47,32 @@
     await add({ display_name: youName.trim() || 'You', role: 'adult' })
   }
 
-  async function addPartner(e: SubmitEvent) {
-    e.preventDefault()
-    if (await add({ display_name: partnerName.trim(), role: 'adult' })) partnerName = ''
+  async function addPartnerNow(): Promise<boolean> {
+    if (!partnerName.trim()) return true
+    const ok = await add({ display_name: partnerName.trim(), role: 'adult' })
+    if (ok) partnerName = ''
+    return ok
   }
+  async function addPartner(e: SubmitEvent) { e.preventDefault(); await addPartnerNow() }
 
-  async function addDependant(e: SubmitEvent) {
-    e.preventDefault(); yearError = ''
-    if (depYear && !/^\d{4}$/.test(depYear.trim())) { yearError = 'Enter a 4-digit year'; return }
+  async function addDependantNow(): Promise<boolean> {
+    yearError = ''
+    if (!depName.trim()) return true
+    if (depYear && !/^\d{4}$/.test(depYear.trim())) { yearError = 'Enter a 4-digit year'; return false }
     const body: { display_name: string; role: Person['role']; birth_year?: number } = { display_name: depName.trim(), role: depRole }
     if (depYear) body.birth_year = Number(depYear.trim())
-    if (await add(body)) { depName = ''; depYear = '' }
+    const ok = await add(body)
+    if (ok) { depName = ''; depYear = '' }
+    return ok
   }
+  async function addDependant(e: SubmitEvent) { e.preventDefault(); await addDependantNow() }
 
-  /** The signed-in adult always ends up in the household, even if the user just presses Continue. */
+  /** Continue: the signed-in adult always ends up in the household, and a partner or dependant typed but not added is added. */
   export async function save(): Promise<boolean> {
-    if (adults.length > 0) return true
-    return add({ display_name: youName.trim() || 'You', role: 'adult' })
+    if (!loaded) return false
+    if (adults.length === 0 && !(await add({ display_name: youName.trim() || 'You', role: 'adult' }))) return false
+    if (family && !(await addPartnerNow())) return false
+    return addDependantNow()
   }
 </script>
 

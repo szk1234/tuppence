@@ -14,12 +14,21 @@
   type Setting = { key: string; value: unknown; version: number }
 
   const RESEARCH = 'privacy.research_lookups'
+  const PRESET = 'config.preset'
+  const PRESET_HELP: Record<string, string> = {
+    frugal: 'Fewest AI calls and the lowest cost; lighter research and shorter answers.',
+    balanced: 'A sensible mix of cost and care. The default.',
+    thorough: 'Most careful: more lookups and review passes, at a higher cost.',
+  }
   let presets = $state<Preset[]>([])
   let connections = $state<Connection[]>([])
   let models = $state<Model[]>([])
   let routing = $state<Routing | null>(null)
   let research = $state(true)
   let researchSetting = $state<Setting | null>(null)
+  let agentPresets = $state<string[]>([])
+  let presetSetting = $state<Setting | null>(null)
+  let agentPreset = $state('balanced')
   let loaded = $state(false)
   let error = $state('')
   let saved = $state('')
@@ -40,7 +49,12 @@
     await Promise.all([loadModels(), loadRouting()])
     const all = (await api<{ settings: Setting[] }>('/api/settings')).settings
     researchSetting = all.find((s) => s.key === RESEARCH) ?? null
-    // The setting defaults to off; the wizard presents it as recommended and pre-selected (`research` starts true), for the user to confirm.
+    // The stored default is off, but the wizard recommends on and pre-selects it, for the user to confirm. Once the
+    // setting has ever been changed (version above 0) the stored choice is respected, including an opt-out.
+    if (researchSetting && researchSetting.version > 0) research = researchSetting.value === true
+    presetSetting = all.find((s) => s.key === PRESET) ?? null
+    if (typeof presetSetting?.value === 'string') agentPreset = presetSetting.value
+    agentPresets = (await api<{ presets: string[] }>('/api/config/presets')).presets
     loaded = true
   }
   onMount(() => { load().catch(fail) })
@@ -81,13 +95,17 @@
     await loadRouting().catch(() => {})
   }
 
-  /** Called by the wizard before it records this step: applies the research-lookups choice. */
+  /** Called by the wizard before it records this step: applies the agent preset and the research-lookups choice. */
   export async function save(): Promise<boolean> {
-    if (!canEdit || !researchSetting) return true
-    if ((researchSetting.value === true) === research) return true
+    if (!canEdit) return true
     error = ''
     try {
-      researchSetting = await api<Setting>(`/api/settings/${RESEARCH}`, { method: 'PATCH', body: { value: research, expected_version: researchSetting.version } })
+      if (presetSetting && presetSetting.value !== agentPreset) {
+        presetSetting = await api<Setting>(`/api/settings/${PRESET}`, { method: 'PATCH', body: { value: agentPreset, expected_version: presetSetting.version } })
+      }
+      if (researchSetting && (researchSetting.version === 0 || researchSetting.value !== research)) {
+        researchSetting = await api<Setting>(`/api/settings/${RESEARCH}`, { method: 'PATCH', body: { value: research, expected_version: researchSetting.version } })
+      }
       return true
     } catch (e) { fail(e); return false }
   }
@@ -130,6 +148,20 @@
         {#each models as m (refKey(m))}<option value={refKey(m)}>{nameOf(m.connection_id)} — {m.model_id}</option>{/each}
       </select>
     {/if}
+  </div>
+
+  <div class="card">
+    <h2>How careful should the agents be?</h2>
+    <fieldset class="bare" disabled={!loaded || presetSetting === null}>
+      <label for="agent-preset">Agent preset</label>
+      <select id="agent-preset" bind:value={agentPreset}>
+        {#each agentPresets as p}<option value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>{/each}
+      </select>
+      <p class="hint">{PRESET_HELP[agentPreset] ?? ''}</p>
+      <ul class="hint">
+        {#each agentPresets as p}<li><strong>{p.charAt(0).toUpperCase() + p.slice(1)}:</strong> {PRESET_HELP[p] ?? ''}</li>{/each}
+      </ul>
+    </fieldset>
   </div>
 
   <div class="card">
