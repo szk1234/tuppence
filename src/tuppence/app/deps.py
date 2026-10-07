@@ -51,6 +51,7 @@ def require_session(request: Request) -> Principal:
 
 
 AI_ADMIN_MESSAGE = "Only the household admin can change AI connections."
+CONFIG_ADMIN_MESSAGE = "Only the household admin can change agent settings."
 
 
 def require_admin(request: Request, message: str = AI_ADMIN_MESSAGE) -> None:
@@ -87,6 +88,8 @@ def check_same_origin(request: Request) -> None:
 
 
 __all__ = [
+    "AI_ADMIN_MESSAGE",
+    "CONFIG_ADMIN_MESSAGE",
     "SESSION_COOKIE",
     "Principal",
     "admin_only",

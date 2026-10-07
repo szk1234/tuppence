@@ -130,7 +130,7 @@
 <Notice message={saved} kind="ok" />
 
 {#if !canEdit}
-  <p class="hint">Only the household admin can change AI connections and privacy settings. Ask them to set this up in Settings › AI.</p>
+  <p class="hint">Only the household admin can change AI connections, the agent preset and privacy settings. Ask them to set this up in Settings › AI.</p>
 {:else}
   <div class="card">
     <h2>Connections</h2>

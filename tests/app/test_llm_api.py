@@ -506,10 +506,41 @@ def test_non_admin_cannot_change_shared_ai_and_privacy_settings(client, member, 
     assert ok.status_code == 200
 
 
-def test_non_admin_can_still_change_other_settings(client, member):
+def test_every_setting_is_shared_and_admin_only_in_server_mode(client, member):
+    """AI, privacy and agent settings (llm.*, privacy.*, config.*) are all household-wide."""
     keys = [e["key"] for e in client.get("/api/settings").json()["settings"]]
-    other = [k for k in keys if not k.startswith(("llm.", "privacy."))]
-    assert other  # the permission is about shared AI and privacy keys only
+    assert keys and all(k.startswith(("llm.", "privacy.", "config.")) for k in keys)
+    assert member.get("/api/settings").status_code == 200  # members can still read them
+
+
+def test_non_admin_cannot_change_agent_config_in_server_mode(client, member):
+    msg = "Only the household admin can change agent settings."
+    preset = member.patch(
+        "/api/settings/config.preset", json={"value": "frugal", "expected_version": 0}
+    )
+    assert preset.status_code == 403 and preset.json()["detail"] == msg
+    agent = client.get("/api/config/agents/researcher").json()
+    calls = [
+        member.patch(
+            "/api/config/agents/researcher",
+            json={
+                "changes": {"limits": {"max_merchants_per_run": 3}},
+                "expected_version": agent["version"],
+            },
+        ),
+        member.post(
+            "/api/config/agents/researcher/reset",
+            json={"path": "limits.max_merchants_per_run", "expected_version": agent["version"]},
+        ),
+    ]
+    for r in calls:
+        assert r.status_code == 403 and r.json()["detail"] == msg, r.request.url
+    assert member.get("/api/config/agents").status_code == 200
+    assert member.get("/api/config/export").status_code == 200
+    ok = client.patch(
+        "/api/settings/config.preset", json={"value": "frugal", "expected_version": 0}
+    )
+    assert ok.status_code == 200
 
 
 @pytest.fixture

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte'
 import { afterEach, expect, it, vi } from 'vitest'
+import { session } from '../../lib/session.svelte'
 import Agents from './Agents.svelte'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -54,4 +55,25 @@ it('flags a cleared number, does not send it, and disables Save', async () => {
   expect(save).toBeDisabled()
   await fireEvent.click(save)
   expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'PATCH')).toBe(false)
+})
+
+it('a household member in server mode sees the agents read-only, with no way to change them', async () => {
+  session.mode = 'server'; session.user = { username: 'sam', is_admin: false }
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url === '/api/config/agents') return json({ agents: [researcher(20, 0, ['limits.max_merchants_per_run'])], preset: { value: 'balanced', version: 0 } })
+    if (url === '/api/config/presets') return json({ presets: ['balanced', 'frugal'] })
+    return json({ detail: 'unexpected' }, 500)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  try {
+    render(Agents)
+    const card = await screen.findByRole('region', { name: 'researcher' })
+    expect(screen.getByText('Only the household admin can change agent settings.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Preset')).toBeDisabled()
+    expect(within(card).getByLabelText('max_merchants_per_run')).toBeDisabled()
+    expect(within(card).getByLabelText('Enabled')).toBeDisabled()
+    expect(within(card).queryByRole('button', { name: 'Save researcher' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Reset' })).toBeNull()
+    expect(within(card).getByText('Changed by you')).toBeInTheDocument()
+  } finally { session.mode = 'local'; session.user = null }
 })

@@ -6,13 +6,15 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from tuppence.app.deps import get_services
+from tuppence.app.deps import CONFIG_ADMIN_MESSAGE, admin_only, get_services
 from tuppence.app.services import Services
 from tuppence.config.service import AgentView
 
 Svc = Annotated[Services, Depends(get_services)]
 
 router = APIRouter(prefix="/api/config", tags=["config"])
+# Agent config is shared by the household: anyone may read it, only an admin may change it.
+AdminOnly = [Depends(admin_only(CONFIG_ADMIN_MESSAGE))]
 
 
 class OverrideIn(BaseModel):
@@ -39,12 +41,12 @@ def get_agent(name: str, services: Svc) -> AgentView:
     return services.config.view(name)
 
 
-@router.patch("/agents/{name}")
+@router.patch("/agents/{name}", dependencies=AdminOnly)
 def override_agent(name: str, body: OverrideIn, services: Svc) -> AgentView:
     return services.config.set_override(name, body.changes, body.expected_version)
 
 
-@router.post("/agents/{name}/reset")
+@router.post("/agents/{name}/reset", dependencies=AdminOnly)
 def reset_agent_field(name: str, body: ResetIn, services: Svc) -> AgentView:
     return services.config.reset_field(name, body.path, body.expected_version)
 

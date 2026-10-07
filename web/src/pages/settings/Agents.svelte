@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import Notice from '../../components/Notice.svelte'
   import { api, ApiError } from '../../lib/api'
+  import { session } from '../../lib/session.svelte'
 
   type Manifest = {
     name: string; description: string; enabled: boolean; task: string | null
@@ -19,6 +20,8 @@
   let error = $state('')
   let saved = $state('')
 
+  // Agent config is shared by the household: in server mode only an admin may change it (the API agrees).
+  const canEdit = $derived(session.mode !== 'server' || session.user?.is_admin === true)
   const fail = (err: unknown) => { saved = ''; error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
 
   async function load() {
@@ -98,12 +101,13 @@
 <section>
   <h1>Agents</h1>
   <p>Tuppence is open source: every agent's limits and budgets can be tuned here.</p>
+  {#if !canEdit}<p class="hint">Only the household admin can change agent settings.</p>{/if}
   <Notice message={error} />
   <Notice message={saved} kind="ok" />
 
   <div class="card">
     <label for="preset">Preset</label>
-    <select id="preset" bind:value={selected} onchange={(e) => choosePreset((e.currentTarget as HTMLSelectElement).value)}>
+    <select id="preset" bind:value={selected} disabled={!canEdit} onchange={(e) => choosePreset((e.currentTarget as HTMLSelectElement).value)}>
       {#each presets as p}<option value={p}>{p}</option>{/each}
     </select>
     <a href="/api/config/export" download>Export settings</a>
@@ -115,7 +119,7 @@
       <h2>{m.name}</h2>
       <p>{m.description}</p>
       {#if view.user_file_error}<p class="warn">Your config file was ignored: {view.user_file_error}</p>{/if}
-      <label><input type="checkbox" checked={m.enabled} onchange={(e) => {
+      <label><input type="checkbox" checked={m.enabled} disabled={!canEdit} onchange={(e) => {
         const d = drafts[m.name] ?? {}
         drafts[m.name] = { ...d, enabled: (e.currentTarget as HTMLInputElement).checked }
       }} /> Enabled</label>
@@ -127,20 +131,20 @@
               {@const path = `${section}.${key}`}
               <div class="field">
                 <label for={`${m.name}-${path}`}>{key}</label>
-                <input id={`${m.name}-${path}`} type="number" step="any" value={value}
+                <input id={`${m.name}-${path}`} type="number" step="any" value={value} disabled={!canEdit}
                   aria-invalid={invalid[`${m.name}.${path}`] ? 'true' : undefined}
                   oninput={(e) => setNumber(m.name, section, key, (e.currentTarget as HTMLInputElement).value)} />
                 {#if invalid[`${m.name}.${path}`]}<span class="warn" role="alert">Enter a number</span>{/if}
                 {#if view.overridden.includes(path)}
                   <span class="badge">Changed by you</span>
-                  <button class="link" onclick={() => reset(view, path)}>Reset</button>
+                  {#if canEdit}<button class="link" onclick={() => reset(view, path)}>Reset</button>{/if}
                 {/if}
               </div>
             {/each}
           </fieldset>
         {/if}
       {/each}
-      <button onclick={() => save(view)} disabled={!hasChanges(m.name) || hasInvalid(m.name)}>Save {m.name}</button>
+      {#if canEdit}<button onclick={() => save(view)} disabled={!hasChanges(m.name) || hasInvalid(m.name)}>Save {m.name}</button>{/if}
     </section>
   {/each}
 </section>

@@ -5,13 +5,23 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from tuppence.app.deps import get_services, require_admin
+from tuppence.app.deps import (
+    AI_ADMIN_MESSAGE,
+    CONFIG_ADMIN_MESSAGE,
+    get_services,
+    require_admin,
+)
 from tuppence.app.services import Services
 from tuppence.core.settings_store import SettingEntry
 
 Svc = Annotated[Services, Depends(get_services)]
 
-ADMIN_PREFIXES = ("llm.", "privacy.")
+# Household-wide choices: in server mode only an admin may change them (each with its own 403 copy).
+ADMIN_PREFIXES: dict[str, str] = {
+    "llm.": AI_ADMIN_MESSAGE,
+    "privacy.": AI_ADMIN_MESSAGE,
+    "config.": CONFIG_ADMIN_MESSAGE,  # agent config is shared, like /api/config/agents
+}
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -28,8 +38,9 @@ def list_settings(services: Svc) -> dict[str, list[SettingEntry]]:
 
 @router.patch("/{key}")
 def update_setting(key: str, body: SettingUpdate, services: Svc, request: Request) -> SettingEntry:
-    if key.startswith(ADMIN_PREFIXES):
-        require_admin(request)  # shared AI and privacy choices
+    for prefix, message in ADMIN_PREFIXES.items():
+        if key.startswith(prefix):
+            require_admin(request, message)
     try:
         return services.settings.set(key, body.value, expected_version=body.expected_version)
     except KeyError:
