@@ -5,9 +5,17 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+    with_config,
+)
 
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
@@ -81,9 +89,19 @@ define(
     "simple",
     "Simple: one AI model for everything. Advanced: choose models per task.",
 )
+
+
+@with_config(ConfigDict(extra="forbid", strict=True))
+class ModelRef(TypedDict):
+    """One model on one connection, as the settings store keeps it."""
+
+    connection_id: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    model_id: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+
+
 define(
     "llm.simple_model",
-    dict[str, str] | None,
+    ModelRef | None,
     None,
     "The AI model used for every task in simple mode.",
 )

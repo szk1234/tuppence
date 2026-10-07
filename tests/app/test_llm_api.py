@@ -58,7 +58,11 @@ def test_connection_lifecycle_and_try(client, scripted):
     assert blocked.status_code == 409 and "Confirm what" in body["detail"]
     assert body["code"] == "notice_required" and body["connection_id"] == conn["id"]
 
-    client.post(f"/api/llm/connections/{conn['id']}/acknowledge-notice")
+    ack = client.post(
+        f"/api/llm/connections/{conn['id']}/acknowledge-notice",
+        json={"expected_version": test["connection"]["version"]},
+    )
+    assert ack.status_code == 200 and not ack.json()["needs_notice"]
     scripted.replies = [{"content": "Hello!"}]
     ok = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
     assert ok.status_code == 200 and ok.json()["text"] == "Hello!"
@@ -160,10 +164,19 @@ def test_routing_view_and_task_route(client, scripted):
     assert unknown.status_code == 422
 
 
+def acknowledge(client, conn_id):
+    version = client.get("/api/llm/connections").json()["connections"]
+    version = next(c["version"] for c in version if c["id"] == conn_id)
+    r = client.post(
+        f"/api/llm/connections/{conn_id}/acknowledge-notice", json={"expected_version": version}
+    )
+    assert r.status_code == 200, r.text
+
+
 def ready(client, scripted):
     conn = make_conn(client)
     client.post(f"/api/llm/connections/{conn['id']}/test")
-    client.post(f"/api/llm/connections/{conn['id']}/acknowledge-notice")
+    acknowledge(client, conn["id"])
     choose_simple(client, conn["id"])
     return conn
 
@@ -583,7 +596,7 @@ def test_try_stops_at_the_run_call_limit_counting_retries(client, scripted):
     a = ready(client, scripted)
     b = make_conn(client, base_url="http://127.0.0.1:9101")
     client.post(f"/api/llm/connections/{b['id']}/test")
-    client.post(f"/api/llm/connections/{b['id']}/acknowledge-notice")
+    acknowledge(client, b["id"])
     chain = [
         {"connection_id": c["id"], "model_id": m} for c in (a, b) for m in ("m-small", "m-big")
     ]
@@ -597,3 +610,101 @@ def test_try_stops_at_the_run_call_limit_counting_retries(client, scripted):
     r = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
     assert r.status_code == 429 and "9 AI calls" in r.json()["detail"]
     assert len([x for x in scripted.requests if "messages" in x]) == 9
+
+
+def test_acknowledging_the_notice_needs_the_version_it_was_shown_for(client):
+    conn = make_conn(client)
+    url = f"/api/llm/connections/{conn['id']}/acknowledge-notice"
+    assert client.post(url).status_code == 422
+    moved = client.patch(
+        f"/api/llm/connections/{conn['id']}",
+        json={
+            "changes": {"base_url": "http://127.0.0.1:9555", "api_key": "sk-other-1"},
+            "expected_version": conn["version"],
+        },
+    ).json()
+    stale = client.post(url, json={"expected_version": conn["version"]})
+    assert stale.status_code == 409 and stale.json()["current_version"] == moved["version"]
+    assert client.get("/api/llm/connections").json()["connections"][0]["needs_notice"]
+    ok = client.post(url, json={"expected_version": moved["version"]})
+    assert ok.status_code == 200 and not ok.json()["needs_notice"]
+
+
+def test_model_price_override_via_the_api(client, scripted):
+    conn = ready(client, scripted)
+    models = client.get(f"/api/llm/models?connection_id={conn['id']}").json()["models"]
+    m = next(x for x in models if x["model_id"] == "m-small")
+    assert m["price_source"] is None
+    url = f"/api/llm/models/{conn['id']}/m-small"
+    r = client.patch(
+        url,
+        json={
+            "price_in_usd_per_mtok": 0.5,
+            "price_out_usd_per_mtok": 1.5,
+            "expected_version": m["version"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert (r.json()["price_in_usd_per_mtok"], r.json()["price_source"]) == (0.5, "user")
+    v = r.json()["version"]
+    for bad in (
+        {"price_in_usd_per_mtok": -1},
+        {"price_out_usd_per_mtok": 20_000},
+        {},
+        {"price_in_usd_per_mtok": 1, "colour": "red"},
+    ):
+        assert client.patch(url, json={**bad, "expected_version": v}).status_code == 422, bad
+    stale = client.patch(url, json={"price_in_usd_per_mtok": 1, "expected_version": v - 1})
+    assert stale.status_code == 409
+
+
+def test_malformed_simple_model_is_refused_and_never_breaks_ai_calls(client):
+    url = "/api/settings/llm.simple_model"
+    for bad in (
+        {"foo": "bar"},
+        {"connection_id": "c" * 65, "model_id": "m"},
+        {"connection_id": "c", "model_id": ""},
+        {"connection_id": "c", "model_id": "m", "extra": "x"},
+        "c/m",
+    ):
+        r = client.patch(url, json={"value": bad, "expected_version": 0})
+        assert r.status_code == 422, bad
+    services = client.app.state.services
+    with services.db.transaction() as conn:  # e.g. written by an older version
+        conn.execute(
+            "INSERT INTO app_settings (key, value, version, updated_at)"
+            " VALUES ('llm.simple_model', '{\"foo\": \"bar\"}', 1, '2026-10-07T00:00:00Z')"
+        )
+    assert client.post("/api/llm/try", json={"prompt": "hi"}).status_code == 409
+
+
+def test_patch_connection_changes_are_typed_and_bounded(client):
+    conn = make_conn(client)
+    url = f"/api/llm/connections/{conn['id']}"
+    v = conn["version"]
+    for bad in (
+        {"name": "x" * 201},
+        {"api_key": "k" * 4001},
+        {"headers": {f"X-{i}": "v" for i in range(21)}},
+        {"headers": ["not", "a", "dict"]},
+        {"headers": {"X-A": "v" * 4001}},
+        {"enabled": "yes"},
+        {"colour": "red"},
+        {"base_url": "http://x/" + "a" * 2100},
+    ):
+        r = client.patch(url, json={"changes": bad, "expected_version": v})
+        assert r.status_code == 422, (bad, r.status_code)
+        assert "kkkk" not in r.text and "vvvv" not in r.text
+    ok = client.patch(url, json={"changes": {"name": "Mine"}, "expected_version": v})
+    assert ok.status_code == 200 and ok.json()["name"] == "Mine"
+
+
+def test_the_usage_month_is_the_month_the_cap_uses(client):
+    from datetime import UTC, datetime
+
+    services = client.app.state.services
+    # 23:30 UTC on 31 July is 00:30 on 1 August in UK summer time: still July for the cap.
+    services.usage.clock = lambda: datetime(2026, 7, 31, 23, 30, tzinfo=UTC)
+    body = client.get("/api/usage").json()
+    assert body["month"] == body["current_month"] == "2026-07"
+    assert client.get("/api/usage?month=2026-06").json()["current_month"] == "2026-07"

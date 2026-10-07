@@ -30,7 +30,9 @@ def setup_local(services, model="m-small"):
 def setup_cloud(services):
     c = services.connections.create("openai", api_key="sk-x", base_url="http://127.0.0.1:9100/v1")
     services.connections.test(c.id)
-    services.connections.acknowledge_notice(c.id)
+    services.connections.acknowledge_notice(
+        c.id, expected_version=services.connections.get(c.id).version
+    )
     services.settings.set(
         "llm.simple_model", {"connection_id": c.id, "model_id": "m-small"}, expected_version=0
     )
@@ -952,3 +954,20 @@ def test_only_the_client_and_test_build_providers():
     from tuppence.llm.connections import ConnectionRegistry
 
     assert not hasattr(ConnectionRegistry, "provider")
+
+
+def test_a_user_price_replaces_the_fallback_price(env):
+    services, scripted = env
+    month_now(services)
+    c = setup_cloud(services)
+    m = services.connections.model(c.id, "m-small")
+    services.connections.update_model(
+        c.id,
+        "m-small",
+        {"price_in_usd_per_mtok": 1.0, "price_out_usd_per_mtok": 2.0},
+        expected_version=m.version,
+    )
+    r = services.llm.chat("coach", U)
+    # 100 tokens in at $1/M and 20 out at $2/M, at the default 0.75 £/$.
+    assert r.cost_gbp == pytest.approx((100 * 1.0 + 20 * 2.0) / 1e6 * 0.75)
+    assert services.usage.summary(CLOCK.year, CLOCK.month)["estimated_calls"] == 0

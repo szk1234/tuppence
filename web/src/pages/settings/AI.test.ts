@@ -47,7 +47,8 @@ it('shows the cloud notice, acknowledges it and removes the button', async () =>
   expect(screen.getByText('OpenAI will see the statement text Tuppence sends to it.')).toBeInTheDocument()
   await fireEvent.click(screen.getByRole('button', { name: 'I understand' }))
   await waitFor(() => expect(within(card).queryByRole('button', { name: "Review what's sent" })).toBeNull())
-  expect(calls.some(([u, i]) => u === '/api/llm/connections/c1/acknowledge-notice' && i?.method === 'POST')).toBe(true)
+  const ack = calls.find(([u, i]) => u === '/api/llm/connections/c1/acknowledge-notice' && i?.method === 'POST')!
+  expect(JSON.parse(ack[1]!.body as string)).toEqual({ expected_version: 3 })
 })
 
 it('Cancel and Escape close the notice without acknowledging', async () => {

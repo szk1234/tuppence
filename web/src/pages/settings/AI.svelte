@@ -155,11 +155,13 @@
       editing = null; saved = 'Connection saved.'
     } catch (err) {
       fail(err)
-      if (err instanceof ApiError && err.status === 409) {
-        const fresh = await api<{ connections: Connection[] }>('/api/llm/connections').catch(() => null)
-        if (fresh) connections = fresh.connections
-      }
+      if (err instanceof ApiError && err.status === 409) await reloadConnections()
     } finally { busy = false }
+  }
+
+  async function reloadConnections() {
+    const fresh = await api<{ connections: Connection[] }>('/api/llm/connections').catch(() => null)
+    if (fresh) connections = fresh.connections
   }
 
   async function acknowledge() {
@@ -167,11 +169,15 @@
     if (!c) return
     error = ''
     try {
-      replaceConn(await api<Connection>(`/api/llm/connections/${c.id}/acknowledge-notice`, { method: 'POST' }))
+      // Versioned: confirms the address this notice was shown for, not one changed since.
+      replaceConn(await api<Connection>(`/api/llm/connections/${c.id}/acknowledge-notice`, { method: 'POST', body: { expected_version: c.version } }))
       noticeFor = null
       const next = afterNotice; afterNotice = null
       if (next) await next()
-    } catch (e) { noticeFor = null; fail(e) }
+    } catch (e) {
+      noticeFor = null; afterNotice = null; fail(e)
+      if (e instanceof ApiError && e.status === 409) await reloadConnections()
+    }
   }
   function cancelNotice() { noticeFor = null; afterNotice = null }
 

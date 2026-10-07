@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import secrets as pysecrets
 from collections.abc import Callable
 from typing import Any
@@ -43,6 +44,8 @@ MAX_KEY = 4000
 MAX_HEADERS = 20
 MAX_HEADER_NAME = 100
 MAX_HEADER_VALUE = 4000
+MAX_PRICE_USD_PER_MTOK = 10_000.0
+PRICE_FIELDS = ("price_in_usd_per_mtok", "price_out_usd_per_mtok")
 # RFC 9110 token characters: what a header name may be made of.
 _TOKEN = frozenset("!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
@@ -79,6 +82,8 @@ class ModelInfo(BaseModel):
     price_in_usd_per_mtok: float | None
     price_out_usd_per_mtok: float | None
     source: str
+    # provider | catalogue | user | local, or None when unknown (fallback price used).
+    price_source: str | None = None
     version: int = 1
 
 
@@ -367,7 +372,8 @@ class ConnectionRegistry:
                 old_refs.append(meta["ref"])
                 data["headers"] = json.dumps({"names": meta["names"], "ref": None})
             if "headers" in changes:
-                header_json = self._store_headers(_clean_headers(changes["headers"]))
+                wanted = self._kept_header_values(row, changes["headers"], moved)
+                header_json = self._store_headers(_clean_headers(wanted))
                 new_refs.append(_header_meta(header_json)["ref"])
                 old_refs.append(_header_meta(row["headers"])["ref"])
                 data["headers"] = header_json
@@ -388,6 +394,20 @@ class ConnectionRegistry:
             raise
         self._drop(*old_refs)
         return self.get(connection_id)
+
+    def _kept_header_values(self, row: Any, wanted: Any, moved: bool) -> Any:
+        """Fill in `None` values ("keep the saved value") from the saved header values."""
+        if not isinstance(wanted, dict):
+            return wanted
+        keep = [n for n, v in wanted.items() if v is None]
+        if not keep:
+            return wanted
+        if moved:
+            raise InputError("The address changed, so enter the header values again.")
+        saved = self._header_values(row)
+        if any(not isinstance(n, str) or n.strip() not in saved for n in keep):
+            raise InputError("Enter a value for each new header.")
+        return {n: saved[n.strip()] if v is None else v for n, v in wanted.items()}
 
     def delete(self, connection_id: str) -> None:
         row = self._row(connection_id)
@@ -439,12 +459,18 @@ class ConnectionRegistry:
             ) from None
         return {str(k): str(v) for k, v in values.items()} if isinstance(values, dict) else {}
 
-    def acknowledge_notice(self, connection_id: str) -> Connection:
-        self._row(connection_id)
+    def acknowledge_notice(self, connection_id: str, *, expected_version: int) -> Connection:
+        """Versioned: a screen showing an older address can't confirm a host never shown."""
+        now = to_iso(utcnow())
         with self.db.transaction() as conn:
-            conn.execute(
-                "UPDATE llm_connection SET notice_acknowledged_at = ? WHERE id = ?",
-                [to_iso(utcnow()), connection_id],
+            update_versioned(
+                conn,
+                "llm_connection",
+                "id",
+                connection_id,
+                expected_version,
+                {"notice_acknowledged_at": now},
+                now=now,
             )
         return self.get(connection_id)
 
@@ -519,7 +545,8 @@ class ConnectionRegistry:
         with self.db.transaction() as conn:
             for pm in listed:
                 existing = conn.execute(
-                    "SELECT context_window, source FROM llm_model"
+                    "SELECT context_window, source, price_in_usd_per_mtok,"
+                    " price_out_usd_per_mtok, price_source FROM llm_model"
                     " WHERE connection_id = ? AND model_id = ?",
                     [connection_id, pm.id],
                 ).fetchone()
@@ -537,14 +564,22 @@ class ConnectionRegistry:
                         source = "catalogue" if entry and entry.context_window else "default"
                 if existing is not None and existing["source"] == "user":
                     context, source = existing["context_window"], "user"
-                price_default = 0.0 if local else None
-                price_in = 0.0 if local else pick("price_in_usd_per_mtok", price_default)
-                price_out = 0.0 if local else pick("price_out_usd_per_mtok", price_default)
+                if existing is not None and existing["price_source"] == "user":
+                    price_in = existing["price_in_usd_per_mtok"]
+                    price_out = existing["price_out_usd_per_mtok"]
+                    price_source: str | None = "user"
+                elif local:
+                    price_in, price_out, price_source = 0.0, 0.0, "local"
+                else:
+                    price_in = pick("price_in_usd_per_mtok", None)
+                    price_out = pick("price_out_usd_per_mtok", None)
+                    price_source = _price_source(pm, entry)
                 conn.execute(
                     "INSERT INTO llm_model (connection_id, model_id, display_name,"
                     " context_window, max_output_tokens, supports_tools, supports_json_schema,"
                     " supports_vision, price_in_usd_per_mtok, price_out_usd_per_mtok, source,"
-                    " fetched_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    " price_source, fetched_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     " ON CONFLICT(connection_id, model_id) DO UPDATE SET"
                     " display_name = excluded.display_name,"
                     " context_window = excluded.context_window,"
@@ -554,7 +589,8 @@ class ConnectionRegistry:
                     " supports_vision = excluded.supports_vision,"
                     " price_in_usd_per_mtok = excluded.price_in_usd_per_mtok,"
                     " price_out_usd_per_mtok = excluded.price_out_usd_per_mtok,"
-                    " source = excluded.source, fetched_at = excluded.fetched_at,"
+                    " source = excluded.source, price_source = excluded.price_source,"
+                    " fetched_at = excluded.fetched_at,"
                     " updated_at = excluded.updated_at, version = llm_model.version + 1",
                     [
                         connection_id,
@@ -568,6 +604,7 @@ class ConnectionRegistry:
                         price_in,
                         price_out,
                         source,
+                        price_source,
                         now,
                         now,
                     ],
@@ -594,6 +631,7 @@ class ConnectionRegistry:
             price_in_usd_per_mtok=r["price_in_usd_per_mtok"],
             price_out_usd_per_mtok=r["price_out_usd_per_mtok"],
             source=r["source"],
+            price_source=r["price_source"],
             version=r["version"],
         )
 
@@ -616,29 +654,75 @@ class ConnectionRegistry:
             raise NotFound("llm_model", f"{connection_id}/{model_id}")
         return self._model_row(r)
 
-    def set_context_window(
-        self, connection_id: str, model_id: str, value: int, expected_version: int | None = None
+    def update_model(
+        self, connection_id: str, model_id: str, changes: dict[str, Any], expected_version: int
     ) -> ModelInfo:
-        """Override a model's context window (source `user`). Without `expected_version` the
-        write applies to the current row; with it, a stale write raises `VersionConflict`."""
-        if not 256 <= value <= 10_000_000:
-            raise InputError("The context window must be between 256 and 10,000,000 tokens.")
-        version = (
-            expected_version
-            if expected_version is not None
-            else self.model(connection_id, model_id).version
-        )
+        """The user's own context window and/or prices for a model (versioned).
+
+        Both are marked `user`, so fetching the model list again keeps them, and cost
+        estimates use the user's prices in preference to the catalogue or the fallback.
+        """
+        unknown = set(changes) - {"context_window", *PRICE_FIELDS}
+        if unknown:
+            raise InputError(f"Can't change: {', '.join(sorted(unknown))}")
+        if not changes:
+            raise InputError("Nothing to change.")
+        data: dict[str, Any] = {}
+        if "context_window" in changes:
+            value = changes["context_window"]
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise InputError("The context window must be a whole number of tokens.")
+            if not 256 <= value <= 10_000_000:
+                raise InputError("The context window must be between 256 and 10,000,000 tokens.")
+            data.update(context_window=value, source="user")
+        for name in PRICE_FIELDS:
+            if name in changes:
+                data[name] = _clean_price(changes[name])
+                data["price_source"] = "user"
         with self.db.transaction() as conn:
             update_versioned(
                 conn,
                 "llm_model",
                 ("connection_id", "model_id"),
                 (connection_id, model_id),
-                version,
-                {"context_window": value, "source": "user"},
+                expected_version,
+                data,
                 now=to_iso(utcnow()),
             )
         return self.model(connection_id, model_id)
+
+    def set_context_window(
+        self, connection_id: str, model_id: str, value: int, expected_version: int | None = None
+    ) -> ModelInfo:
+        """Override a model's context window (source `user`). Without `expected_version` the
+        write applies to the current row; with it, a stale write raises `VersionConflict`."""
+        version = (
+            expected_version
+            if expected_version is not None
+            else self.model(connection_id, model_id).version
+        )
+        return self.update_model(connection_id, model_id, {"context_window": value}, version)
+
+
+def _price_source(pm: ProviderModel, entry: CatalogueEntry | None) -> str | None:
+    if pm.price_in_usd_per_mtok is not None or pm.price_out_usd_per_mtok is not None:
+        return "provider"
+    if entry is not None and (
+        entry.price_in_usd_per_mtok is not None or entry.price_out_usd_per_mtok is not None
+    ):
+        return "catalogue"
+    return None
+
+
+def _clean_price(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise InputError("A price must be a number of US dollars per million tokens.")
+    price = float(value)
+    if not math.isfinite(price) or not 0 <= price <= MAX_PRICE_USD_PER_MTOK:
+        raise InputError(
+            f"A price must be between $0 and ${MAX_PRICE_USD_PER_MTOK:,.0f} per million tokens."
+        )
+    return price
 
 
 def _probe(client_factory: ClientFactory, preset: Any) -> int | None:

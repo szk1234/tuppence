@@ -46,7 +46,11 @@ def _run(client, preset: str, base_url: str | None, key: str | None, model: str)
     r = client.patch("/api/settings/llm.simple_model", json={"value": ref, "expected_version": 0})
     assert r.status_code == 200, r.text
     if conn["needs_notice"]:
-        client.post(f"/api/llm/connections/{conn['id']}/acknowledge-notice")
+        version = test["connection"]["version"]
+        client.post(
+            f"/api/llm/connections/{conn['id']}/acknowledge-notice",
+            json={"expected_version": version},
+        )
 
     llm = client.app.state.services.llm
     chat = llm.chat("coach", [Message(role="user", content="Say hello in one short line.")])

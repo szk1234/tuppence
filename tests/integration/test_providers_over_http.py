@@ -50,7 +50,10 @@ def test_provider_over_http(client: TestClient, fake, preset, suffix, model):
     r = client.patch("/api/settings/llm.simple_model", json={"value": ref, "expected_version": 0})
     assert r.status_code == 200, r.text
     if conn["needs_notice"]:
-        r = client.post(f"/api/llm/connections/{conn['id']}/acknowledge-notice")
+        r = client.post(
+            f"/api/llm/connections/{conn['id']}/acknowledge-notice",
+            json={"expected_version": test["connection"]["version"]},
+        )
         assert r.status_code == 200, r.text
 
     llm = client.app.state.services.llm  # type: ignore[attr-defined]

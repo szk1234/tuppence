@@ -215,3 +215,11 @@ def test_serve_refuses_data_from_a_newer_version(tmp_path, capsys, monkeypatch):
     err = capsys.readouterr().err
     _assert_friendly_failure(rc, err, tmp_path)
     assert "newer version of Tuppence" in err
+
+
+@pytest.mark.parametrize("host", ["a..b", "-bad", "x" * 300, "[::1"])
+def test_a_malformed_host_exits_2_with_a_plain_message(tmp_path, capsys, host):
+    rc = main(["serve", f"--host={host}", "--no-browser", "--data-dir", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "isn't a host name or address" in err and "Traceback" not in err

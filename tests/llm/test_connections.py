@@ -68,7 +68,7 @@ def test_cloud_requires_key_and_notice(reg):
     assert not c.is_local and c.has_key and c.needs_notice
     assert reg.api_key(c.id) == "sk-x"
     assert "sk-x" not in c.model_dump_json()
-    c2 = reg.acknowledge_notice(c.id)
+    c2 = reg.acknowledge_notice(c.id, expected_version=c.version)
     assert not c2.needs_notice
 
 
@@ -248,11 +248,11 @@ def test_base_url_credentials_and_query_rejected(reg):
 
 def test_notice_resets_when_host_changes_to_non_local(reg):
     c = reg.create("custom", base_url="https://8.8.8.8/v1", api_key="k")
-    c = reg.acknowledge_notice(c.id)
+    c = reg.acknowledge_notice(c.id, expected_version=c.version)
     assert not c.needs_notice
     c = reg.update(c.id, {"base_url": "https://8.8.4.4/v1"}, expected_version=c.version)
     assert c.needs_notice  # cloud -> other cloud host
-    c = reg.acknowledge_notice(c.id)
+    c = reg.acknowledge_notice(c.id, expected_version=c.version)
     c = reg.update(c.id, {"base_url": "https://8.8.4.4/v2"}, expected_version=c.version)
     assert not c.needs_notice  # same host
     c = reg.update(c.id, {"base_url": "http://10.0.0.9/v1"}, expected_version=c.version)
@@ -401,3 +401,78 @@ def test_locality_is_checked_for_the_name_the_guard_connects_to(reg, monkeypatch
     )
     c = reg.create("custom", base_url="http://straße.example:8080/v1")
     assert seen == ["xn--strae-oqa.example"] and c.is_local
+
+
+def test_price_override_is_versioned_used_and_kept_on_retest(reg):
+    c = reg.create("openai", api_key="k")
+    reg.test(c.id)
+    m = reg.model(c.id, "small-1")  # a cloud model nobody knows the price of
+    assert m.price_in_usd_per_mtok is None and m.price_source is None
+    assert reg.model(c.id, "vendor/known").price_source == "catalogue"
+    m2 = reg.update_model(
+        c.id,
+        "small-1",
+        {"price_in_usd_per_mtok": 0.15, "price_out_usd_per_mtok": 0.6},
+        expected_version=m.version,
+    )
+    assert (m2.price_in_usd_per_mtok, m2.price_out_usd_per_mtok, m2.price_source) == (
+        0.15,
+        0.6,
+        "user",
+    )
+    assert m2.version == m.version + 1
+    with pytest.raises(VersionConflict):
+        reg.update_model(c.id, "small-1", {"price_in_usd_per_mtok": 1.0}, m.version)
+    reg.test(c.id)
+    kept = reg.model(c.id, "small-1")
+    assert (kept.price_in_usd_per_mtok, kept.price_out_usd_per_mtok) == (0.15, 0.6)
+    assert kept.price_source == "user"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {},
+        {"price_in_usd_per_mtok": -1},
+        {"price_out_usd_per_mtok": 10_001},
+        {"price_in_usd_per_mtok": float("nan")},
+        {"price_in_usd_per_mtok": float("inf")},
+        {"price_in_usd_per_mtok": True},
+        {"price_in_usd_per_mtok": "1"},
+        {"context_window": 100},
+        {"display_name": "x"},
+    ],
+)
+def test_bad_model_changes_are_input_errors(reg, changes):
+    c = reg.create("openai", api_key="k")
+    reg.test(c.id)
+    m = reg.model(c.id, "small-1")
+    with pytest.raises(InputError):
+        reg.update_model(c.id, "small-1", changes, expected_version=m.version)
+
+
+def test_acknowledging_the_notice_is_versioned(reg):
+    c = reg.create("openai", api_key="k")
+    acked = reg.acknowledge_notice(c.id, expected_version=c.version)
+    assert not acked.needs_notice and acked.version == c.version + 1
+    with pytest.raises(VersionConflict):
+        reg.acknowledge_notice(c.id, expected_version=c.version)
+
+
+def test_header_values_can_be_kept_while_others_change(reg, seen):
+    c = reg.create(
+        "custom", base_url="http://10.0.0.5:8000/v1", headers={"X-Keep": "k1", "X-Drop": "d1"}
+    )
+    c = reg.update(c.id, {"headers": {"X-Keep": None, "X-New": "n1"}}, expected_version=c.version)
+    assert sorted(h.name for h in c.headers) == ["X-Keep", "X-New"]
+    reg.test(c.id)
+    sent = seen[-1].headers
+    assert sent["x-keep"] == "k1" and sent["x-new"] == "n1" and "x-drop" not in sent
+    with pytest.raises(InputError):  # nothing saved to keep
+        reg.update(c.id, {"headers": {"X-Other": None}}, expected_version=c.version)
+    with pytest.raises(InputError):  # a new address never inherits saved values
+        reg.update(
+            c.id,
+            {"base_url": "http://10.0.0.6:8000/v1", "headers": {"X-Keep": None}},
+            expected_version=c.version,
+        )

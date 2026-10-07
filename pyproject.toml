@@ -24,6 +24,7 @@ dependencies = [
   "argon2-cffi>=25.1.0",
   "keyring>=25.7.0",
   "cryptography>=50.0.2",
+  "idna>=3.20",
 ]
 
 [project.optional-dependencies]

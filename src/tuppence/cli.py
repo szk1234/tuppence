@@ -22,12 +22,22 @@ from tuppence.paths import (
 from tuppence.settings import RuntimeSettings
 
 
+def host_usable(host: str) -> bool:
+    """Whether Tuppence could listen on `host`: an address, or a name that resolves here."""
+    if not host or len(host) > 253 or host.startswith("-"):
+        return False
+    try:
+        return bool(socket.getaddrinfo(host, None, type=socket.SOCK_STREAM))
+    except (OSError, UnicodeError, ValueError):  # gaierror, or a name that can't be encoded
+        return False
+
+
 def port_available(host: str, port: int) -> bool:
     try:
         family, _type, _proto, _canon, sockaddr = socket.getaddrinfo(
             host, port, type=socket.SOCK_STREAM
         )[0]
-    except (socket.gaierror, IndexError):
+    except (socket.gaierror, IndexError, UnicodeError, ValueError):
         return False
     with socket.socket(family, socket.SOCK_STREAM) as s:
         if os.name != "nt":
@@ -76,6 +86,13 @@ def _serve_locked(args: argparse.Namespace, data_dir: Path) -> int:
         launch_token=launch_token,
         secure_cookies=args.secure_cookies or env_flag("TUPPENCE_SECURE_COOKIES"),
     )
+    if not host_usable(settings.host):
+        print(
+            f"--host {settings.host[:80]!r} isn't a host name or address Tuppence can use. "
+            "Try 127.0.0.1 (this computer only) or 0.0.0.0 (your network).",
+            file=sys.stderr,
+        )
+        return 2
     if not port_available(settings.host, settings.port):
         print(
             f"Port {settings.port} is already in use. "

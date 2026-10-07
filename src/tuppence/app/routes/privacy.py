@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from tuppence.app.deps import get_services
 from tuppence.app.services import Services
@@ -15,6 +15,8 @@ router = APIRouter(prefix="/api/privacy", tags=["privacy"])
 
 @router.get("/log")
 def privacy_log(
-    services: Svc, limit: int = 100, before_id: int | None = None
+    services: Svc,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    before_id: Annotated[int | None, Query(ge=1, le=2**63 - 1)] = None,
 ) -> dict[str, list[PrivacyLogEntry]]:
     return {"entries": services.privacy_log.list(limit=limit, before_id=before_id)}

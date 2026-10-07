@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, StringConstraints
 
 from tuppence.app.deps import get_services, require_admin
 from tuppence.app.services import Services
@@ -30,21 +30,57 @@ TaskName = Literal["read", "categorise", "review", "research", "coach", "report"
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 
 
+HeaderName = Annotated[str, StringConstraints(max_length=100)]
+Price = Annotated[float, Field(ge=0, le=10_000, allow_inf_nan=False)]
+
+
 class ConnectionIn(BaseModel):
     preset: str = Field(max_length=64)
     name: str | None = Field(default=None, max_length=200)
-    base_url: str | None = Field(default=None, max_length=2000)
+    base_url: str | None = Field(default=None, max_length=2048)
     api_key: str | None = Field(default=None, max_length=4000)
-    headers: dict[str, str] | None = None
+    headers: (
+        Annotated[
+            dict[HeaderName, Annotated[str, StringConstraints(max_length=4000)]],
+            Field(max_length=20),
+        ]
+        | None
+    ) = None
+
+
+class ConnectionChanges(BaseModel):
+    """What a PATCH may change. Only the fields sent are changed."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: StrictStr | None = Field(default=None, max_length=200)
+    base_url: StrictStr | None = Field(default=None, max_length=2048)
+    api_key: StrictStr | None = Field(default=None, max_length=4000)  # blank: keep the saved key
+    clear_api_key: StrictBool | None = None
+    enabled: StrictBool | None = None
+    # A null value keeps that header's saved value; names left out are removed.
+    headers: (
+        Annotated[
+            dict[HeaderName, Annotated[StrictStr, StringConstraints(max_length=4000)] | None],
+            Field(max_length=20),
+        ]
+        | None
+    ) = None
 
 
 class ConnectionUpdate(BaseModel):
-    changes: dict[str, Any]
+    changes: ConnectionChanges
     expected_version: Version
 
 
-class ContextIn(BaseModel):
-    context_window: Annotated[int, Field(ge=256, le=10_000_000)]
+class AcknowledgeIn(BaseModel):
+    expected_version: Version
+
+
+class ModelChanges(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    context_window: Annotated[int, Field(ge=256, le=10_000_000)] | None = None
+    price_in_usd_per_mtok: Price | None = None
+    price_out_usd_per_mtok: Price | None = None
     expected_version: Version
 
 
@@ -124,7 +160,8 @@ def create_connection(body: ConnectionIn, services: Svc) -> Connection:
 
 @router.patch("/connections/{connection_id}", dependencies=Admin)
 def update_connection(connection_id: str, body: ConnectionUpdate, services: Svc) -> Connection:
-    return services.connections.update(connection_id, body.changes, body.expected_version)
+    changes = body.changes.model_dump(exclude_unset=True)
+    return services.connections.update(connection_id, changes, body.expected_version)
 
 
 @router.delete("/connections/{connection_id}", status_code=204, dependencies=Admin)
@@ -134,8 +171,10 @@ def delete_connection(connection_id: str, services: Svc) -> Response:
 
 
 @router.post("/connections/{connection_id}/acknowledge-notice", dependencies=Admin)
-def acknowledge(connection_id: str, services: Svc) -> Connection:
-    return services.connections.acknowledge_notice(connection_id)
+def acknowledge(connection_id: str, body: AcknowledgeIn, services: Svc) -> Connection:
+    return services.connections.acknowledge_notice(
+        connection_id, expected_version=body.expected_version
+    )
 
 
 @router.post("/connections/{connection_id}/test", dependencies=Admin)
@@ -162,9 +201,11 @@ def list_models(services: Svc, connection_id: str | None = None) -> dict[str, li
 
 
 @router.patch("/models/{connection_id}/{model_id:path}", dependencies=Admin)
-def set_context(connection_id: str, model_id: str, body: ContextIn, services: Svc) -> ModelInfo:
-    return services.connections.set_context_window(
-        connection_id, model_id, body.context_window, body.expected_version
+def update_model(connection_id: str, model_id: str, body: ModelChanges, services: Svc) -> ModelInfo:
+    """The user's context window and/or prices for a model (kept when models are re-fetched)."""
+    changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
+    return services.connections.update_model(
+        connection_id, model_id, changes, body.expected_version
     )
 
 
