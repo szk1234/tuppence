@@ -147,6 +147,11 @@ class UsageLedger:
                 ],
             )
 
+    def prune(self, before: str) -> int:
+        """Delete usage rows recorded before `before` (a UTC ISO time). Returns how many."""
+        with self.db.transaction() as conn:
+            return conn.execute("DELETE FROM llm_usage WHERE ts < ?", [before]).rowcount
+
     def _month_rows(self, year: int, month: int) -> list[Any]:
         start = date(year, month, 1)
         end = date(year + (month == 12), month % 12 + 1, 1)

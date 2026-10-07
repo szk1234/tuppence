@@ -48,6 +48,11 @@ class PrivacyLog:
                 [data[c] for c in _COLS],
             )
 
+    def prune(self, before: str) -> int:
+        """Delete entries logged before `before` (a UTC ISO time). Returns how many."""
+        with self.db.transaction() as conn:
+            return conn.execute("DELETE FROM privacy_log WHERE ts < ?", [before]).rowcount
+
     def list(self, limit: int = 100, before_id: int | None = None) -> list[PrivacyLogEntry]:
         sql = "SELECT * FROM privacy_log"
         params: list[int] = []

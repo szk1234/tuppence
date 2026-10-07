@@ -12,6 +12,7 @@ import httpx
 from tuppence.config.service import ConfigService
 from tuppence.core.auth import LoginLimiter, Sessions, Users, prune_auth
 from tuppence.core.backup import daily_backup
+from tuppence.core.clock import months_ago, to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.household import HouseholdService
 from tuppence.core.jobs import Job, JobQueue, Periodic, Worker
@@ -31,6 +32,9 @@ from tuppence.paths import DataPaths
 from tuppence.settings import RuntimeSettings
 
 EXCLUSIVE_KINDS = frozenset({"analysis"})
+# How long the privacy log and the AI usage ledger keep rows (a year, plus a month of slack
+# so a full year is always there to compare against).
+RETENTION_MONTHS = 13
 
 
 @dataclass
@@ -93,20 +97,28 @@ def build_services(runtime: RuntimeSettings) -> Services:
     settings_store = SettingsStore(db)
     household = HouseholdService(db)
     queue = JobQueue(db)
+    privacy_log = PrivacyLog(db)
+    usage = UsageLedger(db)
 
     def backup_handler(_job: Job) -> dict[str, Any]:
         made = daily_backup(paths.db, paths.backups, date.today())
         return {"backup": str(made) if made else None}
 
     def prune_handler(_job: Job) -> dict[str, Any]:
-        return {**prune_auth(db), "old_jobs": queue.prune_finished(days=30)}
+        """Daily maintenance: expired sign-ins, old jobs, and log rows past retention."""
+        cutoff = to_iso(months_ago(utcnow(), RETENTION_MONTHS))
+        return {
+            **prune_auth(db),
+            "old_jobs": queue.prune_finished(days=30),
+            "privacy_log": privacy_log.prune(cutoff),
+            "llm_usage": usage.prune(cutoff),
+        }
 
     worker = Worker(
         queue,
         {"maintenance.daily_backup": backup_handler, "maintenance.prune_auth": prune_handler},
         exclusive_kinds=EXCLUSIVE_KINDS,
     )
-    privacy_log = PrivacyLog(db)
     secrets = choose_secret_store(runtime.mode, db, paths.root)
     catalogue = load_baseline()
 
@@ -121,7 +133,6 @@ def build_services(runtime: RuntimeSettings) -> Services:
 
     connections = ConnectionRegistry(db, secrets, catalogue, client_factory=client_factory)
     router = TaskRouter(db, settings_store, connections)
-    usage = UsageLedger(db)
     breakers = BreakerBoard()
     llm = LLMClient(
         connections=connections,

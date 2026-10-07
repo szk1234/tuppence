@@ -87,7 +87,7 @@
   {/if}
   <div class="card">
     <h2>Privacy log</h2>
-    <p class="hint">Every call that leaves, or was stopped from leaving, this machine: when, where to, how much was sent and received, and how many values were swapped for stand-ins. It records these details, not what was sent.</p>
+    <p class="hint">Every call that leaves, or was stopped from leaving, this machine: when, where to, how much was sent and received, and how many values were swapped for stand-ins. It records these details, not what was sent. Entries older than 13 months are deleted.</p>
     {#if log.length === 0}<p>Nothing has left this machine yet.</p>{:else}
       <div class="table-wrap">
         <table>
