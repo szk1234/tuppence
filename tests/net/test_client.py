@@ -41,9 +41,12 @@ def test_logs_sent_calls_without_query_or_body(log):
 
 def test_local_only_blocks_cloud_and_logs_block(log):
     ctx = CallContext(purpose="llm", local=False)
-    with make_client(
-        ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
-    ) as c, pytest.raises(LocalOnlyBlocked):
+    with (
+        make_client(
+            ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
+        ) as c,
+        pytest.raises(LocalOnlyBlocked),
+    ):
         c.get("https://api.example.com/v1/models")
     [e] = log.list()
     assert e.outcome == "blocked" and e.bytes_out == 0 and "Local only" in (e.note or "")
@@ -59,9 +62,12 @@ def test_local_only_allows_local_connection_on_local_host(log):
 
 def test_local_flag_alone_is_not_enough_for_public_host(log):
     ctx = CallContext(purpose="llm", local=True)
-    with make_client(
-        ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
-    ) as c, pytest.raises(LocalOnlyBlocked):
+    with (
+        make_client(
+            ctx, privacy_log=log, local_only=lambda: True, timeout=5, transport=ok_transport()
+        ) as c,
+        pytest.raises(LocalOnlyBlocked),
+    ):
         c.get("http://8.8.8.8/v1/models")
 
 
@@ -78,13 +84,16 @@ def test_transport_errors_are_logged_and_reraised(log):
         raise httpx.ConnectError("refused", request=req)
 
     ctx = CallContext(purpose="llm")
-    with make_client(
-        ctx,
-        privacy_log=log,
-        local_only=lambda: False,
-        timeout=5,
-        transport=httpx.MockTransport(boom),
-    ) as c, pytest.raises(httpx.ConnectError):
+    with (
+        make_client(
+            ctx,
+            privacy_log=log,
+            local_only=lambda: False,
+            timeout=5,
+            transport=httpx.MockTransport(boom),
+        ) as c,
+        pytest.raises(httpx.ConnectError),
+    ):
         c.get("https://api.example.com/x")
     [e] = log.list()
     assert e.outcome == "error" and "refused" in (e.note or "")
