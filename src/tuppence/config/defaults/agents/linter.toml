@@ -1,0 +1,11 @@
+name = "linter"
+description = "Checks past records for inconsistencies and fixes what your rules cover."
+task = "review"
+triggers = ["knowledge_changed", "daily"]
+[budgets]
+max_llm_calls = 20
+max_tokens = 150000
+max_gbp = 0.15
+max_seconds = 600
+[limits]
+max_items_per_run = 500

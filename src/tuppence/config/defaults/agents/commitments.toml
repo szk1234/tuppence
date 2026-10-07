@@ -1,0 +1,11 @@
+name = "commitments"
+description = "Finds bills, subscriptions and instalments, their timing and price changes."
+task = "categorise"
+triggers = ["statement_imported"]
+[budgets]
+max_llm_calls = 20
+max_tokens = 100000
+max_gbp = 0.15
+max_seconds = 300
+[limits]
+min_occurrences = 2

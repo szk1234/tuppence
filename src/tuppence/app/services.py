@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
+from tuppence.config.service import ConfigService
 from tuppence.core.auth import LoginLimiter, Sessions, Users
 from tuppence.core.db import Database
 from tuppence.core.household import HouseholdService
@@ -26,6 +27,7 @@ class Services:
     limiter: LoginLimiter
     household: HouseholdService
     timeline: Timeline
+    config: ConfigService
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _launch_used: bool = field(default=False, repr=False)
 
@@ -44,16 +46,18 @@ def build_services(runtime: RuntimeSettings) -> Services:
     paths = DataPaths(runtime.data_dir).ensure()
     db = Database(paths.db)
     migrate(db, paths.backups)
+    settings_store = SettingsStore(db)
     services = Services(
         runtime=runtime,
         paths=paths,
         db=db,
-        settings=SettingsStore(db),
+        settings=settings_store,
         users=Users(db),
         sessions=Sessions(db),
         limiter=LoginLimiter(db),
         household=HouseholdService(db),
         timeline=Timeline(db),
+        config=ConfigService(db, settings_store, paths.config),
     )
     # Launch sessions from earlier launches (or another mode on this data folder) must not survive.
     services.sessions.purge_kind("launch")

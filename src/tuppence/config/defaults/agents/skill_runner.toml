@@ -1,0 +1,9 @@
+name = "skill_runner"
+description = "Runs the advisor skills (debt, bills, tax, benefits, goals…) when their data changes."
+task = "report"
+triggers = ["analysis_complete", "life_event", "daily"]
+[budgets]
+max_llm_calls = 20
+max_tokens = 120000
+max_gbp = 0.15
+max_seconds = 600

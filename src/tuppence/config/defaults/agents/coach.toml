@@ -1,0 +1,14 @@
+name = "coach"
+description = "Chats with you about your money, using the other agents and skills as tools."
+task = "coach"
+tone = "plain"
+[budgets]
+max_llm_calls = 9
+max_tokens = 200000
+max_gbp = 0.25
+max_seconds = 60
+[limits]
+max_tool_calls_per_turn = 8
+local_max_seconds = 180
+max_rows_per_tool_result = 50
+recent_turns_kept = 8

@@ -1,0 +1,14 @@
+name = "question_planner"
+description = "Chooses the few questions worth asking you, biggest pound impact first."
+task = "coach"
+triggers = ["analysis_complete"]
+[budgets]
+max_llm_calls = 10
+max_tokens = 40000
+max_gbp = 0.05
+max_seconds = 120
+[thresholds]
+material_change = 0.10
+[questions]
+max_open = 5
+cooldown_days = 180

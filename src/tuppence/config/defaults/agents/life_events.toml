@@ -1,0 +1,9 @@
+name = "life_events"
+description = "Notices changes such as a new job, a new baby or moving home, and asks you to confirm."
+task = "coach"
+triggers = ["statement_imported", "daily"]
+[budgets]
+max_llm_calls = 5
+max_tokens = 30000
+max_gbp = 0.04
+max_seconds = 120

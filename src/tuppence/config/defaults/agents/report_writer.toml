@@ -1,0 +1,12 @@
+name = "report_writer"
+description = "Writes the commentary on your monthly report. Every number is checked against the facts."
+task = "report"
+triggers = ["analysis_complete", "monthly"]
+[budgets]
+max_llm_calls = 8
+max_tokens = 60000
+max_gbp = 0.10
+max_seconds = 300
+[thresholds]
+money_tolerance_gbp = 1.0
+percent_tolerance = 0.5

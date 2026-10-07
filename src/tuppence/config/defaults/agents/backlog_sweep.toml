@@ -1,0 +1,12 @@
+name = "backlog_sweep"
+description = "Re-queues transactions Tuppence isn't sure about so they're looked at again."
+triggers = ["statement_imported", "knowledge_changed", "daily"]
+[budgets]
+max_llm_calls = 0
+max_tokens = 0
+max_gbp = 0.0
+max_seconds = 60
+[thresholds]
+revisit_below_confidence = 0.7
+[limits]
+max_items_per_run = 200

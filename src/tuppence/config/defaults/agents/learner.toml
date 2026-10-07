@@ -1,0 +1,9 @@
+name = "learner"
+description = "Turns your corrections into rules and offers to apply them to similar past transactions."
+task = "review"
+triggers = ["feedback"]
+[budgets]
+max_llm_calls = 5
+max_tokens = 40000
+max_gbp = 0.05
+max_seconds = 120

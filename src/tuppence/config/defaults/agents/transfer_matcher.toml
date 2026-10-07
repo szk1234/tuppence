@@ -1,0 +1,10 @@
+name = "transfer_matcher"
+description = "Pairs money moving between your own accounts and card repayments. Code only, no AI."
+triggers = ["statement_imported"]
+[budgets]
+max_llm_calls = 0
+max_tokens = 0
+max_gbp = 0.0
+max_seconds = 120
+[limits]
+max_days_apart = 3

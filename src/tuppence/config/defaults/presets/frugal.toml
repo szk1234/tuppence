@@ -1,0 +1,10 @@
+# Least AI use: good for small local models and tight budgets.
+[agents.researcher]
+enabled = false
+[agents.categoriser.budgets]
+max_llm_calls = 30
+max_gbp = 0.20
+[agents.coach.limits]
+max_tool_calls_per_turn = 4
+[agents.linter.budgets]
+max_llm_calls = 5

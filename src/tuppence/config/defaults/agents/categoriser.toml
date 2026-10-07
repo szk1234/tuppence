@@ -1,0 +1,11 @@
+name = "categoriser"
+description = "Works out what each transaction is: rules and memory first, then the AI for the rest."
+task = "categorise"
+triggers = ["statement_imported", "rule_changed", "feedback"]
+[budgets]
+max_llm_calls = 60
+max_tokens = 400000
+max_gbp = 0.50
+max_seconds = 900
+[thresholds]
+review_below = 0.8

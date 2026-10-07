@@ -1,0 +1,9 @@
+# More research and review: best with a capable cloud model.
+[agents.researcher.limits]
+max_merchants_per_run = 40
+[agents.researcher.budgets]
+max_gbp = 1.00
+[agents.categoriser.thresholds]
+review_below = 0.9
+[agents.linter.budgets]
+max_llm_calls = 40

@@ -1,0 +1,14 @@
+name = "researcher"
+description = "Identifies unknown merchants using the merchant pack, Companies House and (if allowed) the web."
+task = "research"
+triggers = ["backlog"]
+tools = ["merchant_pack_lookup", "companies_house_lookup", "web_search", "fetch_page"]
+[budgets]
+max_llm_calls = 60
+max_tokens = 300000
+max_gbp = 0.50
+max_seconds = 600
+[limits]
+max_merchants_per_run = 20
+max_tool_calls_per_merchant = 5
+max_page_fetches_per_merchant = 2

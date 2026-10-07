@@ -1,0 +1,12 @@
+name = "purpose_analyst"
+description = "Asks 'why?' about your biggest outgoings so advice fits your life."
+task = "coach"
+triggers = ["analysis_complete", "answer"]
+[budgets]
+max_llm_calls = 10
+max_tokens = 60000
+max_gbp = 0.08
+max_seconds = 180
+[limits]
+max_depth = 5
+max_open_conversations = 3
