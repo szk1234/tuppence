@@ -65,3 +65,20 @@ def test_providers_and_auth(client, anon_client):
         "kinds": ["current", "savings", "credit_card"],
     } in providers
     assert anon_client.get("/api/accounts").status_code == 401
+
+
+def test_plain_messages_and_no_cash_wallet(client):
+    a = _person(client)
+    base = {"provider": "monzo", "kind": "current", "nickname": "X", "owner_ids": [a]}
+    r = client.post("/api/accounts", json={**base, "last4": "12a4"})
+    assert r.status_code == 422 and "4 digits" in r.json()["detail"]
+    other = next(
+        p for p in client.get("/api/accounts/providers").json()["providers"] if p["id"] == "other"
+    )
+    assert "cash_wallet" not in other["kinds"]
+    assert (
+        client.post(
+            "/api/accounts", json={**base, "provider": "amex", "kind": "savings"}
+        ).status_code
+        == 201
+    )

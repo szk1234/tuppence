@@ -131,3 +131,62 @@ def test_update_cross_field_rules_and_noop(env):
         )
     )
     assert svc.update(card.id, {"credit_limit": "1,500.50"}, 1).credit_limit == "1500.50"
+
+
+def test_any_kind_for_any_provider(env):
+    svc, a, _ = env
+    acct = svc.create(AccountIn(provider="amex", kind="savings", nickname="Save", owner_ids=[a.id]))
+    assert acct.kind == "savings"
+    assert svc.update(acct.id, {"nickname": "Saver"}, 1).version == 2
+
+
+def test_retired_owner_kept_on_edit(env):
+    svc, a, b = env
+    acct = svc.create(
+        AccountIn(provider="hsbc", kind="current", nickname="Joint", owner_ids=[a.id, b.id])
+    )
+    svc.household.retire_person(b.id, 1)
+    out = svc.update(acct.id, {"nickname": "Bills", "owner_ids": [a.id, b.id]}, 1)
+    assert out.nickname == "Bills" and out.joint
+    c = svc.household.create_person(PersonIn(display_name="Kit Example", role="adult"))
+    svc.household.retire_person(c.id, 1)
+    with pytest.raises(InputError):
+        svc.update(acct.id, {"owner_ids": [a.id, c.id]}, 2)
+
+
+def test_owner_reorder_is_not_a_change(env):
+    svc, a, b = env
+    acct = svc.create(
+        AccountIn(provider="hsbc", kind="current", nickname="J", owner_ids=[a.id, b.id])
+    )
+    assert svc.update(acct.id, {"owner_ids": [b.id, a.id]}, 1).version == 1
+
+
+def test_apr_rules_and_clearing_card_fields(env):
+    svc, a, _ = env
+    with pytest.raises(ValueError):
+        AccountIn(
+            provider="amex", kind="credit_card", nickname="C", owner_ids=[a.id], purchase_apr=24.123
+        )
+    with pytest.raises(ValueError):
+        AccountIn(
+            provider="amex", kind="credit_card", nickname="C", owner_ids=[a.id], statement_day=32
+        )
+    with pytest.raises(InputError):
+        svc.create(
+            AccountIn(
+                provider="amex",
+                kind="credit_card",
+                nickname="C",
+                owner_ids=[a.id],
+                purchase_apr=10,
+                promo_apr=30,
+            )
+        )
+    card = svc.create(
+        AccountIn(
+            provider="amex", kind="credit_card", nickname="C", owner_ids=[a.id], credit_limit="500"
+        )
+    )
+    cleared = svc.update(card.id, {"credit_limit": None}, 1)
+    assert cleared.credit_limit is None and cleared.version == 2

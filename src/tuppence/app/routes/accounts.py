@@ -25,9 +25,22 @@ class VersionOnly(BaseModel):
     expected_version: int
 
 
+_PLAIN = {
+    "last4": "Enter exactly 4 digits, or leave it blank.",
+    "nickname": "Give the account a name of up to 40 characters.",
+    "purchase_apr": "Enter an APR from 0 to 100 with at most 2 decimal places.",
+    "promo_apr": "Enter an APR from 0 to 100 with at most 2 decimal places.",
+    "statement_day": "The statement day must be between 1 and 31.",
+    "promo_end": "Enter the promotional end date as YYYY-MM-DD.",
+}
+
+
 def _input_error(exc: ValidationError) -> InputError:
     err = exc.errors()[0]
     field = ".".join(str(p) for p in err["loc"])
+    plain = _PLAIN.get(field)
+    if plain and err["type"] != "extra_forbidden":
+        return InputError(plain)
     return InputError(f"{field}: {err['msg']}")
 
 

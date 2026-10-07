@@ -1,4 +1,7 @@
-"""UK banks, card issuers and building societies offered in the account step."""
+"""UK banks, card issuers and building societies offered in the account step.
+
+`kinds` is a hint for the picker only; any provider can be given any kind.
+"""
 
 from __future__ import annotations
 
@@ -51,7 +54,7 @@ PROVIDERS: list[Provider] = [
     Provider("marbles", "Marbles", _CARD),
     Provider("fluid", "Fluid", _CARD),
     Provider("jaja", "Jaja", _CARD),
-    Provider("other", "Other", ("current", "savings", "credit_card", "cash_wallet")),
+    Provider("other", "Other", _ALL),  # cash_wallet joins in M6
 ]
 
 _BY_ID = {p.id: p for p in PROVIDERS}

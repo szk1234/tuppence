@@ -7,7 +7,7 @@ import sqlite3
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
@@ -20,7 +20,15 @@ from tuppence.core.records import NotFound, update_versioned
 Kind = Literal["current", "savings", "credit_card"]
 Nickname = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
 Last4 = Annotated[str, StringConstraints(pattern=r"^[0-9]{4}$")]
-Apr = Annotated[float, Field(ge=0, le=100)]
+
+
+def _two_places(v: float) -> float:
+    if round(v, 2) != v:
+        raise ValueError("Use at most 2 decimal places.")
+    return v
+
+
+Apr = Annotated[float, Field(ge=0, le=100), AfterValidator(_two_places)]
 StatementDay = Annotated[int, Field(ge=1, le=31)]
 
 CARD_FIELDS = ("credit_limit", "purchase_apr", "promo_apr", "promo_end", "statement_day")
@@ -134,12 +142,13 @@ class AccountService:
             return self._build(conn, r)
 
     # -- validation ------------------------------------------------------------------------
-    def _check_owners(self, owner_ids: list[str]) -> list[str]:
+    def _check_owners(self, owner_ids: list[str], keep: list[str] | None = None) -> list[str]:
+        """`keep`: current owners stay even if since retired; added ones must be active."""
         owners = list(dict.fromkeys(owner_ids))
         if not owners:
             raise InputError("Choose at least one owner.")
-        active = {p.id for p in self.household.list_people()}
-        if any(o not in active for o in owners):
+        allowed = {p.id for p in self.household.list_people()} | set(keep or ())
+        if any(o not in allowed for o in owners):
             raise InputError("Choose owners from the people in your household.")
         return owners
 
@@ -148,8 +157,6 @@ class AccountService:
         provider = _KNOWN_PROVIDERS.get(state["provider"])
         if provider is None:
             raise InputError("Unknown provider.")
-        if state["kind"] not in provider.kinds:
-            raise InputError(f"{provider.name} doesn't offer that kind of account here.")
         custom = state.get("provider_name")
         if provider.id == "other":
             if not custom or not custom.strip():
@@ -159,6 +166,9 @@ class AccountService:
             name = provider_name(provider.id)
         if state["kind"] != "credit_card" and any(state.get(f) is not None for f in CARD_FIELDS):
             raise InputError("Only credit cards have a limit, APR or statement day.")
+        promo, purchase = state.get("promo_apr"), state.get("purchase_apr")
+        if promo is not None and purchase is not None and promo > purchase:
+            raise InputError("The promotional rate can't be higher than the purchase rate.")
         limit = state.get("credit_limit")
         return {
             "provider": provider.id,
@@ -205,7 +215,9 @@ class AccountService:
             if field in data and data[field] is None:
                 raise InputError(f"{field} can't be empty.")
         current = self.get(account_id)
-        owners = self._check_owners(data["owner_ids"]) if "owner_ids" in data else None
+        owners = None
+        if "owner_ids" in data:
+            owners = self._check_owners(data["owner_ids"], keep=current.owner_ids)
         state = current.model_dump()
         state["credit_limit"] = current.credit_limit
         state.update({k: v for k, v in data.items() if k != "owner_ids"})
@@ -213,7 +225,7 @@ class AccountService:
             state["provider_name"] = None  # the old custom name belongs to the old provider
         cols = self._columns(state)
         changed = {k: v for k, v in cols.items() if self._differs(k, v, current)}
-        owners_changed = owners is not None and owners != current.owner_ids
+        owners_changed = owners is not None and set(owners) != set(current.owner_ids)
         if not changed and not owners_changed:
             with self.db.connection() as conn:
                 _check_version(conn, "account", account_id, expected_version)
