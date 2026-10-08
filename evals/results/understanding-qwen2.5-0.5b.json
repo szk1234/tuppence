@@ -1,0 +1,196 @@
+{
+  "model": "Custom (OpenAI-compatible)//models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+  "months": 12,
+  "seed": 7,
+  "l1_accuracy": 0.2148,
+  "l2_accuracy": 0.2,
+  "unknown_share": 0.7352,
+  "commitments_expected": 20,
+  "commitments_ok": 12,
+  "commitments_extra": [],
+  "commitment_results": [
+    {
+      "merchant": "Homestead Lettings",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 115000,
+        "flags": []
+      }
+    },
+    {
+      "merchant": "City Water",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 3115,
+        "flags": []
+      }
+    },
+    {
+      "merchant": "Brightspark Energy",
+      "ok": false,
+      "got": null
+    },
+    {
+      "merchant": "Fibrenet Broadband",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 3550,
+        "flags": [
+          "price_rise"
+        ]
+      }
+    },
+    {
+      "merchant": "TV Licensing",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 1454,
+        "flags": []
+      }
+    },
+    {
+      "merchant": "Shield Car Insurance",
+      "ok": false,
+      "got": null
+    },
+    {
+      "merchant": "Roadstar Finance",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 18900,
+        "flags": []
+      }
+    },
+    {
+      "merchant": "DVLA Vehicle Tax",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 1663,
+        "flags": []
+      }
+    },
+    {
+      "merchant": "Sunnydays Nursery",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 64000,
+        "flags": []
+      }
+    },
+    {
+      "merchant": "Splash Swim Club",
+      "ok": false,
+      "got": null
+    },
+    {
+      "merchant": "Flexfit Gym",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "lapsed",
+        "amount_pence": 2500,
+        "flags": [
+          "lapsed"
+        ]
+      }
+    },
+    {
+      "merchant": "Streamly",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 1199,
+        "flags": [
+          "price_rise"
+        ]
+      }
+    },
+    {
+      "merchant": "Tunewave Music",
+      "ok": false,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 1099,
+        "flags": []
+      }
+    },
+    {
+      "merchant": "Melodia Premium",
+      "ok": false,
+      "got": null
+    },
+    {
+      "merchant": "Cloudbox Storage",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 799,
+        "flags": [
+          "free_trial_converted"
+        ]
+      }
+    },
+    {
+      "merchant": "Daily News Digital",
+      "ok": false,
+      "got": null
+    },
+    {
+      "merchant": "Sparkle Window Cleaning",
+      "ok": false,
+      "got": null
+    },
+    {
+      "merchant": "Happy Paws Pet Insurance",
+      "ok": false,
+      "got": null
+    },
+    {
+      "merchant": "Lifeshield Protection",
+      "ok": true,
+      "got": {
+        "cadence": "quarterly",
+        "status": "active",
+        "amount_pence": 6200,
+        "flags": []
+      }
+    },
+    {
+      "merchant": "Northfield Council Council Tax",
+      "ok": true,
+      "got": {
+        "cadence": "monthly",
+        "status": "active",
+        "amount_pence": 14200,
+        "flags": []
+      }
+    }
+  ],
+  "llm_calls": 122,
+  "tokens": 236956,
+  "cost_gbp": 0.0,
+  "seconds": 297.08,
+  "decided_by": {
+    "rule": 105,
+    "llm": 38,
+    "unknown": 397
+  },
+  "transactions": 540
+}

@@ -94,3 +94,10 @@ people and companies, for example "Alex Example" paid by "Acme Payroll".
 
 Keep commits small, with an imperative subject line ("Add statement parser",
 not "Added statement parser").
+
+## Understanding evals
+
+- `uv run python -m evals.understand --model oracle --require-targets` runs the whole analysis on a synthetic 12-month household with the deterministic oracle (no model needed; CI runs this).
+- `uv run python -m evals.understand --model "<connection>/<model id>" --out evals/results/understanding-<name>.json` scores a real model you've set up (Settings › AI, or a throwaway `--data-dir`); `--months 24` and `--seed` vary the household.
+- `uv run python -m evals.understand --table --write README.md` refreshes the README table from `evals/results/understanding-*.json`.
+- `uv run python -m evals.household --write-fixture` regenerates the browser test's statement; never add real statements.

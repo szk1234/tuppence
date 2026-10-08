@@ -36,8 +36,10 @@ def render(summaries: list[dict[str, Any]]) -> str:
 
 
 def load(folder: Path = RESULTS) -> list[dict[str, Any]]:
-    return [
-        json.loads(p.read_text(encoding="utf-8"))["summary"] for p in sorted(folder.glob("*.json"))
+    return [  # statement-reading results only: understanding-*.json is evals.understand's
+        json.loads(p.read_text(encoding="utf-8"))["summary"]
+        for p in sorted(folder.glob("*.json"))
+        if not p.name.startswith("understanding-")
     ]
 
 

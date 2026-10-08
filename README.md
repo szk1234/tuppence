@@ -52,6 +52,28 @@ CONTRIBUTING.md), so you can see what a model costs and how well it reads.
 |---|---|---|---|---|---|
 <!-- model-table:end -->
 
+## How well does it understand?
+
+Measured with `uv run python -m evals.understand` on a synthetic household (12 months, three
+accounts, about 540 transactions, 20 commitments). "Top level" and "Level 2" are the share of
+transactions in the right category at that level of the tree. The `oracle` row is a keyword
+stand-in that proves the pipeline works end to end; it says nothing about a real model.
+Targets for v1.0: 90% top level and 75% level 2 with the recommended local model; 95% top level
+with the recommended cloud model.
+
+<!-- understanding-table:start -->
+| Model | Top level | Level 2 | Still unknown | Commitments | AI calls | £ |
+|---|---|---|---|---|---|---|
+| oracle | 99.6% | 99.6% | 0.0% | 20/20 | 16 | £0.0000 |
+| Custom (OpenAI-compatible)//models/qwen2.5-0.5b-instruct-q4_k_m.gguf | 21.5% | 20.0% | 73.5% | 12/20 | 122 | £0.0000 |
+<!-- understanding-table:end -->
+
+The `Custom (OpenAI-compatible)` row is a baseline with Qwen2.5 0.5B (4-bit) run through
+llama.cpp on one machine, a model far too small for this job; it is recorded so progress can
+be measured, not as a recommendation. Accuracy with any model is also shaped by privacy
+masking: Tuppence hides account details (titled names, mid-row dates, account numbers) from the
+model, which can reduce the signal for person-to-person transfers.
+
 ## Develop
 
 ```bash
