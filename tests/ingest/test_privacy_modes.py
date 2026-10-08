@@ -151,8 +151,8 @@ def test_every_line_a_model_receives_comes_from_prepare_outbound(ingest_env, mon
     prepared: set[str] = set()
     real = sensitive.prepare_outbound
 
-    def spy(text, *, names=()):
-        out = real(text, names=names)
+    def spy(text, *, names=(), **near):
+        out = real(text, names=names, **near)
         if out is not None:
             prepared.add(out.text)
         return out

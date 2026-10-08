@@ -565,10 +565,11 @@ def test_an_identifier_anywhere_in_a_row_is_recognised_and_never_sent(text):
     _never_sent(text, sent)
 
 
-# A date printed with spaces or dots ("05 10 26", "01.10.26") is left alone only as a line's own
-# date, at its start: anywhere else it may be a sort code (coordinator probe after b8ea4d0), so
-# these lines are left alone where they are printed, not placed mid-row.
-_LEADING_SPACED_DATE = re.compile(r"^\d{2}[ .]\d{2}[ .]\d{2}\b")
+# A numeric date ("05 10 26", "01.10.26", "01/10/2026") is left alone only as a line's own date,
+# at its start: anywhere else it is a number like any other (coordinator probe after b8ea4d0, and
+# the structural rule after 5a1b63a), so these lines are left alone where they are printed, not
+# placed mid-row.
+_LEADING_SPACED_DATE = re.compile(r"^\d{1,2}[ ./-]\d{1,2}[ ./-]\d{2,4}\b|^\d{4}-\d{2}-\d{2}\b")
 
 
 @pytest.mark.parametrize("text", [t for t in PLAIN if not _LEADING_SPACED_DATE.match(t)])

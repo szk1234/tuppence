@@ -394,37 +394,56 @@ def _tokens_after(text: str, start: int, keep: Sequence[bool], name_words: bool)
     return end
 
 
-# --- long numbers (R-M3-23 (a)) -----------------------------------------------------------------
+# --- long numbers (R-M3-23 (a); a structural rule since re-review 2) ---------------------------
 #
-# Inside a line that is sent, every run of six or more digits that isn't an amount or a date is
-# masked: an account, card, roll or reference number, or a sort code and account number
-# together, however they are joined and whatever is glued to them ("ACCNO87654321", "J
-# SMITH20-11-33"). Groups are joined by one space, hyphen, slash, dot, middle dot or underscore,
-# or by one hyphen, slash, comma, plus, hash, backslash or colon with a space either side or
-# none ("8765 - 4321", "8765,4321", "8765:4321": re-review 2 R2).
+# Inside a line that is sent, every number of six or more digits is masked, whatever it is and
+# however it is printed: an account, card, roll or reference number, a sort code and account
+# number together, a phone number, a date that isn't the row's own. Its digits may be glued to
+# letters ("ACCNO87654321", "J SMITH20-11-33"), and its groups may be joined by any short
+# separator: one to three characters of punctuation, symbols or spaces ("20-11-33 87654321",
+# "8765 - 4321", "8765,4321", "8765 | 4321", "8765~4321", "8765 · 4321"). Invisible characters
+# are gone before this reads the line (`normalise`).
 #
-# Left alone: a well-formed amount (one point, two decimals, comma grouping only: 12.30,
-# 1234.56, 1,234.56; or whole pounds after £), a date a pattern reads (02/10/2026, 05.10.2026),
-# and a date printed with spaces or dots ("05 10 26", "05.10.26") only where it is the line's
-# own date, at its start, with no number of four or more digits joined after it, and a second
-# such date right after it (the posting date: "03.10.26 04.10.26 TESCO", R4) on the same terms.
-# Anywhere else such a group may be a sort code ("TO 20.11.33 87.65.43.21").
+# Only two things are left alone:
+# - a well-formed money token: one point and two decimals with comma grouping only (12.30,
+#   1234.56, 1,234.56), or a currency sign and whole pounds grouped the same way (£250, £1,250).
+#   "£87654321" is not one;
+# - the row's own date at the start of the line, and a posting date right after it. A date with
+#   a named month ("02 Oct", "02 Oct 2026") or a four-digit year (02/10/2026, 02.10.2026,
+#   2026-10-02) is always the row's date. A date with a two-digit year has the shape of a sort
+#   code, whatever its separator (02/10/26, 02.10.26, 02 10 26): it is the row's date only when
+#   no number of four or more digits is joined after it, other than its posting date. So
+#   "20/11/33 87654321", "20.11.33 87654321" and "20-11-33 87654321" are all masked whole (one
+#   rule for every separator). "03-10-26" is in addition the printed form of a sort code, which
+#   the detail classes mask wherever it is.
+# Dates anywhere else are numbers like any other ("ON 01/10/26", "VALUE 2026-10-01"); the
+# description is restored on this device.
+#
+# After a card or account label ("ENDING", "ENDING IN", "CARD", "ACC", "A/C", "NO") the group of
+# digits that follows is masked whatever its length, even spaced a digit at a time ("CARD ENDING
+# IN 9 0 1 2").
 #
 # A scan may read a digit as a letter (0 as O, 5 as S, 1 as l, I or |, 8 as B, 2 as Z). Inside a
 # token that is at least half digits those letters are read as digits for finding numbers, so
 # "2O-11-33 876S4321" is masked whole; a word ("BOOTS", "SO", "ZARA") is never read so.
 
 LONG_RUN = 6
-_RUN_JOINS = frozenset(" -/.·_")  # one of these between two groups of digits
-_WIDE_JOINS = frozenset("-/,+#\\:")  # or one of these, with a space either side or none
-_OWN_DATE_JOINED = 4  # digits joined after a leading date that make it a sort code instead
-_DAY_NAME = r"(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+"
-_LEADING_DATE = re.compile(
-    rf"^\s*(?:{_DAY_NAME})?(\d{{1,2}})([ .])(\d{{1,2}})\2(\d{{4}}|\d{{2}})(?![\d,:/]|\.\d)",
+_MAX_JOIN = 3  # separator characters that may join two groups of digits
+_OWN_DATE_JOINED = 4  # digits joined after a two-digit-year leading date that make it a sort code
+_DAY_PREFIX = re.compile(r"\s*(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+)?", re.IGNORECASE)
+_ROW_DATE = re.compile(
+    r"(?P<d>\d{1,2})(?P<s>[/. \-])(?P<m>\d{1,2})(?P=s)(?P<y>\d{4}|\d{2})(?!\d)"
+    r"|(?P<iy>\d{4})-(?P<im>\d{1,2})-(?P<id>\d{1,2})(?!\d)"
+    r"|(?P<nd>\d{1,2})(?:st|nd|rd|th)?[ \-]?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+    r"[a-z]*\.?(?:[ \-]?(?:\d{4}|\d{2})(?!\d))?",
     re.IGNORECASE,
 )
-_NEXT_DATE = re.compile(r" (\d{1,2})([ .])(\d{1,2})\2(\d{4}|\d{2})(?![\d,:/]|\.\d)")
 _WELL_FORMED = re.compile(r"(?<![\d,])(?<!\d\.)(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d|[.,]\d)")
+_GROUP_LABEL = re.compile(
+    r"\b(?:ending(?:\s+in)?|card(?:\s+(?:no|number))?|acc(?:t|ount)?(?:\s+(?:no|number))?"
+    r"|a/c(?:\s+no)?|no)\b\.?",
+    re.IGNORECASE,
+)
 _LOOKALIKES = frozenset("OoSslI|BZz")
 _AS_DIGITS = str.maketrans("OoSslI|BZz", "0055111822")
 _TOKEN = re.compile(r"[A-Za-z0-9|]+")
@@ -462,18 +481,19 @@ def _digits_read(seen: str) -> str:
     return _TOKEN.sub(lambda m: _read_token(m.group(0)), seen)
 
 
+def _separator(ch: str) -> bool:
+    """Punctuation, a symbol or a space: what may join two groups of digits."""
+    return unicodedata.category(ch)[0] in "PSZ"
+
+
 def _join(view: str, k: int, part: Sequence[bool]) -> int:
     """Length of the separator at `k` when it joins two groups of digits (see above), else 0."""
-    size = len(view)
-    if view[k] in _RUN_JOINS and k + 1 < size and part[k + 1]:
-        return 1
-    j = k + 1 if view[k] == " " else k
-    if j < size and view[j] in _WIDE_JOINS:
-        j += 1
-        if j < size and view[j] == " ":
-            j += 1
-        if j < size and part[j]:
-            return j - k
+    for n in range(1, _MAX_JOIN + 1):
+        j = k + n - 1
+        if j >= len(view) or not _separator(view[j]):
+            return 0
+        if j + 1 < len(view) and part[j + 1]:
+            return n
     return 0
 
 
@@ -488,44 +508,64 @@ def _joined_digits(view: str, at: int, part: Sequence[bool]) -> int:
     return digits
 
 
-def _real_day(match: re.Match[str]) -> bool:
-    return 1 <= int(match.group(1)) <= 31 and 1 <= int(match.group(3)) <= 12
+def _row_date(view: str, at: int) -> re.Match[str] | None:
+    match = _ROW_DATE.match(view, at)
+    if match is None:
+        return None
+    if match.group("d") is not None:
+        real = 1 <= int(match.group("d")) <= 31 and 1 <= int(match.group("m")) <= 12
+    elif match.group("iy") is not None:
+        real = 1950 <= int(match.group("iy")) <= 2099 and 1 <= int(match.group("im")) <= 12
+        real = real and 1 <= int(match.group("id")) <= 31
+    else:
+        real = 1 <= int(match.group("nd")) <= 31
+    return match if real else None
+
+
+def _stands(view: str, date: re.Match[str], part: Sequence[bool]) -> bool:
+    """A leading date that is the row's own: not shaped like a sort code (a two-digit year with
+    digits for its month), or one with no number of four or more digits joined after it."""
+    sort_code_shaped = date.group("d") is not None and len(date.group("y")) == 2
+    return not sort_code_shaped or _joined_digits(view, date.end(), part) < _OWN_DATE_JOINED
 
 
 def _own_dates(view: str, part: Sequence[bool]) -> tuple[int, int] | None:
-    """The span of the line's own date printed with spaces or dots, or of its two dates (the
-    transaction and the posting date), when no number of four or more digits is joined after
-    the last of them; None when the line doesn't start with one."""
-    lead = _LEADING_DATE.match(view)
-    if lead is None or not _real_day(lead):
+    """The span of the row's own date at the start of the line, with its posting date when one
+    follows it (see above); None when the line doesn't start with one."""
+    prefix = _DAY_PREFIX.match(view)
+    first = _row_date(view, prefix.end() if prefix else 0)
+    if first is None:
         return None
-    second = _NEXT_DATE.match(view, lead.end())
-    if (
-        second is not None
-        and _real_day(second)
-        and _joined_digits(view, second.end(), part) < _OWN_DATE_JOINED
-    ):
-        return lead.start(1), second.end()
-    if _joined_digits(view, lead.end(), part) < _OWN_DATE_JOINED:
-        return lead.start(1), lead.end()
-    return None  # a sort code before an account number, not the line's date
+    end = first.end()
+    second = _row_date(view, end + 1) if view[end : end + 1] == " " else None
+    if second is not None and _stands(view, second, part):
+        return first.start(), second.end()
+    if second is not None or _stands(view, first, part):
+        return first.start(), end  # a date-shaped group after it: the date, then a number
+    return None  # a sort code before an account number, not the row's date
 
 
 def _long_runs(seen: str) -> list[tuple[int, int]]:
-    """Spans of the runs of six or more digits in `seen` (see above), read with look-alikes as
-    digits. One pass over the line."""
+    """Spans of the numbers of six or more digits in `seen` (see above), read with look-alikes
+    as digits. One pass over the line."""
+    return [(start, end) for start, end, digits in _groups(seen) if digits >= LONG_RUN]
+
+
+def _groups(seen: str) -> list[tuple[int, int, int]]:
+    """(start, end, digits) of each group of joined digits in `seen` that isn't a money token
+    or the row's own date (see above). One pass over the line."""
     view = _digits_read(seen)
-    keep = _kept(view)
     size = len(view)
-    part = [ch.isdigit() and not keep[k] for k, ch in enumerate(view)]
-    for match in _WELL_FORMED.finditer(view):
-        for k in range(match.start(), match.end()):
-            part[k] = False
+    part = [ch.isdigit() for ch in view]
+    for pattern in (_KEEP_MONEY, _WELL_FORMED):
+        for match in pattern.finditer(view):
+            for k in range(match.start(), match.end()):
+                part[k] = False
     own = _own_dates(view, part)
     if own is not None:
         for k in range(*own):
             part[k] = False
-    spans: list[tuple[int, int]] = []
+    groups: list[tuple[int, int, int]] = []
     k = 0
     while k < size:
         if not part[k]:
@@ -540,14 +580,86 @@ def _long_runs(seen: str) -> list[tuple[int, int]]:
             else:
                 break
         k = end
-        if sum(1 for j in range(start, end) if part[j]) < LONG_RUN:
-            continue
-        before = start - 1
-        while before >= 0 and view[before].isspace():
-            before -= 1
-        if before >= 0 and view[before] in "£$€":
-            continue  # whole pounds after a currency sign
-        spans.append((start, end))
+        groups.append((start, end, sum(1 for j in range(start, end) if part[j])))
+    return groups
+
+
+def _label_groups(seen: str) -> list[tuple[int, int]]:
+    """The group of digits after each card or account label, whatever its length (see above)."""
+    labels = list(_GROUP_LABEL.finditer(seen))
+    if not labels:
+        return []
+    starts = {start: (start, end) for start, end, _ in _groups(seen)}
+    spans = []
+    for label in labels:
+        k = label.end()
+        for n in range(_MAX_JOIN + 1):
+            if k + n in starts:
+                spans.append(starts[k + n])
+                break
+            if k + n >= len(seen) or not _separator(seen[k + n]):
+                break
+    return spans
+
+
+# --- a number split by a line wrap (re-review 2 R3) ---------------------------------------------
+#
+# A statement's description column may wrap a number onto the next line ("FPO J SMITH 20-11-33
+# 8765" / "4321 RENT"). Masked one line at a time, each part is too short to be a long number. So
+# a line is masked with the lines printed just above and below it in view: the group of digits
+# it starts with joins the group the line above ends its description with, and the group its
+# description ends with joins the one the line below starts with. A part of a joined number of
+# six or more digits is masked in each line.
+
+
+def _figure_token(token: str) -> bool:
+    """A figure printed after a description: an amount or balance ("-250.00", "(1,234.56)",
+    "£12", "707.82-") or a CR, DR or OD marker. Read without a pattern (a token may be long)."""
+    if token.casefold() in ("cr", "dr", "od"):
+        return True
+    core = token.lstrip("(-+")
+    currency = core[:1] in ("£", "$", "€")
+    core = core.lstrip("£$€").rstrip(")-")
+    whole, point, pence = core.rpartition(".")
+    if not point:
+        whole, pence = core, ""
+    grouped = whole[:1].isdigit() and all(ch.isdigit() or ch == "," for ch in whole)
+    return grouped and ((len(pence) == 2 and pence.isdigit()) or (currency and not point))
+
+
+def _description_end(seen: str) -> int:
+    """Where `seen` ends once the figures after its description (an amount, a balance, a CR or
+    DR marker) are left off."""
+    end = len(seen)
+    while (cut := seen.rfind(" ", 0, end)) >= 0 and _figure_token(seen[cut + 1 : end]):
+        end = cut
+    return end
+
+
+def _edges(seen: str) -> tuple[tuple[int, int, int] | None, tuple[int, int, int] | None]:
+    """The group of digits `seen` starts with, and the one its description ends with."""
+    groups = _groups(seen)
+    head = groups[0] if groups and groups[0][0] == 0 else None
+    end = _description_end(seen)
+    tail = next((g for g in reversed(groups) if g[1] == end), None)
+    return head, tail
+
+
+def _wrapped(seen: str, before: str | None, after: str | None) -> list[tuple[int, int]]:
+    """Spans of `seen` that are part of a number of six or more digits split by a line wrap
+    from the line `before` it or `after` it."""
+    if before is None and after is None:
+        return []
+    head, tail = _edges(seen)
+    spans = []
+    if head is not None and before is not None:
+        above = _edges(_seen(before)[1])[1]
+        if above is not None and above[2] + head[2] >= LONG_RUN:
+            spans.append(head[:2])
+    if tail is not None and after is not None:
+        below = _edges(_seen(after)[1])[0]
+        if below is not None and tail[2] + below[2] >= LONG_RUN:
+            spans.append(tail[:2])
     return spans
 
 
@@ -645,19 +757,28 @@ def _placeholder(n: int) -> str:
     return f"[hidden-{letters}]"
 
 
-def prepare_outbound(text: str, *, names: Sequence[str] = ()) -> MaskedLine | None:
+def prepare_outbound(
+    text: str,
+    *,
+    names: Sequence[str] = (),
+    before: str | None = None,
+    after: str | None = None,
+) -> MaskedLine | None:
     """The one way statement text is made ready for a model: `normalise` it, then mask every
     detail in that normalised string (`mask_line`). Detection and masking run on the string
     that is sent, so nothing is mapped back onto the printed text. None: the line can't be sent
-    at all and is withheld.
+    at all and is withheld. `before` and `after` are the lines printed just above and below a
+    statement line: a number a line wrap splits between them is masked here too (R3).
 
     Every outbound path uses it: each statement line the AI reader is sent (screenshots and
     vision transcripts included; retry feedback quotes only these lines) and each CSV heading in
     a layout sketch (whose cells are type tokens, never values)."""
-    return mask_line(text, names=names)
+    return mask_line(text, names=names, wrapped=_wrapped(_seen(text)[1], before, after))
 
 
-def mask_line(text: str, *, names: Sequence[str] = ()) -> MaskedLine | None:
+def mask_line(
+    text: str, *, names: Sequence[str] = (), wrapped: Sequence[tuple[int, int]] = ()
+) -> MaskedLine | None:
     """`text` as it may be sent to the AI reader, with every account detail in it (a sort code,
     account or card number, card ending, IBAN, postcode, street address, a household name, a
     title and name, or the value after a label such as "Customer ref") replaced by a
@@ -666,8 +787,9 @@ def mask_line(text: str, *, names: Sequence[str] = ()) -> MaskedLine | None:
 
     None when the line can't be sent this way: it is a balance or limit line, a detail would be
     left showing, or what is left once the details are taken out is a balance (an address row
-    with the summary box printed on it). Such a line is withheld and reported instead."""
-    masked = _mask(text, names)
+    with the summary box printed on it). Such a line is withheld and reported instead.
+    `wrapped`: spans of the normalised line that are part of a number split by a line wrap."""
+    masked = _mask(text, names, wrapped)
     if masked is None or _residue_is_balance(masked):
         return None
     return masked
@@ -689,24 +811,29 @@ def _residue_is_balance(masked: MaskedLine) -> bool:
     )
 
 
-def _mask(text: str, names: Sequence[str]) -> MaskedLine | None:
+def _mask(
+    text: str, names: Sequence[str], wrapped: Sequence[tuple[int, int]] = ()
+) -> MaskedLine | None:
     normal, seen = _seen(text)
     found = _classify_seen(seen, names)
     keep = _kept(seen)
-    numbers = _long_runs(seen)
+    numbers = [*_long_runs(seen), *_label_groups(seen), *wrapped]
     if not found and not numbers:
         return MaskedLine(text=normal)
     if "balance_line" in found or _is_holder(normal, names):
         return None
     try:
-        spans = [*_detail_spans(seen, keep, names), *numbers] if found else numbers
+        details = _detail_spans(seen, keep, names) if found else []
     except _Unmaskable:
         return None
     hide = [False] * len(normal)
-    for start, end in spans:
+    for start, end in details:  # a detail never takes an amount or a date with it
         for k in range(max(0, start), min(end, len(normal))):
             if not keep[k]:
                 hide[k] = True
+    for start, end in numbers:  # a number holds no money token and isn't the row's date
+        for k in range(max(0, start), min(end, len(normal))):
+            hide[k] = True
     runs: list[tuple[int, int]] = []
     k = 0
     while k < len(normal):
@@ -774,4 +901,5 @@ def _clean(masked: str, names: Sequence[str]) -> bool:
         not (classify(masked, names=names) - LABEL_CLASSES)
         and not unmasked_label(masked)
         and not _long_runs(seen)
+        and not _label_groups(seen)
     )

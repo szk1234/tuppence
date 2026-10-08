@@ -314,8 +314,8 @@ def test_a_rows_two_leading_dates_are_left_as_printed(line):
 def test_the_guard_catches_a_slash_left_out_of_the_joins(monkeypatch):
     """R5, the reviewer's blind-spot mutation: with "/" no longer joining the groups of a
     number, "PAYMENT 1234/5678" goes out whole, and the guard says so."""
-    monkeypatch.setattr(sensitive, "_RUN_JOINS", sensitive._RUN_JOINS - {"/"})
-    monkeypatch.setattr(sensitive, "_WIDE_JOINS", sensitive._WIDE_JOINS - {"/"})
+    separator = sensitive._separator
+    monkeypatch.setattr(sensitive, "_separator", lambda ch: ch != "/" and separator(ch))
     assert _leaks(SLASHED)
 
 
@@ -363,7 +363,8 @@ def test_the_reviewers_statement_sends_no_account_number(ingest_env, mode):
         record = services.statements.get(out.record.id)
     sent = json.dumps(scripted.requests)
     assert sent and not [n for n in ("87654321", "41234567", "55554444") if n in sent]
-    assert all(not survivors(line, sent) for line in STATEMENT.splitlines())
+    # the rows (the period on the second line is sent as a fact by design)
+    assert all(not survivors(line, sent) for line in STATEMENT.splitlines()[3:])
     stored = [t.raw_description for t in services.statements.transactions(record.id)]
     if record.status == "needs_review":
         stored = [r["raw_description"] for r in record.draft["parsed"]["rows"]]
@@ -413,3 +414,207 @@ def test_every_spelling_the_reviewer_tried_is_masked(line):
     flat = re.sub(r"[\s\-./·_:]", "", fold(out.text)).casefold()
     printed = re.sub(r"[\s\-./·_:]", "", fold(line)).casefold()
     assert [s for s in GLUED_SECRETS if s in printed and s in flat] == [], out.text
+
+
+# Re-review 2 R3: a number a line wrap splits between two lines. Each line was masked on its own,
+# so the part on the next line went out ("...20-11-33 8765" / "4321 RENT").
+WRAP_HEAD = [
+    "Example Bank plc",
+    "Statement period 01/10/2026 to 31/10/2026",
+    "Date Description Amount Balance",
+    "01 Oct 2026 Greenbasket Stores -42.18 957.82",
+]
+WRAPS = {
+    "space-split account": (["03 Oct 2026 FPO J SMITH 20-11-33 8765 -250.00 707.82", "4321 RENT"],
+                            ["8765", "4321"]),
+    "mid-token split": (["03 Oct 2026 FPO J SMITH 20-11-33 87654 -250.00 707.82", "321 RENT"],
+                        ["87654", "321"]),
+    "sort code / account": (["03 Oct 2026 FPO J SMITH 20-11-33 -250.00 707.82", "87654321 RENT"],
+                            ["87654321"]),
+    "card 8+8": (["03 Oct 2026 CARD 4929 1234 -12.00 695.82", "5678 9012 SHOP"], ["4929", "9012"]),
+    "card 12+4": (["03 Oct 2026 CARD 4929 1234 5678 -12.00 695.82", "9012 SHOP"],
+                  ["4929", "9012"]),
+    "ref 5+5": (["03 Oct 2026 MANDATE 12345 -12.00 695.82", "67890 GYM"], ["12345", "67890"]),
+    "no amount on the first line": (["03 Oct 2026 TO 20-11-33 8765", "4321 RENT -250.00 707.82"],
+                                    ["8765", "4321"]),
+    "three lines": (["03 Oct 2026 REF 123 -12.00 695.82", "456 789", "012 GYM"],
+                    ["123", "456", "789", "012"]),
+}  # fmt: skip
+_TRAILING_FIGURES = re.compile(r"(?:\s+(?:-?£?\d[\d,]*\.\d{2}|CR|DR))+$")
+
+
+def _sent_wrap(lines: list[str], kind: str = "pdf") -> list[str]:
+    page = [*WRAP_HEAD, *lines, "05 Oct 2026 Little Cafe -3.50 692.32"]
+    doc = textprep_pages([page], sha256="x", kind=kind, names=NAMES)
+    sent = sent_lines(doc)
+    wanted = {f"P1L{len(WRAP_HEAD) + 1 + k}" for k in range(len(lines))}
+    return [sent[r].text for r in doc.data_refs if r in wanted]
+
+
+def textprep_pages(*args, **kwargs):
+    from tuppence.ingest.textprep import pages_document
+
+    return pages_document(*args, **kwargs)
+
+
+@pytest.mark.parametrize("name", list(WRAPS))
+def test_a_number_split_by_a_line_wrap_is_masked_in_both_parts(name):
+    lines, secrets = WRAPS[name]
+    sent = _sent_wrap(lines)
+    assert sent  # masked, not withheld (a line without an amount may be withheld whole)
+    flat = " ".join(sent)
+    assert [s for s in secrets if s in flat] == [], sent
+    # the oracle over the description read across the wrap
+    printed = " ".join(_TRAILING_FIGURES.sub("", line) for line in lines)
+    shown = " ".join(_TRAILING_FIGURES.sub("", line) for line in sent)
+    assert survivors(printed, shown) == [], sent
+
+
+def test_a_wrap_leaves_short_numbers_and_dates_on_either_side_alone():
+    """Only a number that is long once joined across the wrap is masked: a store number and a
+    continuation, a row after a row, a date at the start of the next line stay as printed."""
+    for lines in (
+        ["03 Oct 2026 TESCO STORES 2345 -12.50 695.82", "3 MOBILE TOP UP"],
+        ["03 Oct 2026 TESCO STORES 2345 -12.50 695.82", "04 Oct 2026 B&Q 0123 -45.00 650.82"],
+        ["03 Oct 2026 PAYPAL *EBAY 12345 -9.99 685.83", "PURCHASE"],
+    ):
+        assert _sent_wrap(lines) == lines
+
+
+def _fuzz_wrap(seed: int, count: int = 200) -> list[tuple[list[str], str]]:
+    """A random number of six to sixteen digits split across a wrap at a random point, with
+    or without the amount and balance on the first line."""
+    rnd = random.Random(seed)
+    out = []
+    for _ in range(count):
+        number = "".join(rnd.choice("0123456789") for _ in range(rnd.randint(6, 16)))
+        cut = rnd.randint(1, len(number) - 1)
+        first, second = number[:cut], number[cut:]
+        lead = rnd.choice(["TO 20-11-33 ", "REF ", "CARD ", "FPO J SMITH ", ""])
+        figures = rnd.choice([" -250.00 707.82", " -12.00", ""])
+        tail = rnd.choice([" RENT", " GYM", ""])
+        last = " -1.00 706.82" if not figures else ""
+        out.append(([f"03 Oct 2026 {lead}{first}{figures}", f"{second}{tail}{last}"], number))
+    return out
+
+
+def test_no_number_split_by_a_wrap_survives():
+    leaked = []
+    for lines, number in _fuzz_wrap(0) + _fuzz_wrap(1):
+        sent = _sent_wrap(lines)
+        printed = " ".join(_TRAILING_FIGURES.sub("", line) for line in lines)
+        shown = " ".join(_TRAILING_FIGURES.sub("", line) for line in sent)
+        if survivors(printed, shown) or number[-4:] in " ".join(sent):
+            leaked.append((lines, sent))
+    if leaked:
+        pytest.fail(f"{len(leaked)} wrapped numbers leak, e.g. {leaked[:3]}")
+
+
+# The coordinator's probe after 5a1b63a (p3): separators outside any list, and a card ending
+# spaced a digit at a time after its label. The join is structural now: one to three characters
+# of punctuation, symbols or spaces.
+COORDINATOR = [
+    "ACC 8765 _ 4321 10.00", "ACC 8765~4321 10.00", "ACC 8765 | 4321 10.00",
+    "ACC 8765 · 4321 10.00", "ACC 8765 ; 4321 10.00", "ACC 8765 — 4321 10.00",
+    "ACC 8765 - 4321 10.00", "ACC 8765 / 4321 10.00", "ACC NO 8765,4321 10.00",
+    "ACC 8765+4321 10.00", "ACC 8765#4321 10.00", "ACC 8765\\4321 10.00", "ACC 8765:4321 10.00",
+    "TO 8765 ~~4321 RENT 10.00", "TO 8765'4321 RENT 10.00", "TO 8765() 4321 RENT 10.00",
+]  # fmt: skip
+LABELLED = [
+    "CARD ENDING IN 9 0 1 2 5.00", "CARD ENDING 9 0 1 2 5.00", "CARD NO 9 0 1 2 5.00",
+    "A/C 9 0 1 2 5.00", "ACC 9-0-1-2 5.00", "ENDING IN: 9012 5.00", "CARD #9012 5.00",
+    "03/10/2026 CARD 9012 TESCO -5.00", "03/10/2026 NO. 9012 -5.00",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("line", COORDINATOR)
+def test_any_short_separator_joins_a_number(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is not None and "8765" not in out.text and "4321" not in out.text, out
+    assert survivors(line, out.text) == []
+
+
+@pytest.mark.parametrize("line", LABELLED)
+def test_the_digits_after_a_card_or_account_label_are_masked_however_spaced(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is not None, line
+    assert not re.search(r"9\D{0,3}0\D{0,3}1\D{0,3}2", out.text), out.text
+
+
+def test_one_rule_for_a_sort_code_shaped_date_at_the_start_whatever_its_separator():
+    """A leading date with a two-digit year is the row's own only when no number of four or
+    more digits is joined after it: "20/11/33 87654321" is a sort code and an account number,
+    like "20.11.33 87654321" and "20-11-33 87654321". Alone, or before words, it is the date."""
+    for sep in "/.- ":
+        joined = sensitive.prepare_outbound(f"20{sep}11{sep}33 87654321 RENT 10.00")
+        assert joined is not None and joined.text == "[hidden-a] RENT 10.00", (sep, joined)
+    for line in ("20/11/33 RENT 10.00", "20.11.33 RENT 10.00", "20 11 33 RENT 10.00"):
+        out = sensitive.prepare_outbound(line)
+        assert out is not None and out.text == line
+    for line in (
+        "03/10/2026 87654321 RENT 10.00",
+        "2026-10-03 87654321 RENT 10.00",
+        "03 Oct 2026 87654321 RENT 10.00",
+        "02/10/26 20-11-33 87654321 10.00",
+    ):
+        out = sensitive.prepare_outbound(line)
+        assert out is not None and "87654321" not in out.text
+        assert out.text.startswith(line.split(" 87654321")[0].split(" 20-11-33")[0]), out.text
+
+
+def _separators() -> list[str]:
+    """Every punctuation, symbol and space character that is itself once the line is folded
+    (NFKC: a character that folds to letters or digits is not a separator any more), and the
+    invisible characters dropped before reading."""
+    import sys
+    import unicodedata
+
+    chars = []
+    for code in range(sys.maxunicode + 1):
+        ch = chr(code)
+        if unicodedata.category(ch)[0] not in "PSZ":
+            continue
+        folded = unicodedata.normalize("NFKC", ch)
+        if folded == ch or (folded.strip() == "" and folded != ""):
+            chars.append(ch)
+    return [*chars, "​", "‌", "‍", "⁠", "﻿"]
+
+
+def _is_money(joined: str) -> bool:
+    """The test's own reading of a money token: a currency sign before digits, or digits with a
+    point and exactly two decimals after them."""
+    import unicodedata
+
+    for k, ch in enumerate(joined):
+        if unicodedata.category(ch) == "Sc" and re.match(r"\s?\d", joined[k + 1 :]):
+            return True
+    return re.search(r"(?<!\d)\d+\.\d{2}(?!\d)", joined) is not None
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_two_groups_joined_by_any_short_separator_are_masked(seed):
+    """The coordinator's property: two groups of two to six digits, six or more together, with
+    one to three punctuation, symbol, space or invisible characters between them. No digit of
+    either survives, wherever the pair is, unless it is a money token."""
+    rnd = random.Random(seed)
+    separators = _separators()
+    leaked = []
+    for _ in range(1500):
+        a = "".join(rnd.choice("0123456789") for _ in range(rnd.randint(2, 6)))
+        b = "".join(rnd.choice("0123456789") for _ in range(rnd.randint(max(2, 6 - len(a)), 6)))
+        sep = "".join(rnd.choice(separators) for _ in range(rnd.randint(1, 3)))
+        joined = f"{a}{sep}{b}"
+        if _is_money(joined):
+            continue
+        forms = ["03/10/2026 TO {} RENT -12.00", "TO {} RENT -12.00", "03 Oct 2026 REF {} -1.00",
+                 "{} RENT -12.00"]  # fmt: skip
+        line = rnd.choice(forms).format(joined)
+        out = sensitive.prepare_outbound(line, names=NAMES)
+        if out is None:
+            continue  # withheld whole: nothing of it is sent
+        rest = out.text.removeprefix("03/10/2026").removeprefix("03 Oct 2026")
+        rest = re.sub(r"-\d+\.\d{2}$", "", rest)
+        if any(ch.isdigit() for ch in rest):
+            leaked.append((line, out.text))
+    if leaked:
+        pytest.fail(f"{len(leaked)} joined pairs leak a digit, e.g. {leaked[:5]}")

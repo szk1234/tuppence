@@ -117,7 +117,9 @@ def test_a_line_that_cant_be_sent_is_offered_on_the_fix_up_screen(ingest_env, mo
     monkeypatch.setattr(
         sensitive,
         "prepare_outbound",
-        lambda text, names=(): None if sensitive.classify(text, names=names) else real(text),
+        lambda text, names=(), **near: (
+            None if sensitive.classify(text, names=names) else real(text, **near)
+        ),
     )
     outcome = services.ingest.upload("probe.txt", TEXT_STATEMENT.encode())
     drain(services)

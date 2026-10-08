@@ -809,8 +809,19 @@ class _Masks:
 
     def __call__(self, i: int) -> MaskedLine | None:
         if i not in self.done:
-            self.done[i] = sensitive.prepare_outbound(self.texts[i], names=self.names)
+            self.done[i] = _prepare(self.texts, i, self.names)
         return self.done[i]
+
+
+def _prepare(texts: Sequence[str], i: int, names: Sequence[str]) -> MaskedLine | None:
+    """`sensitive.prepare_outbound` for line `i`, with the lines printed above and below it in
+    view (a number a line wrap splits is masked in each part)."""
+    return sensitive.prepare_outbound(
+        texts[i],
+        names=names,
+        before=texts[i - 1] if i > 0 else None,
+        after=texts[i + 1] if i + 1 < len(texts) else None,
+    )
 
 
 def _send(out: _Split, line: Line, prepared: MaskedLine | None) -> bool:
@@ -1014,7 +1025,7 @@ def _split_screenshot(
             and i not in summaries
             and _name_key(text) is None
             and (not detail or has_amount(text))
-            and _send(out, line, sensitive.prepare_outbound(text, names=names))
+            and _send(out, line, _prepare(texts, i, names))
         ):
             continue  # sent (a row with account details has them masked)
         out.withheld.append(line.ref)

@@ -597,7 +597,9 @@ def test_a_line_that_cant_be_masked_is_held_back_and_reported(monkeypatch):
     monkeypatch.setattr(
         sensitive,
         "prepare_outbound",
-        lambda text, names=(): None if sensitive.classify(text, names=names) else real(text),
+        lambda text, names=(), **near: (
+            None if sensitive.classify(text, names=names) else real(text, **near)
+        ),
     )
     line = "03/10/2026 Transfer to A/C 87654321 -250.00"
     doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")

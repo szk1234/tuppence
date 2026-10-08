@@ -122,7 +122,9 @@ def test_a_screenshot_line_whose_details_cant_be_masked_needs_review(ingest_env,
     monkeypatch.setattr(
         sensitive,
         "prepare_outbound",
-        lambda text, names=(): None if sensitive.classify(text, names=names) else real(text),
+        lambda text, names=(), **near: (
+            None if sensitive.classify(text, names=names) else real(text, **near)
+        ),
     )
     out = parse_shot(
         services,
