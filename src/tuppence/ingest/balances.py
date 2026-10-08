@@ -35,8 +35,8 @@ _OPENING = r"(?:opening|previous|starting|start)\s+balance"
 _CLOSING = r"(?:closing|new|ending|end)\s+balance"
 _LABEL = re.compile(
     rf"\b(?P<opening>{_OPENING})\b|\b(?P<closing>{_CLOSING})\b"
-    r"|\b(?P<brought>(?:balance\s+)?brought\s+forward)\b"
-    r"|\b(?P<carried>(?:balance\s+)?carried\s+forward)\b",
+    r"|\b(?P<brought>(?:balance\s+)?(?:brought\s+forward|b/f\b)|balance\s+forward)\b"
+    r"|\b(?P<carried>(?:balance\s+)?(?:carried\s+forward|c/f\b))",
     re.IGNORECASE,
 )
 # A printed figure: pence required, thousands separator optional, a GBP code before or after.
@@ -51,7 +51,9 @@ _CODE = re.compile(r"\bGBP\b", re.IGNORECASE)
 _FILLER = re.compile(r"^(?:\s|:|\.|-|\(|\)|on|at|as|is|of|date)*$", re.IGNORECASE)
 _MARKER = re.compile(r"\b(CR|DR)\b", re.IGNORECASE)
 _CARRIED = re.compile(
-    r"(?:brought|carried)\s+forward|(?:opening|start(?:ing)?|previous)\s+balance", re.IGNORECASE
+    r"(?:brought|carried)\s+forward|\b[bc]/f\b|balance\s+forward"
+    r"|(?:opening|start(?:ing)?|previous)\s+balance",
+    re.IGNORECASE,
 )
 _OUT_LABELS = ("Paid out", "Money out", "Withdrawals", "Withdrawal", "Debits", "Debit")
 _IN_LABELS = ("Paid in", "Money in", "Deposits", "Deposit", "Credits", "Credit")

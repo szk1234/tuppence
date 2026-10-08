@@ -44,6 +44,8 @@ def doc_with(*summary: str, rows=("01/10/2026 SHOP 5.00 95.00",)):
             50000,
             45000,
         ),
+        (["Balance b/f £500.00", "Balance c/f £450.00"], "household", 50000, 45000),
+        (["BALANCE FORWARD 500.00", "Closing balance 450.00"], "household", 50000, 45000),
         (["Previous balance £842.16", "New balance £909.85"], "card", 84216, 90985),
         (["Previous balance 100.00 CR", "New balance 20.00 CR"], "card", -10000, -2000),
         (["Previous balance (100.00)", "New balance 20.00 DR"], "card", -10000, 2000),
@@ -330,3 +332,14 @@ def test_a_wrapped_rows_amount_above_a_balance_label_is_reported_not_lost(ingest
     by_ref = doc.by_ref()
     assert [by_ref[r].text for r in doc.held_amount_refs] == ["12.80"]
     assert any("held back" in e for e in out.errors)
+
+
+def test_a_b_f_line_between_rows_is_a_printed_balance_for_sign_repair():
+    doc = pages_document(
+        [[TABLE, "Balance b/f 1,000.00", "01/10/2026 ACME 900.00 1,900.00"]],
+        sha256="x",
+        kind="pdf",
+    )
+    parsed = statement(row("P1L3", -90000, "900.00", 190000))
+    result = repair_signs(doc, parsed, opening=None, level="full")
+    assert result.repaired == ["P1L3"] and parsed.rows[0].amount_pence == 90000

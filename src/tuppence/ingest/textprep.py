@@ -263,6 +263,120 @@ _SUMMARY_WORD = re.compile(
 )
 
 
+# Words a balance or a summary is made of. A line with a figure whose words are all from here,
+# once figures, dates, markers and punctuation are taken away, is a balance or a summary
+# ("Your balance is £1,234.56", "Balance b/f 1,000.00", "You owe £250.00", "Funds available
+# £900.00", "Your account is £1,234.56 in credit"), however it is worded.
+_SUMMARY_VOCAB = frozenset(
+    [
+        "balance",
+        "bal",
+        "balances",
+        "forward",
+        "brought",
+        "carried",
+        "b/f",
+        "c/f",
+        "bf",
+        "cf",
+        "your",
+        "you",
+        "is",
+        "at",
+        "as",
+        "on",
+        "of",
+        "the",
+        "close",
+        "business",
+        "current",
+        "available",
+        "funds",
+        "owe",
+        "owed",
+        "amount",
+        "outstanding",
+        "credit",
+        "debit",
+        "account",
+        "in",
+        "out",
+        "total",
+        "totals",
+        "money",
+        "paid",
+        "payments",
+        "summary",
+        "statement",
+        "period",
+        "month",
+        "new",
+        "previous",
+        "opening",
+        "closing",
+        "start",
+        "end",
+        "this",
+        "date",
+        "cr",
+        "dr",
+        "od",
+        "overdrawn",
+    ]
+)
+# ...and those of them that make it a balance: never a row, so withheld without a word. A dated
+# line of only the others ("02/03/2026 CREDIT 900.00") may be a row: the person decides.
+_BALANCE_VOCAB = frozenset(
+    [
+        "balance",
+        "bal",
+        "balances",
+        "forward",
+        "brought",
+        "carried",
+        "b/f",
+        "c/f",
+        "bf",
+        "cf",
+        "owe",
+        "owed",
+        "outstanding",
+        "available",
+        "funds",
+        "overdrawn",
+    ]
+)
+_WORD = re.compile(r"[a-z]+(?:/[a-z]+)?")
+# A pot or a goal ("Savings pot £5,000.00"): its balance, or a transfer to it.
+_POT_WORDS = re.compile(
+    r"\b(?:savings?|pots?|vaults?|spaces?|jars?|goals?|reserve|isa|saver|round[- ]?ups?)\b",
+    re.IGNORECASE,
+)
+
+
+def _summary_words(text: str) -> list[str]:
+    """The words left on a line once its figures, dates and punctuation are taken away."""
+    plain = _MONEY_TOKEN.sub(" ", text)
+    plain = re.sub(r"[£$€]\s?[\d,]+(?:\.\d+)?|\d[\d,.]*", " ", plain)
+    plain = _NAMED_DATE.sub(" ", _NUMERIC_DATE.sub(" ", plain))
+    return _WORD.findall(plain.casefold())
+
+
+def _pot_balance(text: str) -> bool:
+    """An undated line naming only a pot or a goal and its figure ("Savings pot £5,000.00"):
+    its balance, or a transfer to it? "TFR TO SAVINGS 50.00" names a transfer, so it is a row."""
+    if _has_date(text) or not _POT_WORDS.search(text):
+        return False
+    words = [w for w in _summary_words(_POT_WORDS.sub(" ", text)) if w not in _SUMMARY_VOCAB]
+    return not words
+
+
+def only_summary_vocab(text: str) -> bool:
+    """A line made only of balance or summary words (and figures, dates, markers)."""
+    words = _summary_words(text)
+    return bool(words) and all(word in _SUMMARY_VOCAB for word in words)
+
+
 def _single_transaction(text: str, row: bool) -> bool:
     """A row of the table: dated, or a description with its amount (and at most a balance)."""
     return row or (not _has_date(text) and len(_MONEY_TOKEN.findall(text)) <= 2)
@@ -630,6 +744,13 @@ def _split_preamble(
                 unsure.add(i)  # may be a row above the page's first anchor
         elif i in addresses or furniture or name_repeat or (sensitive_at[i] and not money):
             out.withheld.append(line.ref)  # no amount on it, so no row is lost
+        elif has_amount(text) and only_summary_vocab(text):
+            out.withheld.append(line.ref)  # a balance or a summary, however it is worded
+            if rows[i] and not set(_summary_words(text)) & _BALANCE_VOCAB:
+                unsure.add(i)  # "02/03/2026 CREDIT 900.00" may be a row
+        elif has_amount(text) and _pot_balance(text):
+            out.withheld.append(line.ref)  # a pot's balance, or a transfer to it?
+            unsure.add(i)
         elif money and _TOTAL_PHRASE.search(text):
             out.withheld.append(line.ref)  # a total, read here; dated, it may be a row
             if _has_date(text):
@@ -690,9 +811,21 @@ def _split_screenshot(
     summaries = {
         i
         for i, text in enumerate(texts)
-        if has_amount(text) and (_BALANCE_PHRASE.search(text) or _TOTAL_PHRASE.search(text))
-    }  # balance and summary figures: never sent; a dated total may be a row and is reported
-    balances |= {i for i in summaries if not _has_date(texts[i])}
+        if has_amount(text)
+        and (
+            _BALANCE_PHRASE.search(text)
+            or _TOTAL_PHRASE.search(text)
+            or only_summary_vocab(text)
+            or _pot_balance(text)
+        )
+    }  # balance and summary figures: never sent; one that may be a row is reported
+    balances |= {
+        i
+        for i in summaries
+        if _BALANCE_PHRASE.search(texts[i])
+        or (only_summary_vocab(texts[i]) and set(_summary_words(texts[i])) & _BALANCE_VOCAB)
+        or (not _has_date(texts[i]) and not _pot_balance(texts[i]))
+    }
     first = next(
         (
             i
