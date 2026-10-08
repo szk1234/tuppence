@@ -181,14 +181,23 @@ def test_photo_orientation_is_applied_before_ocr(fixtures, tmp_path):
     assert any("Little Cafe" in line.text for line in doc.lines)
 
 
-def test_dense_pages_do_not_pile_up_in_memory(tmp_path):
-    """Dense pages: pdfplumber used to keep every page's objects (about 80 MB a page)."""
-    pdf = hostile_pdfs.word_flood(tmp_path / "dense.pdf", 20_000, pages=12)
+@pytest.mark.parametrize(
+    ("pages", "memory_mb"),
+    [(3, 250), pytest.param(12, 600, marks=pytest.mark.slow)],
+)
+def test_dense_pages_do_not_pile_up_in_memory(tmp_path, pages, memory_mb):
+    """Dense pages: pdfplumber used to keep every page's objects (about 80 MB a page), so three
+    pages went over 250 MB and twelve over 600 MB; one page at a time stays near 150 MB. The
+    twelve-page run is in the slow suite (re-review 2 R6)."""
+    pdf = hostile_pdfs.word_flood(tmp_path / "dense.pdf", 20_000, pages=pages)
     started = time.monotonic()
     doc = extract_document(
-        pdf, "pdf", sha256="x", limits=ExtractLimits(max_pages=50, timeout_s=120, memory_mb=600)
+        pdf,
+        "pdf",
+        sha256="x",
+        limits=ExtractLimits(max_pages=50, timeout_s=120, memory_mb=memory_mb),
     )
-    assert doc.pages == 12 and time.monotonic() - started < 60
+    assert doc.pages == pages and time.monotonic() - started < 60
 
 
 def _noisy_scan(path, pages, sigma=6):

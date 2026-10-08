@@ -202,14 +202,17 @@ def test_every_model_failing_is_502(client, scripted):
     assert r.status_code == 502 and "m-small" in r.json()["detail"]
 
 
-def test_try_against_a_stopped_server_says_so_in_plain_words(client, scripted):
+def test_try_against_a_stopped_server_says_so_in_plain_words(client, scripted, monkeypatch):
     conn = ready(client, scripted)
+    waits: list[float] = []  # the retry waits are recorded, not slept (5 s of the suite)
+    monkeypatch.setattr(client.app.state.services.llm, "sleep", waits.append)
 
     def refuse(req):
         raise httpx.ConnectError("boom-detail-xyz")
 
     scripted.handler = refuse
     r = client.post("/api/llm/try", json={"task": "coach", "prompt": "hi"})
+    assert waits == [1, 4]  # it was retried as a connection error is
     detail = r.json()["detail"]
     assert r.status_code == 502
     assert f"Couldn't reach {conn['name']}. Is it running?" in detail

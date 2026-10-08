@@ -2,12 +2,15 @@
 reads, and the passes over a document look at a deadline as they go.
 
 One sweep times each function that reads statement text, cells, rows or a document built from
-them, on 1 MB lines (a CSV cell or an OFX memo reaches Check at full length) and on 20,000-line
+them, on long lines (a CSV cell or an OFX memo reaches Check at full length) and on long
 documents (rows, withheld lines between rows, label lines above the table, one long page).
-Bounds are generous: linear code takes well under a second here, and quadratic code takes
-minutes. A completeness check makes sure a new function of this kind joins the sweep.
+Bounds are generous: linear code takes a fraction of them, and quadratic code far more. A
+completeness check makes sure a new function of this kind joins the sweep.
 
-The default suite runs each function on the most hostile shapes; the slow suite on all."""
+The default suite (re-review 2 R6) runs each function on the two most hostile shapes at 100 KB
+lines and 2,000-line documents, where a pass quadratic in a line's length still takes seconds;
+the reviewer's line-count probes stay in `test_long_inputs` at 20,000 lines. The slow suite
+(run weekly in CI) runs every shape at 1 MB lines and 20,000-line documents."""
 
 from __future__ import annotations
 
@@ -45,6 +48,9 @@ from tuppence.ingest.registry import CsvLayout, LayoutRegistry, load_bank_pack
 MB = 1_000_000
 N = 20_000
 BOUND = 8.0  # seconds for one call: linear code takes a fraction of it, quadratic minutes
+KB100 = 100_000
+N_SMALL = 2_000
+SMALL_BOUND = 2.0  # the same at a tenth of the size
 HOSTILE = ["thousands", "spaced digits", "figure pairs", "spaces", "bullets"]
 # The slow suite: every hostile shape that reaches a different kind of pass (the per-pattern
 # test in test_linear_time runs every shape against every pattern).
@@ -70,8 +76,8 @@ DAY = dt.date(2026, 10, 2)
 
 
 @lru_cache(maxsize=4)
-def line(shape: str) -> str:
-    return adversarial(shape, MB)
+def line(shape: str, size: int = MB) -> str:
+    return adversarial(shape, size)
 
 
 def _row(ref: str, pence: int, text: str, **kw: Any) -> ParsedRow:
@@ -93,10 +99,10 @@ def _statement(rows: list[ParsedRow], **kw: Any) -> ParsedStatement:
 
 
 @lru_cache(maxsize=2)
-def long_doc(shape: str) -> tuple[Document, ParsedStatement]:
+def long_doc(shape: str, size: int = MB) -> tuple[Document, ParsedStatement]:
     """A table whose third line (and its middle cell) is 1 MB, cited by a row, as a CSV or OFX
     line reaches Check."""
-    long = line(shape)
+    long = line(shape, size)
     texts = [
         "Date,Description,Paid out,Balance",
         "02/10/2026,Shop,4.00,100.00",
@@ -130,32 +136,32 @@ def _text_rows(n: int) -> list[str]:
 
 
 @lru_cache(maxsize=4)
-def many_text(kind: str) -> str:
+def many_text(kind: str, n: int = N) -> str:
     head = "Example Bank\nStatement 01/10/2026 to 31/10/2026\nDate Description Paid out Balance\n"
     if kind == "rows":
-        return head + "\n".join(_text_rows(N)) + "\n"
+        return head + "\n".join(_text_rows(n)) + "\n"
     if kind == "between":
         return (
             head
             + "02/10/2026 Shop 1.00 999.00\n"
-            + "Sort code 12-34-56\n" * N
+            + "Sort code 12-34-56\n" * n
             + ("03/10/2026 Cafe 1.00 998.00\n")
         )
     if kind == "preamble":
-        return "Example Bank\n" + "Opening balance\n" * N + head + "\n".join(_text_rows(10)) + "\n"
-    return head + "\n".join(_text_rows(N)) + "\n"
+        return "Example Bank\n" + "Opening balance\n" * n + head + "\n".join(_text_rows(10)) + "\n"
+    return head + "\n".join(_text_rows(n)) + "\n"
 
 
 @lru_cache(maxsize=4)
-def many_doc(kind: str) -> tuple[Document, ParsedStatement]:
+def many_doc(kind: str, n: int = N) -> tuple[Document, ParsedStatement]:
     """20,000 lines of one kind, with a row for each data line the model might have read
     (signs read the wrong way round, so sign repair has work to do)."""
     if kind == "page":
         doc = textprep.pages_document(
-            [["Date Description Paid out Balance", *_text_rows(N)]], sha256="x", kind="pdf"
+            [["Date Description Paid out Balance", *_text_rows(n)]], sha256="x", kind="pdf"
         )
     else:
-        doc = textprep.text_document(many_text(kind), sha256="x")
+        doc = textprep.text_document(many_text(kind, n), sha256="x")
     by_ref = doc.by_ref()
     rows = []
     for i, ref in enumerate(
@@ -243,7 +249,9 @@ LINE: dict[str, LineCall] = {
     "sensitive.is_sensitive": sensitive.is_sensitive,
     "sensitive.holds_details": sensitive.holds_details,
     "sensitive.mask": sensitive.mask,
-    "sensitive.prepare_outbound": lambda s: sensitive.prepare_outbound(s, names=["Alex Example"]),
+    "sensitive.prepare_outbound": lambda s: sensitive.prepare_outbound(
+        s, names=["Alex Example"], before=s, after=s
+    ),
     "sensitive.mask_line": sensitive.mask_line,
     "sensitive.is_masked_balance": sensitive.is_masked_balance,
     "sensitive.unmasked_label": sensitive.unmasked_label,
@@ -465,25 +473,27 @@ def _cases(shapes: list[str]) -> list[tuple[str, str]]:
     ]
 
 
-def _run(name: str, shape: str) -> None:
+def _run(name: str, shape: str, size: int, n: int, bound: float) -> None:
     if name in LINE:
-        value = line(shape)
+        value = line(shape, size)
         took = _time(lambda: LINE[name](value))
     else:
-        doc, parsed = long_doc(shape) if shape in SHAPES else many_doc(shape)
+        doc, parsed = long_doc(shape, size) if shape in SHAPES else many_doc(shape, n)
         took = _time(lambda: DOC[name](doc, parsed))
-    assert took < BOUND, f"{name} took {took:.1f}s on {shape}"
+    assert took < bound, f"{name} took {took:.1f}s on {shape}"
 
 
 @pytest.mark.parametrize(("name", "shape"), _cases(HOSTILE[:2]))
 def test_every_pass_over_untrusted_text_is_fast(name, shape):
-    _run(name, shape)
+    """100 KB lines and 2,000-line documents (the default suite)."""
+    _run(name, shape, KB100, N_SMALL, SMALL_BOUND)
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize(("name", "shape"), _cases(EVERY_KIND))
 def test_every_pass_over_untrusted_text_is_fast_on_every_shape(name, shape):
-    _run(name, shape)
+    """1 MB lines and 20,000-line documents, every shape (the slow suite, weekly in CI)."""
+    _run(name, shape, MB, N, BOUND)
 
 
 # --- every such function is in the sweep ---------------------------------------------------------
@@ -587,6 +597,6 @@ def test_every_function_that_reads_untrusted_text_is_swept():
     ],
 )
 def test_the_passes_over_a_document_stop_at_the_deadline(call):
-    doc, parsed = many_doc("rows")
+    doc, parsed = many_doc("rows", N_SMALL)
     with pytest.raises(CheckTimeout):
         call(doc, parsed.model_copy(deep=True), after(-1))

@@ -208,15 +208,10 @@ FIXTURE_DOCS = [
 
 
 @pytest.mark.parametrize(("relative", "kind"), FIXTURE_DOCS)
-def test_nothing_withheld_at_75f4474_is_sent_from_the_fixtures(old_textprep, fixtures, relative,
-                                                                 kind):  # fmt: skip
-    from tuppence.ingest.extract import ExtractLimits, extract_document
+def test_nothing_withheld_at_75f4474_is_sent_from_the_fixtures(old_textprep, relative, kind):
+    from ingest.helpers import fixture_pages
 
-    doc = extract_document(fixtures / relative, kind, sha256="x", limits=ExtractLimits())
-    pages: dict[str, list[str]] = {}
-    for line in doc.lines:
-        pages.setdefault(line.ref.split("L", 1)[0], []).append(line.text)
-    rows = list(pages.values())
+    rows = [list(page) for page in fixture_pages(relative, kind)]
     old = old_textprep.pages_document(rows, sha256="x", kind=kind)
     new = pages_document(rows, sha256="x", kind=kind)
     sent_now = [

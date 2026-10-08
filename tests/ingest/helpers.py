@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 from tuppence.core.accounts import Account, AccountIn
@@ -110,3 +111,17 @@ def parse_pages(services, pages, account_kind="current", *, limits=None, registr
         limits=limits or ReaderLimits(),
     )
     return out, doc
+
+
+@lru_cache(maxsize=8)
+def fixture_pages(relative: str, kind: str) -> tuple[tuple[str, ...], ...]:
+    """A fixture statement's pages as text prep reads them (extracted once per test run: a
+    scanned page takes seconds to read)."""
+    from tuppence.ingest.extract import ExtractLimits, extract_document
+
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures" / "statements"
+    doc = extract_document(fixtures / relative, kind, sha256="x", limits=ExtractLimits())  # type: ignore[arg-type]
+    pages: dict[str, list[str]] = {}
+    for line in doc.lines:
+        pages.setdefault(line.ref.split("L", 1)[0], []).append(line.text)
+    return tuple(tuple(page) for page in pages.values())

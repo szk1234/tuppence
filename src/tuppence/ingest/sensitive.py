@@ -276,13 +276,20 @@ def _spelled_sort_codes(text: str) -> list[tuple[int, int]]:
 
 
 def _classify_seen(seen: str, names: Sequence[str]) -> set[str]:
+    return set(_classes(seen, tuple(names)))
+
+
+@lru_cache(maxsize=256)
+def _classes(seen: str, names: tuple[str, ...]) -> frozenset[str]:
+    """The classes in `seen`, kept for the last lines read: text prep classifies a line, then
+    masks it (which classifies it again)."""
     found = {name for name, pattern in (*LABELS.items(), *VALUES.items()) if pattern.search(seen)}
     if _spelled_sort_codes(seen):
         found.add("sort_code")
     found |= {name for name, _, _ in _number_matches(seen)}
-    if names and (pattern := _name_pattern(tuple(names))) is not None and pattern.search(seen):
+    if names and (pattern := _name_pattern(names)) is not None and pattern.search(seen):
         found.add("holder_name")
-    return found
+    return frozenset(found)
 
 
 def classify(text: str, *, names: Sequence[str] = ()) -> set[str]:
@@ -438,7 +445,7 @@ def _tokens_after(text: str, start: int, keep: Sequence[bool], name_words: bool)
 LONG_RUN = 6
 _MAX_JOIN = 3  # separator characters that may join two groups of digits
 _OWN_DATE_JOINED = 4  # digits joined after a two-digit-year leading date that make it a sort code
-_DAY_PREFIX = re.compile(r"\s*(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+)?", re.IGNORECASE)
+_DAY_PREFIX = re.compile(r"(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+", re.IGNORECASE)
 _ROW_DATE = re.compile(
     r"(?P<d>\d{1,2})(?P<s>[/. \-])(?P<m>\d{1,2})(?P=s)(?P<y>\d{4}|\d{2})(?!\d)"
     r"|(?P<iy>\d{4})-(?P<im>\d{1,2})-(?P<id>\d{1,2})(?!\d)"
@@ -644,8 +651,10 @@ def _description_end(seen: str) -> int:
     return end
 
 
+@lru_cache(maxsize=8)
 def _edges(seen: str) -> tuple[tuple[int, int, int] | None, tuple[int, int, int] | None]:
-    """The group of digits `seen` starts with, and the one its description ends with."""
+    """The group of digits `seen` starts with, and the one its description ends with (kept for
+    a few lines: each line is read as itself and as the neighbour above and below)."""
     groups = _groups(seen)
     head = groups[0] if groups and groups[0][0] == 0 else None
     end = _description_end(seen)

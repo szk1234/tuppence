@@ -55,8 +55,15 @@ def test_to_strict_schema_keeps_properties_named_title_and_default():
 
 
 def test_extract_json_prefers_object_and_survives_nesting():
+    """5,000 open brackets are well past the decoder's recursion limit (re-review 2 R6: the
+    100,000 below took 46 s of the default suite and runs in the slow suite)."""
     assert extract_json('see [1] and {"a": 1}') == {"a": 1}
     assert extract_json("[1, 2]") == [1, 2]
+    assert extract_json("[" * 5000 + ' {"ok": 1}') == {"ok": 1}
+
+
+@pytest.mark.slow
+def test_extract_json_survives_a_hundred_thousand_open_brackets():
     assert extract_json("[" * 100000 + ' {"ok": 1}') == {"ok": 1}
 
 

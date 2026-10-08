@@ -309,6 +309,12 @@ def _regressions(old_textprep, build, *, strict: bool = False) -> list[tuple[str
     return out
 
 
+# The rule-(e) descriptions in the forms that reach a different part of text prep (the rule-(e)
+# test itself prints every form).
+_TABLE_FORMS = ["dated", "dated, signed, balance", "undated, balance", "undated, signed", "undated"]
+_SHOT_FORMS = ["signed", "unsigned"]
+
+
 def _corpus() -> list[str]:
     from ingest import test_balance_lines as balances
     from ingest import test_long_numbers as numbers
@@ -326,8 +332,9 @@ def _corpus() -> list[str]:
         *numbers.OCR, *numbers.PROBE, *numbers.WORDS, *numbers.GLUED, *numbers.SEPARATED,
         *numbers.CARD_ENDINGS, *numbers.SLASHED, *numbers.LEADING, *numbers.TWO_DATES,
         *numbers.COORDINATOR, *numbers.LABELLED, *PROBES,
-        *(form.format(d=d) for form in rule_e.TABLE_FORMS.values() for d in rule_e.DESCRIPTIONS),
-        *(form.format(d=d) for form in rule_e.SCREENSHOT_FORMS.values()
+        *(rule_e.TABLE_FORMS[form].format(d=d) for form in _TABLE_FORMS
+          for d in rule_e.DESCRIPTIONS),
+        *(rule_e.SCREENSHOT_FORMS[form].format(d=d) for form in _SHOT_FORMS
           for d in rule_e.DESCRIPTIONS),
     ]  # fmt: skip
     return list(dict.fromkeys(lines))
@@ -394,14 +401,10 @@ FIXTURE_DOCS = [("pdf/current-text.pdf", "pdf"), ("pdf/card-text.pdf", "pdf"),
 
 
 @pytest.mark.parametrize(("relative", "kind"), FIXTURE_DOCS)
-def test_no_fixture_shows_more_than_at_8bc2649(old_textprep, fixtures, relative, kind):
-    from tuppence.ingest.extract import ExtractLimits, extract_document
+def test_no_fixture_shows_more_than_at_8bc2649(old_textprep, relative, kind):
+    from ingest.helpers import fixture_pages
 
-    doc = extract_document(fixtures / relative, kind, sha256="x", limits=ExtractLimits())
-    pages: dict[str, list[str]] = {}
-    for line in doc.lines:
-        pages.setdefault(line.ref.split("L", 1)[0], []).append(line.text)
-    rows = list(pages.values())
+    rows = [list(page) for page in fixture_pages(relative, kind)]
     lost = _regressions(
         old_textprep, lambda m: m.pages_document(rows, sha256="x", kind=kind, names=NAMES)
     )

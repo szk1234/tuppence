@@ -1,0 +1,24 @@
+name: Slow tests
+# The slow suite once a week (re-review 2 R6): every pass over untrusted statement text on 1 MB
+# lines and 20,000-line documents, every ingest pattern on 1 MB lines, and the other large
+# inputs. The packaging smoke tests (Docker image, desktop bundle, wheel) are left out: CI's
+# package and desktop jobs cover them on every push.
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays, 03:17 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  UV_LOCKED: "1"
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - run: uv sync --locked
+      - run: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0 # OpenCV, for RapidOCR
+      - run: uv run pytest -q -m slow --ignore=tests/smoke
