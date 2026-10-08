@@ -54,6 +54,64 @@ def amount_renderings(pence: int) -> set[str]:
     return {short, two_dp, _grouped(short), _grouped(two_dp)}
 
 
+# Matched right after a figure; a run of spaces is tried from its start only.
+_OVERDRAWN_AFTER = re.compile(r"(?<!\s)\s*(?:O/D|OD|DR|D|overdrawn)\b", re.IGNORECASE)
+_CREDIT_AFTER = re.compile(r"(?<!\s)\s*(?:CR|in\s+credit)\b", re.IGNORECASE)
+
+
+def balance_printed(row: ParsedRow, text: str, perspective: Perspective) -> bool:
+    """Whether the running balance a row claims is printed on its own line `text` (the line as
+    it was sent), with the sign it is stored with. A figure the same size as the row's amount
+    must be printed twice, once for each. A row that claims no balance passes.
+
+    A balance the model worked out for itself, printed nowhere, is not evidence of anything:
+    it can't prove which way an amount goes or that a statement adds up."""
+    balance = row.balance_after_pence
+    if balance is None:
+        return True
+    signs: list[int] = []
+    for rendering in sorted(amount_renderings(balance), key=len, reverse=True):
+        start = 0
+        while (index := text.find(rendering, start)) >= 0:
+            end = index + len(rendering)
+            start = index + 1
+            if not _bounded(text, index, end):
+                continue
+            cursor = index - 1 if index > 0 and text[index - 1] in "£$" else index
+            before = text[cursor - 1] if cursor > 0 else ""
+            negative = (
+                before in "-−"
+                or (before == "(" and text[end : end + 1] == ")")
+                or (text[end : end + 1] in ("-", "−") and not text[end + 1 : end + 2].isalnum())
+            )
+            after = text[end:]
+            if perspective == "card":  # a card prints what is owed; CR means in credit
+                negative = negative or _CREDIT_AFTER.match(after) is not None
+            else:
+                negative = negative or _OVERDRAWN_AFTER.match(after) is not None
+            signs.append(-1 if negative else 1)
+    want = -1 if balance < 0 else 1
+    matching = sum(1 for sign in signs if sign == want)
+    if abs(balance) == abs(row.amount_pence):
+        return matching >= 1 and len(signs) >= 2
+    return matching >= 1
+
+
+def drop_unprinted_balances(parsed: ParsedStatement, lines: Sequence[Line]) -> list[str]:
+    """Clear every running balance the model reported that isn't printed on its row's line
+    (`balance_printed`); returns the refs of the rows changed."""
+    by_ref = {line.ref: line for line in lines}
+    dropped: list[str] = []
+    for row in parsed.rows:
+        line = by_ref.get(base_ref(row.ref))
+        if row.balance_after_pence is None:
+            continue
+        if line is None or not balance_printed(row, line.text, parsed.perspective):
+            row.balance_after_pence = None
+            dropped.append(row.ref)
+    return dropped
+
+
 def check_rows(
     chunk: Sequence[Line],
     *,

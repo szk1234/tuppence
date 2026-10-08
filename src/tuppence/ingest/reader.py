@@ -20,7 +20,7 @@ from typing import Annotated, Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from tuppence.core.errors import safe_error_text
-from tuppence.ingest.check import check_rows
+from tuppence.ingest.check import check_rows, drop_unprinted_balances
 from tuppence.ingest.identify import HeaderFacts
 from tuppence.ingest.models import (
     CheckLevel,
@@ -389,6 +389,8 @@ def _read_chunk(
                 errors, previous = [tidy(safe_error_text(exc))], None
                 continue
             parsed, conversion = to_parsed(_with_real_refs(out, real), perspective=perspective)
+            # A running balance counts only if it is printed on the row's own (sent) line.
+            drop_unprinted_balances(parsed, chunk.lines)
             checked = conversion + check_rows(
                 chunk.lines,
                 all_lines=chunk.lines,
