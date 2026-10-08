@@ -47,7 +47,9 @@ _DATE_WORDS = (
     r"|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\d{4}-\d{2}-\d{2}\b)"
 )
 _ON_DATE = rf"(?:(?:on|at|as\s+(?:at|of)|of|by|for)\s+)?{_DATE_WORDS}"
-_DATED_LABEL = r"(?:statement\s+date|(?:payment\s+)?due\s+date|date\s+due|payment\s+due)"
+_DATED_LABEL = (
+    r"(?:statement\s+date|(?:payment\s+)?due\s+date|date\s+due|payment\s+due|payment\s+date)"
+)
 _SIGN = r"[-+\u2212\u2013]"
 _FIGURE = (
     rf"(?:\(\s*)?(?:{_SIGN}\s*)?(?:(?:[£$€]|GBP\b)\s*)?(?:{_SIGN}\s*)?"

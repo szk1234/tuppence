@@ -314,6 +314,8 @@ _SUMMARY_VOCAB = frozenset(
         "dr",
         "od",
         "overdrawn",
+        "spent",
+        "spending",
     ]
 )
 # ...and those of them that make it a balance: never a row, so withheld without a word. A dated
@@ -348,9 +350,9 @@ _POT_WORDS = re.compile(
 
 def _summary_words(text: str) -> list[str]:
     """The words left on a line once its figures, dates and punctuation are taken away."""
-    plain = _MONEY_TOKEN.sub(" ", text)
+    plain = _NAMED_DATE.sub(" ", _NUMERIC_DATE.sub(" ", text))  # dates first: "20 November"
+    plain = _MONEY_TOKEN.sub(" ", plain)
     plain = re.sub(r"[£$€]\s?[\d,]+(?:\.\d+)?|\d[\d,.]*", " ", plain)
-    plain = _NAMED_DATE.sub(" ", _NUMERIC_DATE.sub(" ", plain))
     return _WORD.findall(plain.casefold())
 
 
@@ -361,6 +363,82 @@ def _pot_balance(text: str) -> bool:
         return False
     words = [w for w in _summary_words(_POT_WORDS.sub(" ", text)) if w not in _SUMMARY_VOCAB]
     return not words
+
+
+# m1, m2: more words a balance or a card header's payment sentence uses ("Remaining balance",
+# "Bal fwd", "Balance on card", "We'll collect your Direct Debit of £25.00 on ..."). They count
+# only beside one of `_ANCHORS`, which no transaction description is made of; on their own
+# ("DIRECT DEBIT", "CARD PAYMENT", "OVERDRAFT INTEREST") they are a row's words.
+_QUALIFIERS = frozenset(
+    [
+        "after", "transaction", "transactions", "excluding", "including", "pending", "card",
+        "today", "to", "pay", "for", "by", "and", "we", "ll", "will", "be", "direct", "debit",
+        "payment", "interest", "next", "rate", "arranged", "overdraft", "than", "date", "is",
+        "are", "of", "on", "at", "as", "the", "this", "in", "your", "you", "new", "previous",
+        "total", "credit", "fwd", "b/fwd", "c/fwd",
+    ]
+)  # fmt: skip
+_ANCHORS = frozenset(
+    [
+        "balance", "bal", "balances", "forward", "brought", "carried", "b/f", "c/f", "bf", "cf",
+        "fwd", "b/fwd", "c/fwd", "owe", "owed", "outstanding", "available", "funds",
+        "overdrawn", "remaining", "minimum", "collect", "collected", "due", "please", "avoid",
+        "estimated", "statement", "amount", "limit", "spendable", "cleared", "opening",
+        "closing", "summary",
+    ]
+)  # fmt: skip
+# A figure in a summary: what is left of the line once dates are taken away.
+_FIGURE_TOKEN = re.compile(r"[-+\u2212(]?\s?[£$€]?\d[\d,]*(?:\.\d+)?\)?")
+
+
+_BALANCE_WORDING = _SUMMARY_VOCAB | _QUALIFIERS | _ANCHORS
+
+
+def _labelled(text: str) -> bool:
+    """Every figure has its own label: no figure has a sign (+£25.00 is a row's), and no two
+    figures sit side by side (an amount and a balance are a row's)."""
+    plain = _NAMED_DATE.sub(" ", _NUMERIC_DATE.sub(" ", text))
+    previous: int | None = None
+    for match in _FIGURE_TOKEN.finditer(plain):
+        if match.group(0)[0] in "-+\u2212":
+            return False
+        if previous is not None and re.search(r"[A-Za-z]", plain[previous : match.start()]) is None:
+            return False
+        previous = match.end()
+    return True
+
+
+def _summary_kind(text: str) -> str | None:
+    """For a line with an amount, what its summary wording makes it (R-M3-23 (e)):
+
+    - "balance": a pure balance or summary line, nothing on it but balance or summary wording
+      and its figures (a balance in any wording; a card header's payment sentence; a total
+      with each figure under its own label). Withheld, read here, never a row: not reported.
+    - "held": summary wording that may be a row's ("CREDIT 900.00 1,900.00", "PAID IN AT POST
+      OFFICE", "Money in +£25.00", a pot). Withheld and reported for the person to decide.
+    - None: a row's line like any other."""
+    if sensitive.is_balance_line(text) or _BALANCE_PHRASE.search(text):
+        return "balance"
+    words = _summary_words(text)
+    if words and all(w in _BALANCE_WORDING for w in words) and any(w in _ANCHORS for w in words):
+        return "balance"
+    dated = _has_date(text)
+    if words and all(w in _SUMMARY_VOCAB for w in words):
+        if not dated and ({"your", "you"} & set(words)):  # "Your account is £1.00 in credit"
+            return "balance"
+        if not dated and _TOTAL_PHRASE.search(text) and _labelled(text):
+            return "balance"
+        return "held"
+    if _pot_balance(text) or _TOTAL_PHRASE.search(text):
+        return "held"
+    return None
+
+
+def pure_balance(text: str, *, names: Sequence[str] = ()) -> bool:
+    """A line with an amount that is only a balance or a summary (`_summary_kind`), or a
+    balance line with an account detail on it: the only lines with an amount that are withheld
+    without being reported."""
+    return _summary_kind(text) == "balance" or sensitive.is_masked_balance(text, names=names)
 
 
 def only_summary_vocab(text: str) -> bool:
@@ -720,11 +798,14 @@ def _split_preamble(
     texts = [line.text for line in lines]
     sensitive_at = [is_sensitive(t, names=names) for t in texts]
     masks = _Masks(texts, names)
+    amounts = [has_amount(t) for t in texts]
+    kinds = [_summary_kind(t) if amounts[i] else None for i, t in enumerate(texts)]
     rows = [
         _has_date(t)
         and _MONEY_TOKEN.search(t) is not None
         and not is_summary(t)
         and not _BALANCE_PHRASE.search(t)
+        and kinds[i] != "balance"  # a card header's payment sentence is not a row
         and (not sensitive_at[i] or masks(i) is not None)
         for i, t in enumerate(texts)
     ]
@@ -749,46 +830,41 @@ def _split_preamble(
     page_headers = _later_page_headers(lines, first, rows, headings, leading)
     out = _Split()
     unsure: set[int] = set()
+
+    def pure(i: int) -> bool:  # only a balance or a summary: never a row, so not reported
+        return kinds[i] == "balance" or (
+            sensitive_at[i] and sensitive.is_masked_balance(texts[i], names=names)
+        )
+
     for i, line in enumerate(lines):
         tick(i)
         text = line.text
         key = _normal(text)
         money = _MONEY_TOKEN.search(text) is not None
-        plain = not money and not _has_date(text)
+        amount = amounts[i]
         furniture = (
             counts[key] > 1
-            and not money
+            and not amount
             and not is_heading(text)
             and (_FURNITURE.search(text) is not None or key in edge)
         )
+        plain = not amount and not _has_date(text)
         name_repeat = plain and _name_key(text) in known_names and _name_key(text) is not None
         if first is not None and i < first:
             out.withheld.append(line.ref)
-            if rows[i]:  # a dated amount above the table start: it may be a row, so report it
-                unsure.add(i)
-        elif (
-            i in balances
-            or (sensitive_at[i] and sensitive.is_masked_balance(text, names=names))
-            or (money and _BALANCE_PHRASE.search(text))
-        ):
-            out.withheld.append(line.ref)  # a balance: read on this device, never a row
+            if amount and _has_date(text) and not pure(i):
+                unsure.add(i)  # a dated amount above the table start may be a row: reported
+        elif i in balances or pure(i):
+            out.withheld.append(line.ref)  # a balance or a summary: read here, never a row
+        elif kinds[i] == "held":
+            out.withheld.append(line.ref)  # a summary or a row? the person decides
+            unsure.add(i)
         elif i in page_headers:
             out.withheld.append(line.ref)
-            if money and (not sensitive_at[i] or masks(i) is not None):
+            if amount:
                 unsure.add(i)  # may be a row above the page's first anchor
-        elif i in addresses or furniture or name_repeat or (sensitive_at[i] and not money):
+        elif i in addresses or furniture or name_repeat or (sensitive_at[i] and not amount):
             out.withheld.append(line.ref)  # no amount on it, so no row is lost
-        elif has_amount(text) and only_summary_vocab(text):
-            out.withheld.append(line.ref)  # a balance or a summary, however it is worded
-            if rows[i] and not set(_summary_words(text)) & _BALANCE_VOCAB:
-                unsure.add(i)  # "02/03/2026 CREDIT 900.00" may be a row
-        elif has_amount(text) and _pot_balance(text):
-            out.withheld.append(line.ref)  # a pot's balance, or a transfer to it?
-            unsure.add(i)
-        elif money and _TOTAL_PHRASE.search(text):
-            out.withheld.append(line.ref)  # a total, read here; dated, it may be a row
-            if _has_date(text):
-                unsure.add(i)
         elif (
             money and _SUMMARY_WORD.search(text) and not _single_transaction(text, rows[i])
         ) or not _send(out, line, masks(i)):
@@ -842,24 +918,11 @@ def _split_screenshot(
     blocks = _balance_blocks(texts)
     balances = {k for block in blocks for k in block}
     balances |= {i for i, text in enumerate(texts) if sensitive.is_balance_line(text)}
-    summaries = {
-        i
-        for i, text in enumerate(texts)
-        if has_amount(text)
-        and (
-            _BALANCE_PHRASE.search(text)
-            or _TOTAL_PHRASE.search(text)
-            or only_summary_vocab(text)
-            or _pot_balance(text)
-        )
-    }  # balance and summary figures: never sent; one that may be a row is reported
-    balances |= {
-        i
-        for i in summaries
-        if _BALANCE_PHRASE.search(texts[i])
-        or (only_summary_vocab(texts[i]) and set(_summary_words(texts[i])) & _BALANCE_VOCAB)
-        or (not _has_date(texts[i]) and not _pot_balance(texts[i]))
-    }
+    # The same summary rule as text and PDFs (R-M3-23 (e)): a pure balance or summary is never
+    # sent nor reported; one that may be a row is withheld and reported.
+    kinds = [_summary_kind(t) if has_amount(t) else None for t in texts]
+    balances |= {i for i, kind in enumerate(kinds) if kind == "balance"}
+    summaries = {i for i, kind in enumerate(kinds) if kind == "held"}
     first = next(
         (
             i

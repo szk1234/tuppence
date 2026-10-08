@@ -225,6 +225,7 @@ LINE: dict[str, LineCall] = {
     "textprep.is_row": textprep.is_row,
     "textprep.is_anchor": textprep.is_anchor,
     "textprep.has_amount": textprep.has_amount,
+    "textprep.pure_balance": textprep.pure_balance,
     "textprep.header_names": lambda s: textprep.header_names([s[: textprep.MAX_LINE_CHARS]], [0]),
     "textprep.text_document": lambda s: textprep.text_document(f"Statement\n{s}\n", sha256="x"),
     "textprep.pages_document": lambda s: textprep.pages_document(
