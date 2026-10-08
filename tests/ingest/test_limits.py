@@ -288,3 +288,57 @@ def test_camt_facts_are_validated(mutate):
     mutate(facts)
     with pytest.raises(BadReply):
         parse_camt_facts(facts)
+
+
+class _CountingLLM:
+    """Stands in for the LLM client: records the time each vision call was given."""
+
+    def __init__(self):
+        self.seconds = []
+
+    def structured(self, task, messages, schema, *, max_tokens=4096, run=None):
+        self.seconds.append(run.remaining_seconds())
+        run.check_limits()
+        run.start_call()
+        run.record(10, 0.0)
+        return schema(lines=["Mon 5 Oct   Little Cafe   -£3.40"])
+
+
+def _two_page_scan():
+    from ingest import adversarial
+
+    return adversarial.scanned(adversarial.current_pdf())
+
+
+def test_each_vision_call_gets_only_what_is_left_of_the_extraction_deadline(tmp_path):
+    """M9: a call started near the deadline can't run its own full timeout."""
+    from tuppence.ingest.vision import VisionOCR
+    from tuppence.llm.budget import RunBudget
+
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(_two_page_scan())
+    llm = _CountingLLM()
+    run = RunBudget(max_calls=40, max_tokens=10**6, max_gbp=1.0, max_seconds=3600)
+    vision = VisionOCR(llm, run, prompt="x")
+    extract_document(path, "pdf", sha256="x", limits=ExtractLimits(timeout_s=60), vision=vision)
+    assert len(llm.seconds) == 2 and all(s <= 60 for s in llm.seconds)
+
+
+def test_a_scan_with_more_pages_than_the_run_may_read_is_refused_plainly(tmp_path):
+    """M9: refused before any vision call, with what to do, not a budget failure halfway."""
+    from tuppence.core.errors import UserFacing
+    from tuppence.ingest.vision import VisionOCR
+    from tuppence.llm.budget import RunBudget
+
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(_two_page_scan())
+    llm = _CountingLLM()
+    run = RunBudget(max_calls=3, max_tokens=10**6, max_gbp=1.0, max_seconds=3600)
+    from tuppence.ingest.vision import VisionTooLong
+
+    with pytest.raises(VisionTooLong, match="AI vision") as refused:
+        extract_document(
+            path, "pdf", sha256="x", limits=LIMITS, vision=VisionOCR(llm, run, prompt="x")
+        )
+    assert isinstance(refused.value, UserFacing)
+    assert "2 pages" in str(refused.value) and llm.seconds == []

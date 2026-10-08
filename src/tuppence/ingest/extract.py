@@ -111,6 +111,10 @@ class _Deadline:
         self.limits = limits
         self.end = time.monotonic() + limits.timeout_s
 
+    def left(self) -> float:
+        """Seconds left (zero or less once the time is up)."""
+        return self.end - time.monotonic()
+
     def remaining(self) -> float:
         left = self.end - time.monotonic()
         if left <= 0:
@@ -124,6 +128,15 @@ class _Deadline:
         return run_isolated(
             fn, *args, timeout_s=self.remaining(), memory_mb=self.limits.memory_mb, parse=parse
         )
+
+
+def _prepare(vision: VisionReader, clock: _Deadline, limits: ExtractLimits, pages: int) -> None:
+    """Before any vision call: refuse a scan with more pages than the run can read, and bound
+    every call by what is left of the extraction's time (M9)."""
+    if pages and (check := getattr(vision, "check_pages", None)) is not None:
+        check(pages)
+    if (bound := getattr(vision, "bound", None)) is not None:
+        bound(clock.left, limits.timeout_s)
 
 
 def _pdf(
@@ -140,6 +153,7 @@ def _pdf(
     warnings: list[str] = []
     if vision is not None:
         scanned = list(result.scanned_pages)
+        _prepare(vision, clock, limits, len(scanned))
         for start in range(0, len(scanned), VISION_BATCH):
             batch = scanned[start : start + VISION_BATCH]
             # A few pages per sandbox call keeps each reply small; every call and every
@@ -178,6 +192,7 @@ def _image(
     names: Sequence[str] = (),
 ) -> Document:
     if vision is not None:
+        _prepare(vision, clock, limits, 1)
         # Decoded, size-checked and re-encoded in the sandbox: no metadata goes to the model.
         picture = clock.run(parse_vision_image, vision_image, str(path))
         rows, confidence = vision.transcribe(picture.data, picture.media_type), None
