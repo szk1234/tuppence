@@ -402,22 +402,58 @@ def is_anchor(text: str) -> bool:
 
 
 RUN_GAP = 2  # rows of a run are at most this far apart (one description line between)
+# A row of the table starts with its date ("01 Oct 2026 ...", "Mon 5 Oct ..."); a summary line
+# in the header ("Please pay £25.00 by 20/11/2026") prints it later.
+_DATE_FIRST = re.compile(
+    rf"^\s*(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+)?(?:\d{{1,2}}[/.-]\d{{1,2}}[/.-]\d{{2,4}}\b"
+    rf"|\d{{4}}-\d{{2}}-\d{{2}}\b|\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTH}\b)",
+    re.IGNORECASE,
+)
 
 
-def _table_start(rows: Sequence[bool], headings: Sequence[bool], lo: int, hi: int) -> int | None:
-    """Where the transactions start among lines `lo`..`hi`: the column-heading row, unless a
-    run of rows (two rows at most `RUN_GAP` apart) comes before it; else the first row.
-
-    A single dated line above the address (a balance on a date, a payment due) is not the
-    table: with a heading row or a run of rows below it, it stays in the header."""
-    heading = next((i for i in range(lo, hi) if headings[i]), None)
+def _first_run(rows: Sequence[bool], leading: Sequence[bool], lo: int, hi: int) -> int | None:
+    """The first of two row-shaped lines at most `RUN_GAP` apart, both starting with their date
+    if any such pair exists, else any pair."""
     shaped = [i for i in range(lo, hi) if rows[i]]
-    run = next((a for a, b in zip(shaped, shaped[1:], strict=False) if b - a <= RUN_GAP), None)
-    if run is not None and (heading is None or run < heading):
-        return run
+    pairs = list(zip(shaped, shaped[1:], strict=False))
+    dated = next((a for a, b in pairs if b - a <= RUN_GAP and leading[a] and leading[b]), None)
+    if dated is not None:
+        return dated
+    return next((a for a, b in pairs if b - a <= RUN_GAP), None)
+
+
+def _table_start(
+    rows: Sequence[bool],
+    headings: Sequence[bool],
+    lo: int,
+    hi: int,
+    *,
+    leading: Sequence[bool] | None = None,
+    pages: Sequence[str | None] | None = None,
+) -> int | None:
+    """Where the transactions start among lines `lo`..`hi` (R-M3-23 (b)): the column-heading
+    row whenever there is one; else the first run of rows (two rows at most `RUN_GAP` apart,
+    rows that start with their date first); else the first row.
+
+    A run comes before the heading row only when the headings are first printed on a later
+    page: the rows on the pages before it are the table. On the heading's own page, lines above
+    it are the header, however row-shaped (a summary box merged onto the address rows)."""
+    leading = leading if leading is not None else [True] * len(rows)
+    heading = next((i for i in range(lo, hi) if headings[i]), None)
+    run = _first_run(rows, leading, lo, hi)
     if heading is not None:
+        if (
+            run is not None
+            and run < heading
+            and pages is not None
+            and pages[run] is not None
+            and pages[run] != pages[heading]
+        ):
+            return run
         return heading
-    return shaped[0] if shaped else None
+    if run is not None:
+        return run
+    return next((i for i in range(lo, hi) if rows[i]), None)
 
 
 # A line that is part of an address without being one on its own: a house or building name, or
@@ -582,6 +618,7 @@ def _later_page_headers(
     first: int | None,
     rows: Sequence[bool],
     headings: Sequence[bool],
+    leading: Sequence[bool],
 ) -> set[int]:
     """Each later page's header: the lines of every page after the table's first page that
     come before that page's own table start (all of a page that has none). A page repeats the
@@ -597,7 +634,7 @@ def _later_page_headers(
     held: set[int] = set()
     for members in pages.values():
         lo, hi = members[0], members[-1] + 1
-        table = _table_start(rows, headings, lo, hi)
+        table = _table_start(rows, headings, lo, hi, leading=leading)
         end = hi if table is None else table
         held.update(i for i in members if i < end and not _CARRIED.search(lines[i].text))
     return held
@@ -692,7 +729,9 @@ def _split_preamble(
         for i, t in enumerate(texts)
     ]
     headings = [is_heading(t) for t in texts]
-    first = _table_start(rows, headings, 0, len(lines))
+    leading = [_DATE_FIRST.match(t) is not None for t in texts]
+    pages = [m.group(1) if (m := _PAGE_REF.fullmatch(line.ref)) else None for line in lines]
+    first = _table_start(rows, headings, 0, len(lines), leading=leading, pages=pages)
     edge = _page_edge_repeats(lines)
     blocks = _balance_blocks(texts)
     balances = {k for block in blocks for k in block}
@@ -707,7 +746,7 @@ def _split_preamble(
         names = [*names, *printed]
         sensitive_at = [is_sensitive(t, names=names) for t in texts]
         masks = _Masks(texts, names)
-    page_headers = _later_page_headers(lines, first, rows, headings)
+    page_headers = _later_page_headers(lines, first, rows, headings, leading)
     out = _Split()
     unsure: set[int] = set()
     for i, line in enumerate(lines):
@@ -833,10 +872,14 @@ def _split_screenshot(
     for block in blocks:
         unsure |= _unsure(texts, block, first)
     names = [*names, *header_names(texts, range(min(first, len(texts))))]
+    addresses = _address_blocks(texts)  # wherever they are (R-M3-23 (b))
     out = _Split()
     for i, line in enumerate(lines):
         tick(i)
         text = line.text
+        if i in addresses:  # short plain lines: no amount on them, so no row is lost
+            out.withheld.append(line.ref)
+            continue
         detail = is_sensitive(text, names=names)
         if (
             i >= first
