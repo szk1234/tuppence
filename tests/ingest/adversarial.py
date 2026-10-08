@@ -228,6 +228,8 @@ VISION_SCREENSHOT = [
     "Alex Example", "Current Account", "07-12-34  12345678", "£7,777.77", "Available balance",
     "Transactions", "Mon 5 Oct   Little Cafe   -£3.40", "Tue 6 Oct   Northline Rail   -£12.80",
     "Wed 7 Oct   Acme Payroll Ltd   +£250.00",
+    # a row whose details a PDF or OCR printed with invisible and non-breaking characters
+    "Thu 8 Oct   FPO J SMITH 20\u200b-11-33\u00a04123\u200b4567   -£5.00",
 ]  # fmt: skip
 VISION_PAGES = [
     [

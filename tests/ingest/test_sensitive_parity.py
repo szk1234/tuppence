@@ -189,7 +189,6 @@ PLAIN = [
     "05 10 26 HOMEWARE DIRECT 43.27",
     "02 Oct 2026 Shop 4.00",
     "Date Description Paid out Paid in Balance",
-    "TRANSFER FROM ALEX EXAMPLE 50.00",
     "BALANCE TRANSFER £100.00",
     "BALANCE TRANSFER 1234.56",
     "5 Oct Balance £20.00",
@@ -459,6 +458,9 @@ WITH_DETAILS = [
     "02 Oct 2026 Transfer 12 34 56 87654321 -£40.00",
     "02 Oct 2026 Rent Flat 3 Example House 650.00",
     "Payee: Exampletown EX1 2MP 45.00",
+    "TRANSFER FROM ALEX EXAMPLE 50.00",  # a household name, anywhere in the line
+    "02 Oct 2026 FPI Example, Alex 25.00",
+    "02 Oct 2026 Payee name: J Smith 25.00",
 ]
 _KEPT = re.compile(r"\d{1,3}(?:,\d{3})*\.\d{2}|\d{2}/\d{2}/\d{4}|\d{2} [A-Z][a-z]{2} \d{4}")
 
@@ -507,3 +509,127 @@ def test_a_line_without_details_is_sent_as_printed(text):
 
     masked = mask_line(text, names=NAMES)
     assert masked is not None and masked.text == text and masked.hidden == {}
+
+
+# --- one classifier, one masker: no differential (scan follow-up) ------------------------------
+
+
+def _normal_text(text):
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
+def _digit_runs(text):
+    """Runs of three or more digits, once amounts are taken out (they are never masked) and
+    separators inside a number are taken out."""
+    plain = re.sub(r"[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?![\d.])", " ", _normal_text(text))
+    joined = re.sub(r"(?<=\d)[\s\-./]+(?=\d)", "", plain)
+    return set(re.findall(r"\d{3,}", joined))
+
+
+def _never_sent(text, sent):
+    """Nothing identifying in `text` is in `sent`: no value class, no label with a value left
+    after it, no digits of the identifier (beyond the row's own date and amount) and no form of
+    the household's name."""
+    from tuppence.ingest.sensitive import LABEL_CLASSES, unmasked_label
+
+    assert not (classify(sent, names=NAMES) - LABEL_CLASSES), sent
+    assert not unmasked_label(sent), sent
+    allowed = {"2026", "1200"}  # the row's date and amount
+    shown = _digit_runs(sent)
+    for run in _digit_runs(text) - allowed:
+        assert not any(run in s for s in shown), (run, sent)
+    lowered = _normal_text(sent).casefold()
+    for form in ("alex example", "a example", "example alex", "example a"):
+        assert form not in re.sub(r"[.,]", " ", lowered).replace("  ", " "), sent
+
+
+# Every spelling the classifier holds sensitive, but a balance line (a line that is only
+# balances; inside a row its figures are amounts).
+IDENTIFIERS = [t for t in EVERY if classify(t, names=NAMES) - {"balance_line"}]
+
+
+@pytest.mark.parametrize("text", IDENTIFIERS)
+def test_an_identifier_anywhere_in_a_row_is_recognised_and_never_sent(text):
+    from tuppence.ingest.sensitive import mask_line
+
+    line = f"02 Oct 2026 Payment {text} 12.00"
+    assert classify(line, names=NAMES), line  # wherever it sits in the line
+    masked = mask_line(line, names=NAMES)
+    sent = sent_by_textprep(line)
+    if sent is None:  # withheld: then it is reported, as a row it may be
+        return
+    assert masked is not None and sent == masked.text
+    _never_sent(text, sent)
+
+
+@pytest.mark.parametrize("text", PLAIN)
+def test_a_plain_phrase_anywhere_in_a_row_is_left_alone(text):
+    from tuppence.ingest.sensitive import mask_line
+
+    line = f"02 Oct 2026 Payment {text} 12.00"
+    masked = mask_line(line, names=NAMES)
+    assert masked is not None and masked.text == line and masked.hidden == {}
+
+
+# The same identifiers printed with what a PDF or OCR may put in them: full-width or other
+# Unicode digits, zero-width characters, non-breaking and doubled spaces.
+ODD = [
+    "Transfer to A/C \uff18\uff17\uff16\uff15\uff14\uff13\uff12\uff11",  # full-width
+    "Transfer to A/C 8765\u200b4321",  # zero-width space
+    "Transfer to A/C 8765\u200d4321",  # zero-width joiner
+    "Transfer to A/C 8765\u00ad4321",  # soft hyphen
+    "Payment to 20\u200b-11-33",
+    "Payment to 20-11-33\u00a041234567",  # non-breaking space
+    "Payment to 12\u00a034\u00a056 41234567",
+    "Payment to 12  34  56 41234567",  # doubled spaces
+    "Payment to 12\u202f34\u202f56",  # narrow no-break space
+    "GB29  NWBK  6016  1331  9268  19",
+    "Card \uff14\uff19\uff12\uff19 \u2022\u2022\u2022\u2022 "
+    "\u2022\u2022\u2022\u2022 \uff14\uff12\uff14\uff12",
+    "Card ending \U0001d7d2\U0001d7d0\U0001d7d2\U0001d7d0",  # mathematical bold digits
+    "Card ending \u0664\u0662\u0664\u0662",  # Arabic-Indic digits
+    "Sort code \uff11\uff12-\uff13\uff14-\uff15\uff16",
+    "A\u200b/C 87654321",
+    "Alex\u00a0Example",
+    "ALEX\u200bEXAMPLE",
+    "Example,\u00a0Alex",
+    "Flat\u00a03",
+    "EX1\u00a02MP",
+]
+
+
+@pytest.mark.parametrize("text", ODD)
+def test_identifiers_in_unicode_or_spacing_variants_are_masked(text):
+    from tuppence.ingest.sensitive import mask_line
+
+    line = f"02 Oct 2026 Payment {text} 12.00"
+    assert classify(line, names=NAMES), line
+    sent = sent_by_textprep(line)
+    if sent is not None:
+        assert mask_line(line, names=NAMES) is not None
+        _never_sent(text, sent)
+
+
+@pytest.mark.parametrize("text", ODD)
+def test_unicode_variants_alone_are_withheld_by_every_filter(text):
+    assert classify(text, names=NAMES), text
+    assert withheld_by_textprep(text)
+    assert withheld_from_screenshot(text)
+    assert cell_token(text, names=NAMES) == HIDDEN
+    assert shown_heading(text, names=NAMES) == HIDDEN
+
+
+def test_a_household_name_with_a_curly_apostrophe_is_found_either_way():
+    from tuppence.ingest.sensitive import mask_line
+
+    names = ["Sam O\u2019Brien"]
+    for line in (
+        "02 Oct 2026 Payment SAM O'BRIEN 12.00",
+        "02 Oct 2026 Payment S O\u2019Brien 12.00",
+    ):
+        assert classify(line, names=names), line
+        masked = mask_line(line, names=names)
+        assert masked is not None and "brien" not in masked.text.casefold(), line

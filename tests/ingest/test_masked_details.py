@@ -162,3 +162,121 @@ def test_placeholders_in_the_models_reply_are_put_back(field):
     parsed = ParsedStatement(importer="ai-read", rows=[row])
     restore_masked(parsed, doc)
     assert getattr(parsed.rows[0], field) == "Transfer to A/C 87654321"
+
+
+# --- no path sends a detail (scan follow-up) ---------------------------------------------------
+
+
+def _plain(text: str) -> str:
+    """Request text as a reader would see it: compatibility forms folded, invisible
+    characters gone, spaces made plain and single."""
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return " ".join(text.split())
+
+
+def test_retry_feedback_never_carries_a_detail(ingest_env):
+    """A first answer that isn't JSON, then one with a sign the wrong way round: each retry
+    sends the chunk again with what failed and the previous answer, all of it masked."""
+    from evals import oracle
+
+    services, scripted = ingest_env
+    use_local_model(services)
+    account = add_account(services, "other", "current", "Probe")
+
+    def wrong_sign(body):
+        answer = oracle.read(body["messages"][-1]["content"])
+        for row in answer["transactions"]:
+            if "Transfer" in row["raw_desc"]:
+                row["amount"] = abs(row["amount"])
+        return json.dumps(answer)
+
+    scripted.replies = [{"content": "not json"}, wrong_sign]
+    outcome = services.ingest.upload("probe.txt", TEXT_STATEMENT.encode())
+    drain(services)
+    record = _settle(services, outcome, account)
+    assert record.status == "imported", (record.error, record.check_errors)
+    users = [m["content"] for r in scripted.requests for m in r["messages"] if m["role"] == "user"]
+    assert len(users) >= 3 and any("previous answer failed" in u for u in users)
+    sent = _plain(json.dumps(scripted.requests, ensure_ascii=False))
+    assert [d for d in DETAILS if d in sent] == []
+
+
+ODD_STATEMENT = (
+    "Example Bank plc\n"
+    "Statement period 01/10/2026 to 31/10/2026\n"
+    "Date Description Amount\n"
+    "01/10/2026 Greenbasket Stores -42.18\n"
+    "03/10/2026 Transfer to A/C ８７６５４３２１ -250.00\n"
+    "05/10/2026 Payment to 20​-11-33 4123​4567 -75.00\n"
+    "07/10/2026 Payment to 12 34 56 41234567 -10.00\n"
+    "09/10/2026 Refund ALEX​EXAMPLE +5.00\n"
+)
+
+
+def test_details_printed_with_unicode_tricks_are_masked_end_to_end(ingest_env):
+    services, scripted = ingest_env
+    use_local_model(services)
+    account = add_account(services, "other", "current", "Probe")  # the household: Alex Example
+    outcome = services.ingest.upload("odd.txt", ODD_STATEMENT.encode())
+    drain(services)
+    record = _settle(services, outcome, account)
+    assert record.status == "imported", (record.error, record.check_errors)
+    stored = sorted(r.raw_description for r in services.statements.transactions(record.id))
+    assert stored == [
+        "Greenbasket Stores",
+        "Payment to 12 34 56 41234567",
+        "Payment to 20-11-33 41234567",
+        "Refund ALEX EXAMPLE",
+        "Transfer to A/C 87654321",
+    ]
+    sent = _plain(json.dumps(scripted.requests, ensure_ascii=False)).casefold()
+    for detail in ("87654321", "41234567", "20-11-33", "12 34 56", "alex example"):
+        assert detail not in sent, detail
+
+
+def test_the_layout_sketch_never_carries_a_cell_value(ingest_env):
+    services, scripted = ingest_env
+    use_local_model(services)
+    account = add_account(services, "other", "current", "Probe")
+    csv = (
+        "Date,Description,Amount,Ref ９８７６５,Payee account\n"
+        "01/10/2026,TRANSFER ALEX​EXAMPLE,-42.18,1,８７６５４３２１\n"
+        "02/10/2026,SHOP,-3.40,2,20​-11-33 4123​4567\n"
+        "03/10/2026,PAY,900.00,3,\n"
+    )
+    outcome = services.ingest.upload("odd.csv", csv.encode())
+    drain(services)
+    _settle(services, outcome, account)
+    assert scripted.requests  # the layout was learned from a sketch
+    sent = _plain(json.dumps(scripted.requests, ensure_ascii=False)).casefold()
+    for detail in ("98765", "87654321", "41234567", "20-11-33", "alex", "transfer", "shop"):
+        assert detail not in sent, detail
+
+
+def test_vision_transcripts_are_masked_before_they_are_read(fixtures):
+    from tuppence.ingest.extract import ExtractLimits, extract_document
+    from tuppence.ingest.textprep import plan_chunks, render
+
+    class Vision:
+        def transcribe(self, image, media_type):
+            return [
+                "Card statement", "Date   Description   Amount",
+                "05 Oct 2026   FPO J SMITH 20​-11-33 ４１２３４５６７   10.00",
+                "06 Oct 2026   Refund to card •••• 4242   5.00 CR",
+                "07 Oct 2026   Greenbasket Stores   42.18",
+            ]  # fmt: skip
+
+    doc = extract_document(
+        fixtures / "pdf" / "card-scanned.pdf",
+        "pdf",
+        sha256="x",
+        limits=ExtractLimits(),
+        vision=Vision(),
+    )
+    sent = _plain("\n".join(render(c.lines) for c in plan_chunks(doc, rows_per_chunk=40)))
+    for detail in ("41234567", "20-11-33", "4242"):
+        assert detail not in sent, detail
+    assert "Greenbasket Stores" in sent and "10.00" in sent and "5.00 CR" in sent

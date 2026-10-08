@@ -4,6 +4,7 @@ outbound request is captured; none may carry an identity detail, an address line
 limit, and the privacy log may hold none of them either."""
 
 import json
+import unicodedata
 
 import httpx
 import pytest
@@ -44,6 +45,14 @@ def user_texts(requests) -> list[str]:
             else:
                 out.append(str(content))
     return out
+
+
+def folded(text: str) -> str:
+    """Captured text as a reader sees it: compatibility forms folded, invisible characters
+    gone, every run of spaces one space. A detail hidden by such characters is still found."""
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return " ".join(text.split())
 
 
 def vision_handler(scripted):
@@ -114,7 +123,7 @@ def test_nothing_private_is_sent_in_any_mode(ingest_env, mode):
         statuses[name] = record.status
     assert set(statuses.values()) <= {"imported", "needs_review"}, statuses
     assert statuses["current.pdf"] == "imported"  # the rows with account details were read
-    sent = "\n".join(user_texts(r for r in scripted.requests if not r.get("vision")))
+    sent = folded("\n".join(user_texts(r for r in scripted.requests if not r.get("vision"))))
     assert sent  # the PDFs, the screenshot and the layouts were read by the model
     assert [s for s in corpus.SECRETS if s in sent] == []
     log = json.dumps([entry.model_dump() for entry in services.privacy_log.list(limit=500)])

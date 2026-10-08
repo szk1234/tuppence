@@ -671,7 +671,11 @@ def _split_screenshot(
 
 
 def _capped(ref: str, text: str, too_long: list[str]) -> Line:
-    """A line, cut short (and listed in `too_long`) when it is over the cap."""
+    """A line as it is kept, read and sent: folded (`sensitive.normalise`: compatibility forms,
+    invisible characters, curly apostrophes and odd spaces), then cut short (and listed in
+    `too_long`) when it is over the cap."""
+    if len(text) <= 4 * MAX_LINE_CHARS:  # a longer line is never read, so isn't folded
+        text = sensitive.normalise(text)
     if len(text) > MAX_LINE_CHARS:
         too_long.append(ref)
         return Line(ref=ref, text=text[:MAX_LINE_CHARS] + "…")
