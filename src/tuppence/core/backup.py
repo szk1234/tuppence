@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -33,19 +34,28 @@ def rotate_backups(dest_dir: Path, *, prefix: str = "daily-", keep: int = 7) -> 
         reverse=True,
     )
     removed = files[keep:]
-    for path in removed:
-        path.unlink()
+    for path in removed:  # a backup running at the same time may have removed it already
+        path.unlink(missing_ok=True)
     return sorted(removed, key=lambda p: p.name)
 
 
 def _copy(src: Path, dest: Path) -> Path:
-    tmp = dest.with_suffix(".tmp")
-    source = sqlite3.connect(src)
-    target = sqlite3.connect(tmp)
+    """Copy the database to `dest` through a temporary file of this copy's own, so two copies
+    to the same place at once (two daily backup jobs) never write into or move away each
+    other's file. Whichever finishes last leaves its complete copy at `dest`."""
+    tmp = dest.with_name(f"{dest.name}.{secrets.token_hex(6)}.tmp")
     try:
-        source.backup(target)
-    finally:
-        target.close()
-        source.close()
-    tmp.replace(dest)
+        source = sqlite3.connect(src)
+        try:
+            target = sqlite3.connect(tmp)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+        tmp.replace(dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return dest
