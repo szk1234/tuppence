@@ -113,6 +113,7 @@ def test_nothing_private_is_sent_in_any_mode(ingest_env, mode):
             record = services.statements.get(out.record.id)
         statuses[name] = record.status
     assert set(statuses.values()) <= {"imported", "needs_review"}, statuses
+    assert statuses["current.pdf"] == "imported"  # the rows with account details were read
     sent = "\n".join(user_texts(r for r in scripted.requests if not r.get("vision")))
     assert sent  # the PDFs, the screenshot and the layouts were read by the model
     assert [s for s in corpus.SECRETS if s in sent] == []

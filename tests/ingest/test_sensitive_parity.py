@@ -403,11 +403,30 @@ REGRESSION = [
 ]
 
 
+def sent_by_textprep(text):
+    """The text sent for `text` between two rows, or None when it is withheld."""
+    doc = pages_document(
+        [["Date Description Amount", "02 Oct 2026 Shop 4.00", text, "03 Oct 2026 Cafe 3.00"]],
+        sha256="x",
+        kind="pdf",
+        names=NAMES,
+    )
+    if "P1L3" not in doc.data_refs:
+        return None
+    return doc.masked["P1L3"].text if "P1L3" in doc.masked else text
+
+
 @pytest.mark.parametrize("text", REGRESSION)
 def test_never_weaker_than_the_8ca14cc_list(text):
+    """Every line the 8ca14cc list caught is withheld, or (a transaction line, since I2) sent
+    with every account detail masked."""
     if SENSITIVE_8CA14CC.search(text) and text not in NARROWED:
         assert classify(text), text
-        assert withheld_by_textprep(text)
+        sent = sent_by_textprep(text)
+        if sent is not None:
+            from tuppence.ingest.sensitive import LABEL_CLASSES
+
+            assert sent != text and not (classify(sent, names=NAMES) - LABEL_CLASSES), sent
 
 
 def test_household_names_reach_the_extracted_text(tmp_path):
@@ -417,3 +436,74 @@ def test_household_names_reach_the_extracted_text(tmp_path):
     )
     doc = extract_document(path, "text", sha256="x", limits=ExtractLimits(), names=["Pat Example"])
     assert "Pat Example" not in [doc.by_ref()[r].text for r in doc.data_refs]
+
+
+# --- I2: account details inside a transaction line are masked in place, never dropped --------
+
+# Transaction lines (or a row's amount line) that carry account details. Each is sent with its
+# details replaced by placeholders; its date and amount are left as printed.
+WITH_DETAILS = [
+    "03/10/2026 Transfer to A/C 87654321 -250.00",
+    "09/10/2026 Payment to 20-11-33 41234567 J SMITH -75.00",
+    "FPO J SMITH 20-11-33 41234567 -250.00",
+    "07/10/2026 FPO PAT EXAMPLE 20-00-00 87654321 10.00 1,844.42",
+    "TFR TO SAVINGS ...5678 50.00",
+    "CHQ ...1234 100.00",
+    "CUSTOMER REF 99887766 20.00",
+    "02/10/2026 Card ending 4242 Greenbasket 12.00",
+    "02 Oct 2026 Transfer GB29 NWBK 6016 1331 9268 19 100.00",
+    "02 Oct 2026 Rent 10 Example Road 500.00",
+    "02 Oct 2026 Sort code 12-34-56 acc 12345678 25.00",
+    "02 Oct 2026 Refund to card ****4242 12.00",
+    "Mr A Example 12.00",
+    "02 Oct 2026 Transfer 12 34 56 87654321 -£40.00",
+    "02 Oct 2026 Rent Flat 3 Example House 650.00",
+    "Payee: Exampletown EX1 2MP 45.00",
+]
+_KEPT = re.compile(r"\d{1,3}(?:,\d{3})*\.\d{2}|\d{2}/\d{2}/\d{4}|\d{2} [A-Z][a-z]{2} \d{4}")
+
+
+def _restored(masked):
+    text = masked.text
+    for placeholder, original in masked.hidden.items():
+        text = text.replace(placeholder, original)
+    return text
+
+
+@pytest.mark.parametrize("text", WITH_DETAILS)
+def test_details_inside_a_transaction_line_are_masked_in_place(text):
+    from tuppence.ingest.sensitive import LABEL_CLASSES, mask_line
+
+    masked = mask_line(text, names=NAMES)
+    assert masked is not None and masked.hidden
+    assert not (classify(masked.text, names=NAMES) - LABEL_CLASSES), masked.text
+    for kept in _KEPT.findall(text):  # dates and amounts are sent as printed
+        assert kept in masked.text
+    for value in masked.hidden.values():
+        assert value not in masked.text
+    assert _restored(masked) == text  # the description is stored as printed
+
+
+@pytest.mark.parametrize("text", WITH_DETAILS)
+def test_a_transaction_line_with_details_is_sent_masked_not_withheld(text):
+    lines = [
+        Line(ref=f"P1L{i}", text=t)
+        for i, t in enumerate(
+            ["Date Description Amount", "02 Oct 2026 Shop 4.00", text, "03 Oct 2026 Cafe 3.00"],
+            start=1,
+        )
+    ]
+    doc = pages_document([[line.text for line in lines]], sha256="x", kind="pdf", names=NAMES)
+    assert "P1L3" in doc.data_refs and "P1L3" in doc.masked
+    assert doc.held_amount_refs == []
+    sent = doc.masked["P1L3"].text
+    for value in doc.masked["P1L3"].hidden.values():
+        assert value not in sent
+
+
+@pytest.mark.parametrize("text", PLAIN)
+def test_a_line_without_details_is_sent_as_printed(text):
+    from tuppence.ingest.sensitive import mask_line
+
+    masked = mask_line(text, names=NAMES)
+    assert masked is not None and masked.text == text and masked.hidden == {}

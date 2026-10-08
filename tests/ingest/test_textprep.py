@@ -8,7 +8,9 @@ from tuppence.ingest.textprep import (
     UnreadableFile,
     csv_document,
     csv_records,
+    has_amount,
     is_anchor,
+    is_summary,
     pages_document,
     plan_chunks,
     render,
@@ -550,3 +552,91 @@ def test_description_lines_are_not_taken_for_an_address():
             "Greenbasket Stores", "02 Oct 2026 Cafe 3.00", "Contactless"]  # fmt: skip
     doc = pages_document([page], sha256="x", kind="pdf")
     assert len(_page_data(doc)) == 6
+
+
+# --- I2: details inside a row are masked; nothing withheld past the table start is lost -------
+
+TABLE_TOP = ["Date Description Amount", "01 Oct 2026 Shop 4.00"]
+TABLE_END = ["30 Oct 2026 Cafe 3.00"]
+# (line, what happens to it past the table start)
+OUTCOMES = [
+    ("03/10/2026 Transfer to A/C 87654321 -250.00", "sent masked"),
+    ("FPO J SMITH 20-11-33 41234567 -250.00", "sent masked"),
+    ("TFR TO SAVINGS ...5678 50.00", "sent masked"),
+    ("TOTAL ENERGIES 45.00", "sent"),  # a payee, not a total
+    ("Little Cafe 3.40", "sent"),
+    ("Total 1,234.56", "withheld"),  # a total: not a row
+    ("Money in £1,650.00    Money out £438.78", "withheld"),
+    ("Balance £1,234.56", "withheld"),  # a balance: read on this device
+    ("Payment due by 20/11/2026: minimum payment £25.00", "withheld"),
+    ("Flat 3   Minimum payment £25.00", "withheld"),  # a balance merged onto an address row
+    ("Card ending 4242", "withheld"),  # no amount: nothing to lose
+    ("Alex Example", "withheld"),
+]
+
+
+@pytest.mark.parametrize(("line", "outcome"), OUTCOMES, ids=[o[0] for o in OUTCOMES])
+def test_what_happens_to_each_line_past_the_table_start(line, outcome):
+    doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf",
+                         names=["Alex Example"])  # fmt: skip
+    ref = "P1L3"
+    assert doc.held_amount_refs == []
+    if outcome == "withheld":
+        assert ref in doc.preamble_refs
+    else:
+        assert ref in doc.data_refs
+        assert (ref in doc.masked) == (outcome == "sent masked")
+
+
+def test_a_line_that_cant_be_masked_is_held_back_and_reported(monkeypatch):
+    from tuppence.ingest import sensitive
+
+    monkeypatch.setattr(sensitive, "mask_line", lambda text, names=(): None)
+    line = "03/10/2026 Transfer to A/C 87654321 -250.00"
+    doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")
+    assert "P1L3" in doc.preamble_refs and doc.held_amount_refs == ["P1L3"]
+
+
+def test_every_withheld_line_with_an_amount_is_reported_unless_it_is_a_balance_or_total():
+    from tuppence.ingest import sensitive
+
+    lines = [line for line, _ in OUTCOMES] + [
+        "Account 12345678 sort code 12-34-56 50.00",
+        "Sort code 12-34-56 Account 12345678",
+        "Visa ****4242 9.99",
+        "Mr A Example 12.00",
+    ]
+    doc = pages_document([[*TABLE_TOP, *lines, *TABLE_END]], sha256="x", kind="pdf",
+                         names=["Alex Example"])  # fmt: skip
+    by_ref = doc.by_ref()
+    for ref in doc.preamble_refs:
+        text = by_ref[ref].text
+        if has_amount(text):
+            assert (
+                ref in doc.held_amount_refs
+                or sensitive.is_balance_line(text)
+                or is_summary(text)
+                or sensitive.is_balance_line(text.split("   ", 1)[-1])
+            ), text
+
+
+def test_the_first_row_of_a_table_may_carry_account_details():
+    page = ["Example Bank plc", "01/10/2026 FPO J SMITH 20-11-33 41234567 -250.00",
+            "02/10/2026 Little Cafe -3.40"]  # fmt: skip
+    doc = pages_document([page], sha256="x", kind="pdf")
+    assert doc.data_refs == ["P1L2", "P1L3"] and "P1L2" in doc.masked
+
+
+def test_a_screenshot_row_with_account_details_is_sent_masked():
+    rows = ["5 Oct SHOP -£3.40", "6 Oct Transfer to 12-34-56 87654321 -£50.00", "7 Oct CAFE -£1.00"]
+    doc = pages_document([rows], sha256="x", kind="image")
+    assert doc.data_refs == ["P1L1", "P1L2", "P1L3"]
+    assert "87654321" not in doc.masked["P1L2"].text and "-£50.00" in doc.masked["P1L2"].text
+    assert doc.held_amount_refs == []
+
+
+def test_chunks_carry_the_masked_text():
+    line = "03/10/2026 Transfer to A/C 87654321 -250.00"
+    doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")
+    sent = "\n".join(render(c.lines) for c in plan_chunks(doc, rows_per_chunk=2))
+    assert "87654321" not in sent and "-250.00" in sent and "Transfer to A/C" in sent

@@ -319,8 +319,9 @@ def user_message(
     context: str, chunk: Chunk, doc: Document, aliases: dict[str, str] | None = None
 ) -> str:
     ids = aliases if aliases is not None else ref_aliases(doc)
-    by_ref = doc.by_ref()
-    heading = [by_ref[r] for r in chunk.context_refs]
+    # The chunk's own lines, as they may be sent: account details in a row are masked.
+    in_chunk = {line.ref: line for line in chunk.lines}
+    heading = [in_chunk[r] for r in chunk.context_refs if r in in_chunk]
     data_set = set(chunk.data_refs)
     data = [line for line in chunk.lines if line.ref in data_set]
     parts = [context]

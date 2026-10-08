@@ -12,12 +12,13 @@ import csv
 import io
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
 from tuppence.core.errors import UserFacing
 from tuppence.ingest import sensitive
-from tuppence.ingest.models import Document, FileKind, Line
+from tuppence.ingest.models import Document, FileKind, Line, MaskedLine
 from tuppence.ingest.textnum import decode_text, parse_date, parse_money
 
 # One field may be up to 1 MB (the csv default of 128 KB crashes on a long note). This
@@ -85,7 +86,7 @@ _NAMED_DATE = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{_MONTH}\b\.?", re.I
 # right after "digit," is allowed only when it isn't itself a 3-digit group followed by another
 # comma, so each run is tried once and a long run of groups stays fast.
 _MONEY_TOKEN = re.compile(
-    r"(?<![\w.])(?:(?<!\d,)|(?!\d{3},))[-−]?[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d)"
+    r"(?<![\w.])(?:(?<!\d,)|(?!\d{3},))[-−]?[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d|\.\d)"
 )
 # "Opening balance 1,000.00", "Money in 1,200.00 Money out 800.00": figures, not rows.
 _SUMMARY = re.compile(
@@ -234,6 +235,21 @@ def is_summary(text: str) -> bool:
     )
 
 
+_SUMMARY_WORDS = re.compile(
+    r"\b(?:opening|closing|start|end|balance|money|paid|payments?|in|out|totals?|summary|of|on"
+    r"|at|as|for|the|this|period|month|statement|gbp)\b",
+    re.IGNORECASE,
+)
+
+
+def _pure_summary(text: str) -> bool:
+    """A totals line with nothing else on it ("Money in £1,650.00 Money out £438.78", "Total
+    1,234.56"). "TOTAL ENERGIES 45.00" has a payee's name, so it may be a row."""
+    rest = _SUMMARY_WORDS.sub(" ", _MONEY_TOKEN.sub(" ", _CURRENCY_FIGURE.sub(" ", text)))
+    rest = _NAMED_DATE.sub(" ", _NUMERIC_DATE.sub(" ", rest))
+    return re.search(r"[A-Za-z]", rest) is None
+
+
 def is_heading(text: str) -> bool:
     lowered = text.casefold()
     return (
@@ -244,15 +260,13 @@ def is_heading(text: str) -> bool:
     )
 
 
-def is_row(text: str) -> bool:
+def is_row(text: str, *, names: Sequence[str] = ()) -> bool:
     """A line shaped like a transaction: a date and an amount, and nothing that makes it a
-    header line (account details, a balance, a limit, a payment due or a summary)."""
-    return (
-        _has_date(text)
-        and _MONEY_TOKEN.search(text) is not None
-        and not is_summary(text)
-        and not is_sensitive(text)
-    )
+    header line (a balance, a limit, a payment due or a summary). Account details inside it
+    are fine when they can be masked (`sensitive.mask_line`)."""
+    if not _has_date(text) or _MONEY_TOKEN.search(text) is None or is_summary(text):
+        return False
+    return not is_sensitive(text, names=names) or sensitive.mask_line(text, names=names) is not None
 
 
 def is_anchor(text: str) -> bool:
@@ -446,8 +460,34 @@ def split_preamble(
     has a page marker, sits at the edge of 2+ pages, or has no figures or date and is a
     holder's name (`names`, or a name line in the preamble).
     """
-    withheld, data, _ = _split_preamble(lines, names=names)
-    return withheld, data
+    split = _split_preamble(lines, names=names)
+    return split.withheld, split.data
+
+
+@dataclass
+class _Split:
+    withheld: list[str] = field(default_factory=list)
+    data: list[str] = field(default_factory=list)
+    held: list[str] = field(default_factory=list)  # withheld lines that may be rows: reported
+    masked: dict[str, MaskedLine] = field(default_factory=dict)  # data sent with details masked
+
+    def with_too_long(self, too_long: Sequence[str]) -> _Split:
+        self.withheld += too_long
+        self.held += too_long
+        return self
+
+
+class _Masks:
+    """`sensitive.mask_line` once per line."""
+
+    def __init__(self, texts: Sequence[str], names: Sequence[str]) -> None:
+        self.texts, self.names = texts, names
+        self.done: dict[int, MaskedLine | None] = {}
+
+    def __call__(self, i: int) -> MaskedLine | None:
+        if i not in self.done:
+            self.done[i] = sensitive.mask_line(self.texts[i], names=self.names)
+        return self.done[i]
 
 
 def _split_preamble(
@@ -456,22 +496,35 @@ def _split_preamble(
     names: Sequence[str] = (),
     too_long: frozenset[str] = frozenset(),
     deadline: Deadline | None = None,
-) -> tuple[list[str], list[str], list[str]]:
-    """`split_preamble`, plus the held-back figures past the first anchor that may be a
-    row's amount: in a balance block (see `_unsure`), or a line with an amount in a later
-    page's header, which may be a row printed above the page's first anchor. Lines in
-    `too_long` are withheld and reported without being read."""
+) -> _Split:
+    """`split_preamble`, plus the withheld lines that may be rows, which are reported rather
+    than lost: a dated amount above the table start, a figure in a balance block that may be a
+    row's amount (`_unsure`), a line with an amount in a later page's header, and a row whose
+    account details can't be masked. Rows with account details are sent with them masked
+    (`sensitive.mask_line`). Lines in `too_long` are withheld and reported without being read.
+
+    Past the table start, the only lines with an amount that are withheld and not reported are
+    balances (read on this device) and totals."""
     if too_long:  # read as if empty; added back, withheld and reported, at the end
         kept = [line for line in lines if line.ref not in too_long]
-        withheld, data, reported = _split_preamble(kept, names=names, deadline=deadline)
-        return [*withheld, *too_long], data, [*reported, *too_long]
+        return _split_preamble(kept, names=names, deadline=deadline).with_too_long(
+            [line.ref for line in lines if line.ref in too_long]
+        )
     tick = _ticking(deadline)
     counts: dict[str, int] = {}
     for i, line in enumerate(lines):
         tick(i)
         counts[_normal(line.text)] = counts.get(_normal(line.text), 0) + 1
     texts = [line.text for line in lines]
-    rows = [is_row(t) for t in texts]
+    sensitive_at = [is_sensitive(t, names=names) for t in texts]
+    masks = _Masks(texts, names)
+    rows = [
+        _has_date(t)
+        and _MONEY_TOKEN.search(t) is not None
+        and not is_summary(t)
+        and (not sensitive_at[i] or masks(i) is not None)
+        for i, t in enumerate(texts)
+    ]
     headings = [is_heading(t) for t in texts]
     first = _table_start(rows, headings, 0, len(lines))
     edge = _page_edge_repeats(lines)
@@ -483,44 +536,52 @@ def _split_preamble(
         if key := _name_key(line.text):
             known_names.add(key)
     page_headers = _later_page_headers(lines, first, rows, headings)
-    withheld: list[str] = []
-    data: list[str] = []
+    out = _Split()
     unsure: set[int] = set()
     for i, line in enumerate(lines):
         tick(i)
         text = line.text
         key = _normal(text)
-        plain = not _MONEY_TOKEN.search(text) and not _has_date(text)
+        money = _MONEY_TOKEN.search(text) is not None
+        plain = not money and not _has_date(text)
         furniture = (
             counts[key] > 1
-            and not _MONEY_TOKEN.search(text)
+            and not money
             and not is_heading(text)
             and (_FURNITURE.search(text) is not None or key in edge)
         )
         name_repeat = plain and _name_key(text) in known_names and _name_key(text) is not None
         if first is not None and i < first:
-            withheld.append(line.ref)
+            out.withheld.append(line.ref)
             if rows[i]:  # a dated amount above the table start: it may be a row, so report it
                 unsure.add(i)
-        elif (
-            is_sensitive(text, names=names)
-            or i in balances
-            or i in addresses
-            or is_summary(text)
-            or furniture
-            or name_repeat
-        ):
-            withheld.append(line.ref)
+        elif i in balances or (sensitive_at[i] and sensitive.is_masked_balance(text, names=names)):
+            out.withheld.append(line.ref)  # a balance: read on this device, never a row
         elif i in page_headers:
-            withheld.append(line.ref)
-            if _MONEY_TOKEN.search(text):  # may be a row above the page's first anchor
-                unsure.add(i)
+            out.withheld.append(line.ref)
+            if money and (not sensitive_at[i] or masks(i) is not None):
+                unsure.add(i)  # may be a row above the page's first anchor
+        elif (
+            i in addresses or furniture or name_repeat or (is_summary(text) and _pure_summary(text))
+        ):
+            out.withheld.append(line.ref)
+        elif sensitive_at[i]:
+            masked = masks(i) if money else None
+            if masked is None:  # no amount, so no row is lost; or details that won't mask
+                out.withheld.append(line.ref)
+                if money:
+                    unsure.add(i)
+            else:
+                out.data.append(line.ref)
+                if masked.hidden:
+                    out.masked[line.ref] = masked
         else:
-            data.append(line.ref)
+            out.data.append(line.ref)
     for block in blocks:
         if first is not None and block[0] > first:  # the summary box above the table never is
             unsure |= _unsure(texts, block, first)
-    return withheld, data, [lines[k].ref for k in sorted(unsure)]
+    out.held = [lines[k].ref for k in sorted(unsure)]
+    return out
 
 
 _CURRENCY_FIGURE = re.compile(r"[£$€]\s?\d")
@@ -539,8 +600,8 @@ def split_screenshot(
     Apps list pending and "Today" rows without a date, so only the lines above the first line
     with a date or an amount (a balance doesn't count) are the header. After it, a line is
     withheld when it shows account details or a balance, or is only a name."""
-    withheld, data, _ = _split_screenshot(lines, names=names)
-    return withheld, data
+    split = _split_screenshot(lines, names=names)
+    return split.withheld, split.data
 
 
 def _split_screenshot(
@@ -549,14 +610,16 @@ def _split_screenshot(
     names: Sequence[str] = (),
     too_long: frozenset[str] = frozenset(),
     deadline: Deadline | None = None,
-) -> tuple[list[str], list[str], list[str]]:
+) -> _Split:
     """`split_screenshot`, plus the withheld lines with an amount that may be a transaction:
-    every one but a plain balance. The parse step reports them rather than lose them. Lines in
-    `too_long` are withheld and reported without being read."""
+    every one but a plain balance. The parse step reports them rather than lose them. A row with
+    account details is sent with them masked. Lines in `too_long` are withheld and reported
+    without being read."""
     if too_long:
         kept = [line for line in lines if line.ref not in too_long]
-        withheld, data, held = _split_screenshot(kept, names=names, deadline=deadline)
-        return [*withheld, *too_long], data, [*held, *too_long]
+        return _split_screenshot(kept, names=names, deadline=deadline).with_too_long(
+            [line.ref for line in lines if line.ref in too_long]
+        )
     tick = _ticking(deadline)
     texts = [line.text for line in lines]
     blocks = _balance_blocks(texts)
@@ -573,23 +636,38 @@ def _split_screenshot(
     unsure: set[int] = set()
     for block in blocks:
         unsure |= _unsure(texts, block, first)
-    withheld: list[str] = []
-    data: list[str] = []
-    held: list[str] = []
+    out = _Split()
     for i, line in enumerate(lines):
         tick(i)
+        text = line.text
+        masked: MaskedLine | None = None
         if (
+            i >= first
+            and i not in balances
+            and _name_key(text) is None
+            and is_sensitive(text, names=names)
+            and has_amount(text)
+        ):
+            if sensitive.is_masked_balance(text, names=names):
+                balances.add(i)  # a balance with a detail on it: withheld, not reported
+            else:
+                masked = sensitive.mask_line(text, names=names)
+        if masked is not None:  # a row with account details: sent with them masked
+            out.data.append(line.ref)
+            if masked.hidden:
+                out.masked[line.ref] = masked
+        elif (
             i < first
             or i in balances
-            or is_sensitive(line.text, names=names)
-            or _name_key(line.text) is not None
+            or is_sensitive(text, names=names)
+            or _name_key(text) is not None
         ):
-            withheld.append(line.ref)
-            if has_amount(line.text) and (i not in balances or i in unsure):
-                held.append(line.ref)
+            out.withheld.append(line.ref)
+            if has_amount(text) and (i not in balances or i in unsure):
+                out.held.append(line.ref)
         else:
-            data.append(line.ref)
-    return withheld, data, held
+            out.data.append(line.ref)
+    return out
 
 
 def _capped(ref: str, text: str, too_long: list[str]) -> Line:
@@ -615,17 +693,16 @@ def text_document(
         tick(n)
         if raw.strip():
             lines.append(_capped(f"L{n}", raw.rstrip(), too_long))
-    preamble, data, held = _split_preamble(
-        lines, names=names, too_long=frozenset(too_long), deadline=deadline
-    )
+    split = _split_preamble(lines, names=names, too_long=frozenset(too_long), deadline=deadline)
     return Document(
         kind="text",
         sha256=sha256,
         lines=lines,
-        preamble_refs=_in_file_order(preamble, lines),
-        data_refs=data,
-        held_amount_refs=_in_file_order(held, lines),
+        preamble_refs=_in_file_order(split.withheld, lines),
+        data_refs=split.data,
+        held_amount_refs=_in_file_order(split.held, lines),
         too_long_refs=too_long,
+        masked=split.masked,
     )
 
 
@@ -648,23 +725,22 @@ def pages_document(
             if row.strip():
                 n += 1
                 lines.append(_capped(f"P{p}L{n}", row.rstrip(), too_long))
-    held: list[str] = []
     long = frozenset(too_long)
     if not preamble:
-        pre, data = list(too_long), [ln.ref for ln in lines if ln.ref not in long]
-        held = list(too_long)
+        split = _Split(data=[ln.ref for ln in lines if ln.ref not in long]).with_too_long(too_long)
     elif kind == "image":
-        pre, data, held = _split_screenshot(lines, names=names, too_long=long, deadline=deadline)
+        split = _split_screenshot(lines, names=names, too_long=long, deadline=deadline)
     else:
-        pre, data, held = _split_preamble(lines, names=names, too_long=long, deadline=deadline)
+        split = _split_preamble(lines, names=names, too_long=long, deadline=deadline)
     return Document(
         kind=kind,
         sha256=sha256,
         lines=lines,
-        preamble_refs=_in_file_order(pre, lines),
-        data_refs=data,
-        held_amount_refs=_in_file_order(held, lines),
+        preamble_refs=_in_file_order(split.withheld, lines),
+        data_refs=split.data,
+        held_amount_refs=_in_file_order(split.held, lines),
         too_long_refs=too_long,
+        masked=split.masked,
         pages=len(pages),
     )
 
@@ -673,9 +749,18 @@ def render(lines: Sequence[Line]) -> str:
     return "\n".join(f"{line.ref}: {line.text}" for line in lines)
 
 
+def sent_lines(doc: Document) -> dict[str, Line]:
+    """Every line by ref as the AI reader may be sent it: a line with account details in it has
+    them masked."""
+    lines = doc.by_ref()
+    for ref, masked in doc.masked.items():
+        lines[ref] = Line(ref=ref, text=masked.text)
+    return lines
+
+
 def plan_chunks(doc: Document, *, rows_per_chunk: int) -> list[Chunk]:
     """Data lines in slices of `rows_per_chunk`, each with the headings it needs."""
-    by_ref = doc.by_ref()
+    by_ref = sent_lines(doc)
     order = {line.ref: i for i, line in enumerate(doc.lines)}
     data = [by_ref[r] for r in doc.data_refs]
     step = max(1, rows_per_chunk)

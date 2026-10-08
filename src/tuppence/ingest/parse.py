@@ -157,6 +157,25 @@ def too_long_message(doc: Document, count: int | None = None) -> str | None:
     )
 
 
+_FIELDS = ("raw_description", "merchant", "bank_category", "bank_type")
+
+
+def restore_masked(parsed: ParsedStatement, doc: Document) -> None:
+    """Put the account details masked out of a row's line (`Document.masked`) back into the
+    text the reader copied from it, so a description is stored as printed. Only on this
+    device: the details were never sent."""
+    for row in parsed.rows:
+        masked = doc.masked.get(row.ref.split("#", 1)[0])
+        if masked is None:
+            continue
+        for name in _FIELDS:
+            value = getattr(row, name)
+            if value:
+                for placeholder, original in masked.hidden.items():
+                    value = value.replace(placeholder, original)
+                setattr(row, name, value)
+
+
 def level_for(doc: Document) -> CheckLevel:
     return "screenshot" if doc.kind == "image" else "full"
 
@@ -269,6 +288,7 @@ def parse_document(
     # Period and balances come from the lines that were withheld from the model, read on this
     # device. The model's own values are only fallbacks when those lines gave none.
     parsed, facts = read.parsed, evidence.facts
+    restore_masked(parsed, doc)
     if facts.period_start and facts.period_end:
         parsed.period_start, parsed.period_end = facts.period_start, facts.period_end
     local = local_balances(doc, perspective=perspective)

@@ -92,8 +92,33 @@ def parse_shot(services, rows):
     )
 
 
-def test_a_held_back_line_with_an_amount_needs_review(ingest_env):
+def test_a_row_with_account_details_is_read_with_them_masked(ingest_env):
+    """I2: the row is sent with its sort code and account number masked, read like any other
+    and stored as printed; nothing is held back."""
     services, scripted = ingest_env
+    out = parse_shot(
+        services,
+        [
+            "5 Oct GREENBASKET STORES -£3.40",
+            "6 Oct FPO PAT EXAMPLE 20-00-00 87654321 -£10.00",
+            "7 Oct LITTLE CAFE -£12.80",
+        ],
+    )
+    sent = json.dumps(scripted.requests)
+    assert "87654321" not in sent and "20-00-00" not in sent
+    assert [r.raw_description for r in out.parsed.rows] == [
+        "GREENBASKET STORES",
+        "FPO PAT EXAMPLE 20-00-00 87654321",
+        "LITTLE CAFE",
+    ]
+    assert not any("held back" in e for e in out.errors)
+
+
+def test_a_screenshot_line_whose_details_cant_be_masked_needs_review(ingest_env, monkeypatch):
+    from tuppence.ingest import sensitive
+
+    services, scripted = ingest_env
+    monkeypatch.setattr(sensitive, "mask_line", lambda text, names=(): None)
     out = parse_shot(
         services,
         [

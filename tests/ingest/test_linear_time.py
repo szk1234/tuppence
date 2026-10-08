@@ -173,6 +173,8 @@ def _line_functions(shape: str, cell_size: int, bound: float) -> None:
     cell = adversarial(shape, cell_size)
     for fn, value in (
         (sensitive.classify, line),
+        (sensitive.mask_line, line),
+        (sensitive.is_masked_balance, line),
         (textprep.is_heading, line),
         (textprep.has_amount, line),
         (identify.header_facts, line),

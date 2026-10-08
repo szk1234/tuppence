@@ -23,7 +23,7 @@ SECRETS = [
     "4242", "Available balance", "Opening balance", "Closing balance", "overdraft limit",
     "Credit limit", "7,777.77", "8,888.88", "6,666.66", "Roll number", "Customer",
     "Sort code", "IBAN", "Account number", "Exampleshire", "Payment due", "minimum payment",
-    "25.00", "2,252.32",
+    "25.00", "2,252.32", "20-11-33", "41234567",
 ]  # fmt: skip
 
 
@@ -103,6 +103,11 @@ def current_pdf() -> bytes:
         _row("17 Oct 2026", "Acme Payroll Ltd", paid_in="1,650.00", balance="7,030.62"),
         _row("20 Oct 2026", "Northline Rail", out="28.90", balance="7,001.72"),
         _row("25 Oct 2026", "Harbour Pharmacy refund", paid_in="6.15", balance="7,007.87"),
+        # rows that carry a payee's sort code and account number: sent with them masked
+        _row("26 Oct 2026", "FPO J SMITH 20-11-33 41234567", out="100.00", balance="6,907.87"),
+        _row(
+            "27 Oct 2026", "FPI J SMITH 20-11-33 41234567 RTN", paid_in="100.00", balance="7,007.87"
+        ),  # fmt: skip
         _row("28 Oct 2026", "Greenbasket Stores", out="241.10", balance="6,766.77"),
         _line("Closing balance £6,766.77"),
         _line("Alex Example"),
@@ -244,6 +249,8 @@ VISION_PAGES = [
         "17 Oct 2026   Acme Payroll Ltd   1,650.00   7,030.62",
         "20 Oct 2026   Northline Rail   28.90   7,001.72",
         "25 Oct 2026   Harbour Pharmacy refund   6.15   7,007.87",
+        "26 Oct 2026   FPO J SMITH 20-11-33 41234567   100.00   6,907.87",
+        "27 Oct 2026   FPI J SMITH 20-11-33 41234567 RTN   100.00   7,007.87",
         "28 Oct 2026   Greenbasket Stores   241.10   6,766.77", "Closing balance £6,766.77",
         "Alex Example", "Page 2 of 2",
     ],

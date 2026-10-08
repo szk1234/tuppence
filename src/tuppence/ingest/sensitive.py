@@ -16,6 +16,9 @@ import re
 from collections.abc import Sequence
 from functools import lru_cache
 
+from tuppence.ingest.models import MaskedLine
+from tuppence.ingest.textnum import parse_date
+
 _I = re.IGNORECASE
 _STREET = (
     r"road|rd|street|st|lane|ln|avenue|ave|close|drive|way|gardens|court|place|terrace"
@@ -224,3 +227,232 @@ def mask(text: str, *, names: Sequence[str] = ()) -> str:
     if is_sensitive(text, names=names):
         return HIDDEN
     return _DIGIT_RUN.sub("<NUM>", text)
+
+
+# --- masking details inside a transaction line (I2) -------------------------------------------
+
+# Never masked: an amount (with pence, or after a currency sign) and a real date.
+_KEEP_MONEY = re.compile(
+    r"(?<![\w.])(?:(?<!\d,)|(?!\d{3},))[-+\u2212]?[£$€]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d|\.\d)"
+    r"|(?<![\w.])[-+\u2212]?[£$€]\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?(?![\d,])"
+)
+_KEEP_DATE = re.compile(
+    r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b"
+    r"|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b"
+    r"\.?(?:\s+\d{4}\b)?",
+    _I,
+)
+_MASK_CHARS = "*•●·∙◦∗…"
+_NAME_WORD = re.compile(r"[A-Za-z&'’.\-]+")
+_PLACEHOLDER = re.compile(r"\[hidden-[a-z]+\]")
+
+
+def _value_token(token: str) -> bool:
+    """A token that gives a value: letters, digits, mask characters, dots, dashes or slashes,
+    with at least one digit or mask character ("12345678", "12-34-56", "****4242")."""
+    return all(ch.isalnum() or ch in _MASK_CHARS or ch in "./-" for ch in token) and any(
+        ch.isdigit() or ch in _MASK_CHARS for ch in token
+    )
+
+
+def _kept(text: str) -> list[bool]:
+    keep = [False] * len(text)
+    for match in _KEEP_MONEY.finditer(text):
+        keep[match.start() : match.end()] = [True] * (match.end() - match.start())
+    for match in _KEEP_DATE.finditer(text):
+        value = match.group(0)
+        # dd-mm-yy or dd.mm.yy may be a sort code: only a date that reads as one is kept
+        numeric = "/" not in value and not re.search(r"[A-Za-z]", value)
+        if numeric and parse_date(value) is None:
+            continue
+        keep[match.start() : match.end()] = [True] * (match.end() - match.start())
+    return keep
+
+
+def _tokens_after(text: str, start: int, keep: Sequence[bool], name_words: bool) -> int:
+    """Where the value after a label (or a title) ends: the run of tokens that hold a digit or a
+    mask character (or, for a name, words without digits), stopping at an amount or a date."""
+    i, end = start, start
+    while i < len(text):
+        while i < len(text) and (text[i].isspace() or text[i] in ":#"):
+            i += 1
+        if i >= len(text) or keep[i]:
+            break
+        j = i
+        while j < len(text) and not text[j].isspace():
+            j += 1
+        token = text[i:j]
+        fits = _NAME_WORD.fullmatch(token) if name_words else _value_token(token)
+        if not fits or any(keep[i:j]):
+            break
+        end = i = j
+    return end
+
+
+class _Unmaskable(Exception):
+    """A detail overlaps an amount or a date in a way that can't be split safely."""
+
+
+def _safe(text: str, start: int, end: int, keep: Sequence[bool]) -> bool:
+    """A detail may run on into the amount after it (a card number's pattern takes the pounds
+    of "41234567 10.00"). It may not start inside an amount or a date, nor have anything of its
+    own after one: then which characters are the detail can't be told ("12 Mar Road", where
+    "12 Mar" reads as a date; "12.34.56", where "12.34" reads as an amount)."""
+    if start >= end:
+        return True
+    if keep[start]:
+        return False
+    seen = False
+    for k in range(start, end):
+        if keep[k]:
+            seen = True
+        elif seen and not text[k].isspace():
+            return False
+    return True
+
+
+def _detail_spans(text: str, keep: Sequence[bool]) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for name, pattern in VALUES.items():
+        if name == "balance_line":
+            continue
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if name in ("account_number", "card_ending"):  # keep the label ("A/C", "ending")
+                start = next(
+                    (k for k in range(start, end) if text[k].isdigit() or text[k] in _MASK_CHARS
+                     or (text[k] == "." and text[k:k + 3] == "...")),
+                    start,
+                )  # fmt: skip
+            elif name == "holder_name":  # the title and the name after it
+                end = _tokens_after(text, match.start(), keep, name_words=True)
+            if not _safe(text, start, end, keep):
+                raise _Unmaskable
+            spans.append((start, end))
+    for match in _SPELLED_SORT_CODE.finditer(text):
+        day, month = int(match.group(1)), int(match.group(3))
+        if not (1 <= day <= 31 and 1 <= month <= 12):
+            if not _safe(text, *match.span(), keep):
+                raise _Unmaskable
+            spans.append(match.span())
+    for name, pattern in LABELS.items():
+        for match in pattern.finditer(text):
+            if name == "holder_label":  # "Name: ...": everything after it but amounts and dates
+                spans.append((match.end(), len(text)))
+            else:
+                spans.append((match.end(), _tokens_after(text, match.end(), keep, False)))
+    return spans
+
+
+def _placeholder(n: int) -> str:
+    letters = ""
+    n += 1
+    while n:
+        n, rest = divmod(n - 1, 26)
+        letters = chr(ord("a") + rest) + letters
+    return f"[hidden-{letters}]"
+
+
+def mask_line(text: str, *, names: Sequence[str] = ()) -> MaskedLine | None:
+    masked = _mask(text, names)
+    if masked is None or _residue_is_balance(masked):
+        return None
+    return masked
+
+
+def is_masked_balance(text: str, *, names: Sequence[str] = ()) -> bool:
+    """A balance or limit line with a detail on it: what is left once the details are taken
+    out is a balance ("Flat 3   Minimum payment £25.00", an address row with the summary box
+    printed on it). It is withheld like any balance line, never a row."""
+    if is_balance_line(text):
+        return True
+    masked = _mask(text, names)
+    return masked is not None and _residue_is_balance(masked)
+
+
+def _residue_is_balance(masked: MaskedLine) -> bool:
+    return bool(masked.hidden) and is_balance_line(
+        " ".join(_PLACEHOLDER.sub(" ", masked.text).split())
+    )
+
+
+def _mask(text: str, names: Sequence[str]) -> MaskedLine | None:
+    """`text` as it may be sent to the AI reader, with every account detail in it (a sort code,
+    account or card number, card ending, IBAN, postcode, street address, title and name, or the
+    value after a label such as "Customer ref") replaced by a placeholder. Amounts and dates are
+    never touched. A line without details comes back unchanged.
+
+    None when the line can't be sent this way: it is a balance or limit line, a detail would be
+    left showing, or what is left once the details are taken out is a balance (an address row
+    with the summary box printed on it). Such a line is withheld and reported instead."""
+    found = classify(text, names=names)
+    if not found:
+        return MaskedLine(text=text)
+    if "balance_line" in found or _is_holder(text, names):
+        return None
+    keep = _kept(text)
+    hide = [False] * len(text)
+    try:
+        spans = _detail_spans(text, keep)
+    except _Unmaskable:
+        return None
+    for start, end in spans:
+        for k in range(max(0, start), min(end, len(text))):
+            if not keep[k]:
+                hide[k] = True
+    runs: list[tuple[int, int]] = []
+    k = 0
+    while k < len(text):
+        if not hide[k]:
+            k += 1
+            continue
+        start = k
+        while k < len(text) and (hide[k] or (text[k].isspace() and _hidden_after(hide, text, k))):
+            k += 1
+        end = k
+        while end > start and text[end - 1].isspace():
+            end -= 1
+        while start < end and text[start].isspace():
+            start += 1
+        if start < end:
+            runs.append((start, end))
+    hidden: dict[str, str] = {}
+    out: list[str] = []
+    at = 0
+    for n, (start, end) in enumerate(runs):
+        placeholder = _placeholder(n)
+        hidden[placeholder] = text[start:end]
+        out += [text[at:start], placeholder]
+        at = end
+    out.append(text[at:])
+    masked = "".join(out)
+    if not _clean(masked, names):
+        return None
+    return MaskedLine(text=masked, hidden=hidden)
+
+
+def _hidden_after(hide: Sequence[bool], text: str, k: int) -> bool:
+    """A space inside a run of hidden characters (the gap in "12-34-56 87654321")."""
+    j = k
+    while j < len(text) and text[j].isspace():
+        j += 1
+    return j < len(text) and hide[j]
+
+
+def _clean(masked: str, names: Sequence[str]) -> bool:
+    """No detail is left in a masked line: no value class, and no label with a number after it
+    (an amount or a date after a label is fine)."""
+    if classify(masked, names=names) - LABEL_CLASSES:
+        return False
+    keep = _kept(masked)
+    for name, pattern in LABELS.items():
+        for match in pattern.finditer(masked):
+            if name == "holder_label":
+                rest = "".join(
+                    ch for k, ch in enumerate(masked) if k >= match.end() and not keep[k]
+                )
+                if _PLACEHOLDER.sub("", rest).strip(" :,"):
+                    return False
+            elif _tokens_after(masked, match.end(), keep, False) > match.end():
+                return False
+    return True

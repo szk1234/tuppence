@@ -24,6 +24,15 @@ class Line(BaseModel):
     text: str
 
 
+class MaskedLine(BaseModel):
+    """A line as the AI reader is sent it: each account detail replaced by a placeholder such as
+    `[hidden-a]`, and what each placeholder stands for (kept on this device, to put the details
+    back into the descriptions the reader copies)."""
+
+    text: str
+    hidden: dict[str, str] = Field(default_factory=dict)
+
+
 class Document(BaseModel):
     """A statement turned into numbered lines, ready to identify and parse."""
 
@@ -40,6 +49,8 @@ class Document(BaseModel):
     # lines too long to read safely (their text is cut short): left out, reported, and listed
     # in held_amount_refs too, so the person can say what each one is
     too_long_refs: list[str] = Field(default_factory=list)
+    # data lines sent with their account details masked in place (ref -> what is sent)
+    masked: dict[str, MaskedLine] = Field(default_factory=dict)
     table: list[list[str]] | None = None  # CSV/XLSX cells for each line in `lines`, same order
     meta: dict[str, str] = Field(default_factory=dict)  # e.g. OFX BANKID/ACCTID, CAMT IBAN/BIC
     pages: int = 0
