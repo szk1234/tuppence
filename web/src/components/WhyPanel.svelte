@@ -9,15 +9,19 @@
   let error = $state('')
   let busy = $state(false)
 
-  onMount(async () => {
+  async function load() {
     try { why = await getWhy(id) } catch (err) { error = err instanceof ApiError ? err.detail : 'Could not load this.' }
-  })
+  }
+  onMount(load)
 
   async function decideAgain() {
     if (!why || busy) return
+    error = ''
     busy = true
     try { await resetUnderstanding(id, why.version); onchanged() } catch (err) {
-      error = err instanceof ApiError ? err.detail : 'Something went wrong.'
+      const message = err instanceof ApiError ? err.detail : 'Something went wrong.'
+      await load()
+      error = message
     } finally { busy = false }
   }
 </script>

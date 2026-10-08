@@ -33,3 +33,33 @@ it('shows totals, flags, the calendar and lets the person hide one', async () =>
   await vi.waitFor(() => expect(calls.some((c) => c.url === '/api/commitments/c_1/dismiss')).toBe(true))
   expect(calls.find((c) => c.url.endsWith('/dismiss'))!.body).toEqual({ expected_version: 2 })
 })
+
+it('after a failed hide it shows the message, reloads and retries with the fresh version', async () => {
+  const bodies: any[] = []
+  let gets = 0
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/dismiss')) {
+      bodies.push(JSON.parse(init!.body as string))
+      return bodies.length === 1 ? json({ detail: 'This changed since you opened it.' }, 409) : json({ ...streamly, dismissed: true, version: 6 })
+    }
+    gets += 1
+    return json({ ...view, commitments: [{ ...streamly, version: gets === 1 ? 2 : 5 }] })
+  }))
+  render(Commitments)
+  const button = await screen.findByRole('button', { name: 'Streamly is not a commitment' })
+  await vi.waitFor(() => expect(button).toBeEnabled())
+  await fireEvent.click(button)
+  expect(await screen.findByText('This changed since you opened it.')).toBeInTheDocument()
+  await vi.waitFor(() => expect(gets).toBe(2))
+  await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Streamly is not a commitment' })).toBeEnabled())
+  await fireEvent.click(screen.getByRole('button', { name: 'Streamly is not a commitment' }))
+  await vi.waitFor(() => expect(bodies).toHaveLength(2))
+  expect(bodies[1]).toEqual({ expected_version: 5 })
+})
+
+it('never shows a flag with no words', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({ ...view, commitments: [{ ...streamly, flags: ['mystery'], flag_labels: [] }] })))
+  render(Commitments)
+  expect(await screen.findByRole('heading', { name: 'All commitments' })).toBeInTheDocument()
+  expect(screen.queryByText('Worth a look')).not.toBeInTheDocument()
+})

@@ -428,7 +428,8 @@ def test_a_failed_correction_leaves_no_merchant_link_behind(client):
         f"/api/transactions/{row['id']}/understanding",
         json={"category_id": "not-a-category", "expected_version": row["version"]},
     )
-    assert r.status_code in (404, 422), r.text
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "Choose a category from the list."
     after = services.understanding.get(row["id"])
     assert after.merchant_id is None and after.version == row["version"]
     with services.db.connection() as conn:

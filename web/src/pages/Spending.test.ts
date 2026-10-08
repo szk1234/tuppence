@@ -55,7 +55,7 @@ it('drills from the treemap to a transaction, recategorises it and makes a rule'
   const map = screen.getByRole('group', { name: 'Spending by category' })
   await fireEvent.click(within(map).getByRole('button', { name: /^Other spending, £100\.00, 33%/ }))
   const crumbs = await screen.findByRole('navigation', { name: 'Breadcrumb' })
-  expect(within(crumbs).getByText('Other spending')).toHaveAttribute('aria-current', 'page')
+  await vi.waitFor(() => expect(within(crumbs).getByText('Other spending')).toHaveAttribute('aria-current', 'page'))
   const select = await screen.findByLabelText('Category for Sunrise Bakery on 12/10/2026')
   expect(screen.getByText('Best guess')).toBeInTheDocument()
   await vi.waitFor(() => expect(select).toBeEnabled())
@@ -119,4 +119,94 @@ it('encodes ids in the paths it builds', async () => {
   await u.disableRule('r/1', 1)
   await u.dismissCommitment('c#1', 1)
   expect(seen).toEqual(['/api/transactions/a%2Fb%3Fc/why', '/api/rules/r%2F1/disable', '/api/commitments/c%231/dismiss'])
+})
+
+it('after a failed save it shows the message, reloads and the select shows the saved category', async () => {
+  stub()
+  const base = globalThis.fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>
+  let lists = 0
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH') return json({ detail: 'This changed since you opened it.' }, 409)
+    if (url.startsWith('/api/spending/transactions')) lists += 1
+    return base(url, init)
+  }))
+  render(Spending)
+  await fireEvent.click(await screen.findByRole('button', { name: /^Other spending, £100\.00/ }))
+  const select = (await screen.findByLabelText('Category for Sunrise Bakery on 12/10/2026')) as HTMLSelectElement
+  await vi.waitFor(() => expect(select).toBeEnabled())
+  const before = lists
+  await fireEvent.change(select, { target: { value: 'food.eating-out' } })
+  expect(await screen.findByText('This changed since you opened it.')).toBeInTheDocument()
+  await vi.waitFor(() => expect(lists).toBeGreaterThan(before))
+  const again = (await screen.findByLabelText('Category for Sunrise Bakery on 12/10/2026')) as HTMLSelectElement
+  await vi.waitFor(() => expect(again).toBeEnabled())
+  expect(again.value).toBe('other')
+})
+
+it('after a failed "Apply to all" it shows the message and reloads', async () => {
+  const calls = stub()
+  const base = globalThis.fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/rules' && init?.method === 'POST') return json({ detail: 'Rule problem.' }, 409)
+    return base(url, init)
+  }))
+  render(Spending)
+  await fireEvent.click(await screen.findByRole('button', { name: /^Other spending, £100\.00/ }))
+  const select = await screen.findByLabelText('Category for Sunrise Bakery on 12/10/2026')
+  await vi.waitFor(() => expect(select).toBeEnabled())
+  await fireEvent.change(select, { target: { value: 'food.eating-out' } })
+  const apply = await screen.findByRole('button', { name: 'Apply to all from Sunrise Bakery' })
+  await vi.waitFor(() => expect(apply).toBeEnabled())
+  const before = calls.filter((c) => c.url.startsWith('/api/spending/transactions')).length
+  await fireEvent.click(apply)
+  expect(await screen.findByText('Rule problem.')).toBeInTheDocument()
+  await vi.waitFor(() => expect(calls.filter((c) => c.url.startsWith('/api/spending/transactions')).length).toBeGreaterThan(before))
+})
+
+it('clears an old message when a new action starts', async () => {
+  stub()
+  const base = globalThis.fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>
+  let fail = true
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/analysis/run') {
+      if (fail) { fail = false; return json({ detail: 'Could not start.' }, 500) }
+      return json({ job_id: 1 }, 202)
+    }
+    return base(url, init)
+  }))
+  render(Spending)
+  const run = await screen.findByRole('button', { name: 'Run analysis now' })
+  await vi.waitFor(() => expect(run).toBeEnabled())
+  await fireEvent.click(run)
+  expect(await screen.findByText('Could not start.')).toBeInTheDocument()
+  await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Run analysis now' })).toBeEnabled())
+  await fireEvent.click(screen.getByRole('button', { name: 'Run analysis now' }))
+  await vi.waitFor(() => expect(screen.queryByText('Could not start.')).not.toBeInTheDocument())
+})
+
+it('shows the latest period even when an older response arrives last', async () => {
+  const gates: Record<string, (r: Response) => void> = {}
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url === '/api/categories') return json({ categories })
+    if (url === '/api/accounts') return json({ accounts: [] })
+    if (url === '/api/household/people') return json({ people: [] })
+    if (url === '/api/analysis') return json({ running: false, queued: false, waiting: {}, last_run: null })
+    if (url.startsWith('/api/spending')) {
+      const on = new URL(url, 'http://x').searchParams.get('on')
+      if (on === '2026-11-01' || on === '2026-09-01') return new Promise<Response>((res) => { gates[on] = res })
+      return json(top)
+    }
+    return json({}, 500)
+  }))
+  render(Spending)
+  await screen.findByRole('heading', { name: 'October 2026' })
+  await vi.waitFor(() => expect(screen.getByLabelText('Account')).toBeEnabled())
+  await fireEvent.click(screen.getByRole('button', { name: 'Next period' }))
+  await fireEvent.click(screen.getByRole('button', { name: 'Previous period' }))
+  await vi.waitFor(() => expect(Object.keys(gates)).toHaveLength(2))
+  gates['2026-09-01'](json({ ...top, period: { ...period, label: 'September 2026', start: '2026-09-01' } }))
+  await screen.findByRole('heading', { name: 'September 2026' })
+  gates['2026-11-01'](json({ ...top, period: { ...period, label: 'November 2026', start: '2026-11-01' } }))
+  await new Promise((r) => setTimeout(r, 30))
+  expect(screen.getByRole('heading', { name: 'September 2026' })).toBeInTheDocument()
 })

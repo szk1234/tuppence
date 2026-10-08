@@ -93,5 +93,7 @@ export const removeStatement = (id: string) => api<void>(`/api/statements/${enco
 
 /** What happens to the categories a person confirmed when a statement is read again or removed. */
 export const KEPT_NOTE =
-  "Categories you've confirmed are kept for transactions that come back when the statement is read again. Confirmations on transactions that don't come back are removed."
-export const WRONG_ACCOUNT_NOTE = "If you move it to another account, your confirmations don't move with it."
+  "Categories you've confirmed are kept for transactions that come back when the file is read again. Confirmations on transactions that don't come back are removed."
+export const WRONG_ACCOUNT_NOTE = "If you choose a different account, your confirmed categories don't move to it."
+export const REMOVE_NOTE =
+  "Categories you've confirmed on them are removed too. If you upload this file again, they come back with it."

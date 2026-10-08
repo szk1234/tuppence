@@ -62,6 +62,6 @@ it('says what happens to confirmed categories before a statement is removed', as
   render(Statements)
   await fireEvent.click(await screen.findByRole('button', { name: 'Remove monzo.csv' }))
   const text = (ask.mock.calls as unknown as string[][])[0][0]
-  expect(text).toContain("Categories you've confirmed are kept for transactions that come back")
-  expect(text).toContain("Confirmations on transactions that don't come back are removed")
+  expect(text).toContain("Categories you've confirmed on them are removed too")
+  expect(text).toContain('If you upload this file again, they come back with it.')
 })

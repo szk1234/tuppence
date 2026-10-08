@@ -36,15 +36,26 @@
 
   const fail = (err: unknown) => { saved = ''; error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
 
+  let token = 0  // the latest load wins: an older response never overwrites a newer one
+  let epoch = $state(0)  // bumped after a failed save so each category select shows the saved value
   async function load() {
-    error = ''
+    const mine = ++token
     try {
       const [v, a] = await Promise.all([getSpending(on, category, filters), getAnalysis()])
+      const list = v.period && category ? await getTransactions(v.period.start, category, filters) : []
+      if (mine !== token) return
       view = v
       analysis = a
       on = v.period.start
-      rows = category ? await getTransactions(on, category, filters) : []
-    } catch (err) { fail(err) }
+      rows = list
+    } catch (err) { if (mine === token) fail(err) }
+  }
+
+  /** A failed write: say why, then reload so versions and the shown values are the saved ones. */
+  async function failed(err: unknown) {
+    fail(err)
+    await load()
+    epoch += 1
   }
 
   onMount(async () => {
@@ -75,17 +86,22 @@
     category = tile.id
     why = null
     offer = null
+    error = ''
     load()
   }
 
   function goTo(id: string | null) {
     category = id
     why = null
+    offer = null
+    error = ''
     load()
   }
 
   function shift(day: string) {
     on = day
+    offer = null
+    error = ''
     load()
   }
 
@@ -100,11 +116,13 @@
       const label = categories.find((c) => c.id === categoryId)?.label ?? 'that category'
       saved = `Filed under ${label}.`
       await load()
-    } catch (err) { fail(err) } finally { busy = false }
+    } catch (err) { await failed(err) } finally { busy = false }
   }
 
   async function acceptOffer() {
     if (!offer || locked) return
+    saved = ''
+    error = ''
     busy = true
     try {
       const made = await createRule({
@@ -114,17 +132,20 @@
       saved = `Rule saved: ${made.changed} more payment${made.changed === 1 ? '' : 's'} now follow${made.changed === 1 ? 's' : ''} it.`
       offer = null
       await load()
-    } catch (err) { fail(err) } finally { busy = false }
+    } catch (err) { await failed(err) } finally { busy = false }
   }
 
   async function runNow() {
     if (locked) return
+    saved = ''
+    error = ''
     busy = true
     try { await runAnalysis(); analysis = await getAnalysis() } catch (err) { fail(err) } finally { busy = false }
   }
 
   function setFilter(key: keyof Filters, value: string) {
     filters = { ...filters, [key]: value }
+    error = ''
     load()
   }
 </script>
@@ -210,7 +231,7 @@
                 <td>{dmyDate(row.date)}</td>
                 <td>{row.merchant ?? row.description}<br /><span class="meta">{STATUS_LABELS[row.status]}</span></td>
                 <td class="num">{formatGBP(row.amount)}</td>
-                <td><CategorySelect {categories} disabled={locked} value={row.category_id} label={`Category for ${row.merchant ?? row.description} on ${dmyDate(row.date)}`} onchange={(id) => recategorise(row, id)} /></td>
+                <td>{#key epoch}<CategorySelect {categories} disabled={locked} value={row.category_id} label={`Category for ${row.merchant ?? row.description} on ${dmyDate(row.date)}`} onchange={(id) => recategorise(row, id)} />{/key}</td>
                 <td><button class="link" onclick={() => (why = row.id)} aria-label={`Why? ${row.merchant ?? row.description} on ${dmyDate(row.date)}`}>Why?</button></td>
               </tr>
               {#if why === row.id}

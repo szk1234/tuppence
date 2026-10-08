@@ -22,7 +22,7 @@
   }
   onMount(async () => { await load(); ready = true })
 
-  const flagged = $derived((view?.commitments ?? []).filter((c) => !c.dismissed && c.flags.some((f) => f !== 'varies')))
+  const flagged = $derived((view?.commitments ?? []).filter((c) => !c.dismissed && flagText(c).length > 0))
   const byDay = $derived.by(() => {
     const out = new Map<string, Due[]>()
     for (const due of view?.upcoming ?? []) out.set(due.date, [...(out.get(due.date) ?? []), due])
@@ -46,7 +46,10 @@
     if (locked) return
     error = ''
     busy = true
-    try { await action(); await load() } catch (err) { error = err instanceof ApiError ? err.detail : 'Something went wrong.' } finally { busy = false }
+    try { await action(); await load() } catch (err) {
+      error = err instanceof ApiError ? err.detail : 'Something went wrong.'
+      await load()
+    } finally { busy = false }
   }
   const hide = (c: Commitment) => change(() => dismissCommitment(c.id, c.version))
   const restore = (c: Commitment) => change(() => restoreCommitment(c.id, c.version))
@@ -107,7 +110,7 @@
         <tbody>
           {#each view.commitments as c (c.id)}
             <tr class:hidden-row={c.dismissed}>
-              <td>{c.name}<br /><span class="meta">{KINDS[c.kind]}{#each c.flag_labels as label} · {label}{/each}</span></td>
+              <td>{c.name}<br /><span class="meta">{KINDS[c.kind]}{#each c.flag_labels.filter(Boolean) as label} · {label}{/each}</span></td>
               <td>{c.cadence_label}</td>
               <td class="num">{formatGBP(c.amount)}</td>
               <td class="num">{formatGBP(c.annual_cost)}</td>

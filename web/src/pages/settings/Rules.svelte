@@ -25,7 +25,11 @@
       const out = await disableRule(rule.id, rule.version)
       saved = `Switched off. ${out.released} transaction${out.released === 1 ? '' : 's'} will be looked at again.`
       await load()
-    } catch (err) { error = err instanceof ApiError ? err.detail : 'Something went wrong.' } finally { busy = false }
+    } catch (err) {
+      error = err instanceof ApiError ? err.detail : 'Something went wrong.'
+      saved = ''
+      await load()
+    } finally { busy = false }
   }
 
   const mine = $derived(rules.filter((r) => r.source !== 'seed'))

@@ -118,7 +118,7 @@ it('guards re-reading an imported statement behind an explicit confirmation', as
   expect(screen.getAllByText(/Categories you've confirmed are kept for transactions that come back/).length).toBeGreaterThan(0)
   expect(screen.getAllByText(/Confirmations on transactions that don't come back are removed/).length).toBeGreaterThan(0)
   await fireEvent.click(screen.getByRole('button', { name: 'Wrong account?' }))
-  expect(screen.getByText(/your confirmations don't move with it/)).toBeInTheDocument()
+  expect(screen.getByText(/your confirmed categories don't move to it/)).toBeInTheDocument()
 })
 
 const tx = (n: number) => Array.from({ length: n }, (_, i) => ({

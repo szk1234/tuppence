@@ -140,10 +140,10 @@
   {/if}
 {/snippet}
 
-{#snippet again()}
+{#snippet again(showNote: boolean)}
   <div class="again">
     <button onclick={retry} disabled={busy}>Try again</button>
-    <span class="hint">Reads the file again from scratch. If it needs your AI model, that may cost another read. {KEPT_NOTE}</span>
+    <span class="hint">Reads the file again from scratch. If it needs your AI model, that may cost another read.{#if showNote} {KEPT_NOTE}{/if}</span>
     {#if !wrongAccount}
       <button class="link" onclick={() => (wrongAccount = true)}>Wrong account?</button>
     {:else}
@@ -220,13 +220,13 @@
     {/if}
     {@render kept()}
     {#if detail.status === 'failed' || detail.status === 'needs_review'}
-      {@render again()}
+      {@render again(true)}
     {:else if detail.status === 'imported'}
       <details class="again">
         <summary>Something wrong with this import?</summary>
         <p class="warn">This reads the file again. Its transactions stay until the new read is imported, which then replaces them. {KEPT_NOTE}</p>
         <label class="choice"><input type="checkbox" bind:checked={confirmed} /> I understand, read the file again</label>
-        {#if confirmed}{@render again()}{/if}
+        {#if confirmed}{@render again(false)}{/if}
       </details>
     {/if}
   {/if}
