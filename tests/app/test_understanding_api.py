@@ -135,6 +135,11 @@ def test_categories_runs_and_home(client):
     assert top_level.status_code == 201 and top_level.json()["id"] == "side-project"
     status = client.get("/api/analysis").json()
     assert status["last_run"]["status"] == "partial" and status["waiting"]["awaiting_ai"] >= 1
+    run = client.post("/api/analysis/run")
+    assert run.status_code == 202
+    analyse(client.app.state.services)
+    after = client.get("/api/analysis").json()["last_run"]  # a test can wait for a new run
+    assert after["id"] == f"ar_{run.json()['job_id']}" != status["last_run"]["id"]
     assert client.post("/api/analysis/run").status_code == 202
     home = client.get("/api/home/summary").json()
     assert home["analysis"]["queued"] and "spent" in home

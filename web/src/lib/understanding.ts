@@ -51,7 +51,7 @@ export type CommitmentsView = {
 }
 export type AnalysisStatus = {
   running: boolean; queued: boolean; waiting: Record<string, number>
-  last_run: { status: string; summary: string; finished_at: string | null; started_at: string } | null
+  last_run: { id: string; status: string; summary: string; finished_at: string | null; started_at: string } | null
 }
 export type HomeSummary = {
   period: { start: string; end: string; label: string }; spent: string

@@ -43,6 +43,7 @@ def status(services: Services) -> AnalysisStatus:
     if runs:
         r = runs[0]
         last = {
+            "id": r.id,
             "status": r.status,
             "summary": r.summary,
             "finished_at": r.finished_at,

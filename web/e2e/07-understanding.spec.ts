@@ -28,13 +28,17 @@ async function ensureStarling(page: Page) {
   }
 }
 
+/** Run the analysis now and wait for a run that started after the click: a run left by an
+ * earlier spec on this server (06) never counts. */
 async function waitForAnalysis(page: Page) {
   const run = page.getByRole('button', { name: 'Run analysis now' })
   await expect(run).toBeVisible({ timeout: 30_000 })
+  const before = (await (await page.request.get('/api/analysis')).json()).last_run?.id ?? null
   await run.click()
   await expect.poll(async () => {
     const status = await (await page.request.get('/api/analysis')).json()
-    return !status.running && !status.queued && status.last_run !== null
+    const last = status.last_run
+    return !status.running && !status.queued && last !== null && last.id !== before && last.finished_at !== null
   }, { timeout: 90_000 }).toBe(true)
   await page.reload()
 }
