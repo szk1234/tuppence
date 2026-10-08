@@ -123,11 +123,20 @@ MERCHANTS = [
     "CHILD BENEFIT", "UNIVERSAL CREDIT", "WORKING TAX CREDIT", "STUDENT LOAN", "MORTGAGE",
     "RENT", "LOAN REPAYMENT", "CAR FINANCE",
 ]  # fmt: skip
+# Re-review 3 N3 and N2: merchants named after a balance, and after a street or a building.
+NAMED_AFTER = [
+    "NEW BALANCE LONDON", "NEW BALANCE ATHLETICS", "OPENING BALANCE GYM", "PREVIOUS BALANCE ADJ",
+    "BALANCE BROUGHT FORWARD LTD", "CARRIED FORWARD CAFE", "CARD PAYMENT - STATEMENT BALANCE",
+    "PAYMENT TO AMEX - STATEMENT BALANCE", "CREDIT CARD STATEMENT BALANCE",
+    "NATIONWIDE BUILDING SOCIETY", "MORTGAGE NATIONWIDE BUILDING SOCIETY", "NCP CAR PARK",
+    "HOUSE OF FRASER", "PARK LANE HOTEL", "HIGH STREET VETS", "ROSE COTTAGE TEA ROOM",
+]  # fmt: skip
 
 DESCRIPTIONS = list(
     dict.fromkeys(
         [*INTEREST, *FEES, *CHARGES, *PAYMENTS, *REFUNDS, *CREDITS, *CASHBACK, *TRANSFERS,
-         *POTS, *STANDING_ORDERS, *DIRECT_DEBITS, *CASH, *CHEQUES, *SUMMARY_WORDS, *MERCHANTS]
+         *POTS, *STANDING_ORDERS, *DIRECT_DEBITS, *CASH, *CHEQUES, *SUMMARY_WORDS, *MERCHANTS,
+         *NAMED_AFTER]
     )
 )  # fmt: skip
 
@@ -147,6 +156,10 @@ TABLE_FORMS = {
     "undated, signed": "{d} -12.34",
     "undated, signed credit, balance": "{d} +12.34 1,012.34",
     "undated": "{d} 12.34",
+    # an ungrouped figure (re-review 3 N2: an OCR'd scan, a text export or a vision transcript)
+    "dated, ungrouped": "02/10/2026 {d} 1234.56",
+    "dated, ungrouped, signed, balance": "02/10/2026 {d} -1250.00 2457.82",
+    "undated, ungrouped, signed": "{d} -1250.00",
 }
 SCREENSHOT_FORMS = {
     "signed": "{d} -£12.34",

@@ -168,8 +168,11 @@ def test_header_wordings_never_reach_the_reader(wording, heading):
 
 # Re-review 2 R8 (p_header3): without a heading row, two date-first summary lines above the
 # holder's name and an address without a postcode or street word started the table, so the
-# address was sent. A run followed by the holder's name or an address block before the next row
-# is the header's, and summary lines that may be rows (held) never count toward a run.
+# address was sent. The address is withheld wherever it is printed now, and summary lines that
+# may be rows (held) never count toward a run. Lines with no amount after the first run (the
+# holder's name, an address, a payee or a place) never move the table start (R-M3-25 (3),
+# re-review 3 N1): two date-first lines with an amount are the first run, so they are the
+# table's, sent or reported like any row.
 NO_HEADING = {
     "summary lines above a name and an address": [
         "Example Card plc", "05/11/2026 Interest charged £3.21",
@@ -189,15 +192,15 @@ NO_HEADING = {
 
 
 @pytest.mark.parametrize("name", list(NO_HEADING))
-def test_a_run_above_the_holders_name_or_address_is_the_header(name):
+def test_the_holders_name_and_address_below_a_run_are_never_sent(name):
     page = NO_HEADING[name]
     doc = pages_document([page], sha256="x", kind="pdf", names=["Alex Example"])
     sent = sent_lines(doc)
     texts = [sent[r].text for r in doc.data_refs]
-    assert texts == ROWS
+    assert all(row in texts for row in ROWS)
     assert [s for s in SECRETS[:6] if any(s in t for t in texts)] == []
-    held = [doc.by_ref()[r].text for r in doc.held_amount_refs]
-    assert all(line in held for line in page[1:3])  # dated amounts above the table: reported
+    shown = [*texts, *(doc.by_ref()[r].text for r in doc.held_amount_refs)]
+    assert all(line in shown for line in page[1:3])  # the first run: sent or reported
 
 
 def test_held_lines_never_start_the_table():

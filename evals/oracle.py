@@ -21,7 +21,9 @@ _DATE = re.compile(
     rf"|\d{{1,2}} (?:{_MONTHS})[a-z]*(?: \d{{4}})?)\b",
     re.IGNORECASE,
 )
-_MONEY = re.compile(r"(?<![\w.,])([+\-−]?£?\d{1,3}(?:,\d{3})*\.\d{2}(?: ?CR)?)(?![\d])")
+_MONEY = re.compile(
+    r"(?<![\w.,])([+\-−]?£?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?: ?CR)?)(?![\d])"
+)  # grouped or not ("1,250.00", "1250.00"), as a model reads it
 _REF = re.compile(r"^((?:P\d+)?L\d+|D\d+): (.*)$")
 _WEEKDAY = re.compile(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\b", re.IGNORECASE)
 _SKIP_WORDS = (

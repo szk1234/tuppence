@@ -70,11 +70,12 @@ _MONTH = (
 )
 _NUMERIC_DATE = re.compile(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b")
 _NAMED_DATE = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{_MONTH}\b\.?", re.IGNORECASE)
-# A figure with pence. It never starts inside a run of thousands groups ("1,000,000"): a start
+# A figure with pence, grouped or not, signed or not ("1,500.00", "1500.00", "-1250.00": R-M3-25
+# (1)). It never starts inside a run of digits or of thousands groups ("1,000,000"): a start
 # right after "digit," is allowed only when it isn't itself a 3-digit group followed by another
 # comma, so each run is tried once and a long run of groups stays fast.
 _MONEY_TOKEN = re.compile(
-    r"(?<![\w.])(?:(?<!\d,)|(?!\d{3},))[-−]?[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d|\.\d)"
+    r"(?<![\w.])(?:(?<!\d,)|(?!\d{3},))[-−]?[£$]?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d|\.\d)"
 )
 # "Opening balance 1,000.00", "Money in 1,200.00 Money out 800.00": figures, not rows.
 _SUMMARY = re.compile(
@@ -230,7 +231,8 @@ def is_summary(text: str) -> bool:
 
 
 # Balance and summary figures are read on this device and never sent. A line with a figure
-# and one of these phrases is withheld wherever it is:
+# and one of these phrases, and no word outside the balance and summary vocabulary
+# (`_vocabulary_only`, R-M3-25 (4)), is withheld wherever it is:
 # - a balance (never a row, so never reported): opening, closing, start, end, previous or new
 #   balance; balance brought or carried forward;
 _BALANCE_PHRASE = re.compile(
@@ -415,6 +417,48 @@ _BALANCE_ONLY = frozenset(
 
 _ROW_HEADS = frozenset(["payment", "credit", "debit"])
 
+# R-M3-25 (1), (4): the balance and summary vocabulary. A pure balance line has nothing on it but
+# these words, its figures and its dates: a balance or a summary in any wording, a card header's
+# payment sentence, a summary box's labels ("Payments", "Refunds", "New purchases", "Interest",
+# "Fees") and the words of a balance label ("Running balance", "Balance owing", "GBP"). "Card" is
+# not one of them ("CARD PAYMENT - STATEMENT BALANCE" is a row's description); "on card" is a
+# balance's own qualifier ("Balance on card £250.00").
+_SUMMARY_BOX = frozenset(
+    ["payments", "refunds", "purchases", "interest", "fees", "charges", "cash", "advances",
+     "transfers", "deposits", "withdrawals", "credits", "debits"]
+)  # fmt: skip
+_LABEL_WORDS = frozenset(
+    ["running", "ending", "actual", "owing", "spend", "gbp", "o/d", "d"]
+)  # fmt: skip
+_PURE_WORDS = (_BALANCE_WORDING | _BALANCE_ONLY | _SUMMARY_BOX | _LABEL_WORDS) - {"card"}
+_ON_CARD = re.compile(r"\bon\s+(?:your\s+|the\s+)?card\b", re.IGNORECASE)
+_MARKERS = frozenset(["cr", "dr", "od", "o/d", "d", "gbp"])  # a figure's own: "12.50 CR"
+# Page furniture printed on a summary line ("Closing balance £1,234.56 Page 2", "(see overleaf)").
+_PAGE_FURNITURE = re.compile(
+    r"\bpage\s+\d+(?:\s+of\s+\d+)?\b|\b(?:see\s+)?overleaf\b|\bcontinued\b", re.IGNORECASE
+)
+
+
+def _vocabulary_only(text: str) -> bool:
+    """Every word on the line, once its figures, dates, markers and page furniture are taken
+    away, is balance or summary vocabulary (`_PURE_WORDS`), and there is at least one ("12.50
+    CR" has none)."""
+    plain = _PAGE_FURNITURE.sub(" ", _ON_CARD.sub(" ", text))
+    words = [w for w in _summary_words(plain) if w not in _MARKERS]
+    return bool(words) and all(w in _PURE_WORDS for w in words)
+
+
+_TRAILING = re.compile(r"[-+−(]?[£$€]?\d[\d,]*(?:\.\d{2})?\)?-?|cr|dr|od", re.IGNORECASE)
+
+
+def _figures_last(text: str) -> bool:
+    """Shaped like a row: its amounts come after all its words ("NEW BALANCE LONDON 12.34
+    1,012.34"), not before some ("Closing balance £1,234.56 as shown")."""
+    tokens = text.split()
+    while tokens and _TRAILING.fullmatch(tokens[-1]):
+        tokens.pop()
+    return not has_amount(" ".join(tokens))
+
 
 def _names_a_row(words: Sequence[str]) -> bool:
     """Balance wording that names a transaction: interest, or a payment, a credit or a debit
@@ -455,20 +499,19 @@ def _summary_kind(text: str) -> str | None:
 
     A line of balance wording is a balance only when nothing on it says it is a row (R1): it
     names no transaction (`_names_a_row`), and it has no date in front and no signed figure or
-    figure pair, unless all its words are a balance's own ("01 Oct BALANCE B/F 1,000.00")."""
+    figure pair, unless all its words are a balance's own ("01 Oct BALANCE B/F 1,000.00").
+
+    And only when every word on it is balance or summary vocabulary (R-M3-25 (4)). With any
+    other word, balance wording is a row's when the line is shaped like one, its amounts after
+    its words ("NEW BALANCE LONDON 12.34", "OPENING BALANCE GYM", "CARD PAYMENT - STATEMENT
+    BALANCE"), and sent like any other; else it is "held" ("Closing balance £1.00 as shown").
+    "NEW BALANCE -89.99" alone reads exactly as a card's summary line, so it stays one."""
     words = _summary_words(text)
-    if _BALANCE_PHRASE.search(text) or (
-        sensitive.is_balance_line(text) and (_labelled(text) or _balance_only(words))
-    ):
-        return "balance"
-    if (
-        words
-        and all(w in _BALANCE_WORDING for w in words)
-        and any(w in _ANCHORS for w in words)
-        and not _names_a_row(words)
-        and (_balance_only(words) or (_DATE_FIRST.match(text) is None and _labelled(text)))
-    ):
-        return "balance"
+    if _balance_wording(text, words):
+        if _vocabulary_only(text):
+            return "balance"
+        if not _figures_last(text):
+            return "held"  # balance wording with other words, not a row's shape: reported
     if sensitive.is_balance_line(_DATE_FIRST.sub("", text, count=1)):
         return "held"  # a balance or limit label with a date or a sign: a row or a summary?
     dated = _has_date(text)
@@ -481,6 +524,22 @@ def _summary_kind(text: str) -> str | None:
     if _pot_balance(text) or _TOTAL_PHRASE.search(text):
         return "held"
     return None
+
+
+def _balance_wording(text: str, words: Sequence[str]) -> bool:
+    """A balance phrase or a balance line, or balance wording that names no row (see
+    `_summary_kind`)."""
+    if _BALANCE_PHRASE.search(text) or (
+        sensitive.is_balance_line(text) and (_labelled(text) or _balance_only(words))
+    ):
+        return True
+    return (
+        bool(words)
+        and all(w in _BALANCE_WORDING for w in words)
+        and any(w in _ANCHORS for w in words)
+        and not _names_a_row(words)
+        and (_balance_only(words) or (_DATE_FIRST.match(text) is None and _labelled(text)))
+    )
 
 
 def pure_balance(text: str, *, names: Sequence[str] = ()) -> bool:
@@ -547,28 +606,18 @@ _DATE_FIRST = re.compile(
 )
 
 
-def _first_run(
-    rows: Sequence[bool],
-    leading: Sequence[bool],
-    lo: int,
-    hi: int,
-    header: Sequence[bool] | None = None,
-) -> int | None:
+def _first_run(rows: Sequence[bool], leading: Sequence[bool], lo: int, hi: int) -> int | None:
     """The first of two row-shaped lines at most `RUN_GAP` apart, both starting with their date
     if any such pair exists, else any pair.
 
-    A run followed by the header's own lines (`header`: the holder's name and address) before
-    the next row is the header's (re-review 2 R8): the next run is the table, if there is one."""
+    Lines with no amount after it (a payee, a place, the holder's name or an address) never move
+    it (R-M3-25 (3)): an address is withheld wherever it is printed (`_address_blocks`), and a
+    run moved past would lose rows."""
     shaped = [i for i in range(lo, hi) if rows[i]]
-    after = dict(zip(shaped, [*shaped[1:], hi], strict=False))
     pairs = [(a, b) for a, b in zip(shaped, shaped[1:], strict=False) if b - a <= RUN_GAP]
-
-    def above_header(b: int) -> bool:
-        return header is not None and any(header[k] for k in range(b + 1, after[b]))
-
     for group in ([(a, b) for a, b in pairs if leading[a] and leading[b]], pairs):
         if group:
-            return next((a for a, b in group if not above_header(b)), group[0][0])
+            return group[0][0]
     return None
 
 
@@ -580,19 +629,17 @@ def _table_start(
     *,
     leading: Sequence[bool] | None = None,
     pages: Sequence[str | None] | None = None,
-    header: Sequence[bool] | None = None,
 ) -> int | None:
     """Where the transactions start among lines `lo`..`hi` (R-M3-23 (b)): the column-heading
     row whenever there is one; else the first run of rows (two rows at most `RUN_GAP` apart,
-    rows that start with their date first, not followed by the holder's name and address);
-    else the first row.
+    rows that start with their date first); else the first row.
 
     A run comes before the heading row only when the headings are first printed on a later
     page: the rows on the pages before it are the table. On the heading's own page, lines above
     it are the header, however row-shaped (a summary box merged onto the address rows)."""
     leading = leading if leading is not None else [True] * len(rows)
     heading = next((i for i in range(lo, hi) if headings[i]), None)
-    run = _first_run(rows, leading, lo, hi, header)
+    run = _first_run(rows, leading, lo, hi)
     if heading is not None:
         if (
             run is not None
@@ -616,6 +663,14 @@ _ADDRESS_WORD = re.compile(
     r"walk|way|row|green|park|rise|view|hill|st|rd|ave|ln)\b",
     re.IGNORECASE,
 )
+
+
+def _starts_with_row_date(text: str) -> bool:
+    """The line starts with a row's date ("02 Oct 26 VIS TESCO HIGH ST", "01/10/2026 ..."): not a
+    house number before a street or house named after a month ("1 May Road", "12 March
+    Cottage"), which may be an address."""
+    match = _DATE_FIRST.match(text)
+    return match is not None and _ADDRESS_WORD.match(text[match.end() :].lstrip()) is None
 
 
 _HOLDER_PREFIX = re.compile(
@@ -667,25 +722,26 @@ def _address_blocks(
 ) -> set[int]:
     """Lines of every address block, wherever it is printed (rule (b)), failing closed.
 
-    A line is part of an address when it has no amount and shows a postcode, a house or street,
-    a building or street word ("High St.", "Rose Court"), or a name (a titled name, or a
-    holder's or household name: `holders`), whatever else is on it ("10/12 High St.", "Flat
-    2/1"). A block is a run of lines with no amount: address parts, and short lines with no date,
-    column headings or merchant-like token ("AMZN.CO.UK/PM", "B&Q"). Only an amount, or such a
-    line that names no address part, ends it. A block is withheld whole when it has an address
-    part, or when it is three or more lines of capitalised words only ("The Old Rectory",
-    "Upper Example", "Littlebury"); with `single`, one address part on its own is withheld too
-    (a statement's continuation line never shows a street; a screenshot may print a merchant
-    named after one on its own line, above its amount). They have no amount, so no row is
-    lost."""
+    A line with an amount, or one that starts with a row's date ("02 Oct 26 VIS TESCO HIGH ST",
+    a row's details printed over two lines), is never an address line (R-M3-25 (2)). Any other
+    line is part of an address when it shows a postcode, a house or street, a building or street
+    word ("High St.", "Rose Court"), or a name (a titled name, or a holder's or household name:
+    `holders`), whatever else is on it ("10/12 High St.", "Flat 2/1"). A block is a run of such
+    lines: address parts, and short lines with no date, column headings or merchant-like token
+    ("AMZN.CO.UK/PM", "B&Q"). Only an amount, a row's date, or such a line that names no address
+    part, ends it. A block is withheld whole when it has an address part, or when it is three or
+    more lines of capitalised words only ("The Old Rectory", "Upper Example", "Littlebury"); with
+    `single`, one address part on its own is withheld too (a statement's continuation line never
+    shows a street; a screenshot may print a merchant named after one on its own line, above its
+    amount). They have no amount, so no row is lost."""
     postcode = sensitive.VALUES["postcode"]
     address = sensitive.VALUES["address"]
     holder = sensitive.VALUES["holder_name"]  # "MR ALEX EXAMPLE" heads an address (R8)
-    amounts = [has_amount(text) for text in texts]
+    never = [has_amount(text) or _starts_with_row_date(text) for text in texts]
 
     def part(k: int) -> bool:
         text = texts[k]
-        return not amounts[k] and bool(
+        return not never[k] and bool(
             postcode.search(text)
             or address.search(text)
             or _ADDRESS_WORD.search(text)
@@ -694,7 +750,7 @@ def _address_blocks(
         )
 
     def member(k: int) -> bool:
-        if amounts[k] or is_heading(texts[k]):
+        if never[k] or is_heading(texts[k]):
             return False
         return part(k) or (_plain_short(texts[k]) and not _MERCHANT_TOKEN.search(texts[k]))
 
@@ -809,7 +865,6 @@ def _later_page_headers(
     rows: Sequence[bool],
     headings: Sequence[bool],
     leading: Sequence[bool],
-    header: Sequence[bool] | None = None,
 ) -> set[int]:
     """Each later page's header: the lines of every page after the table's first page that
     come before that page's own table start (all of a page that has none). A page repeats the
@@ -825,7 +880,7 @@ def _later_page_headers(
     held: set[int] = set()
     for members in pages.values():
         lo, hi = members[0], members[-1] + 1
-        table = _table_start(rows, headings, lo, hi, leading=leading, header=header)
+        table = _table_start(rows, headings, lo, hi, leading=leading)
         end = hi if table is None else table
         held.update(i for i in members if i < end and not _CARRIED.search(lines[i].text))
     return held
@@ -840,7 +895,8 @@ def split_preamble(
     page's header (before that page's first anchor), and, after them, any account or address
     line, balance or balance summary, or repeated page furniture. A repeat is furniture when it
     has a page marker, sits at the edge of 2+ pages, or has no figures or date and is a
-    holder's name (`names`, or a name line in the preamble).
+    holder's name (`names`, or a name line in the preamble). A withheld line with an amount is
+    reported to the person unless it is a pure balance line (`_accounted`).
     """
     split = _split_preamble(lines, names=names)
     return split.withheld, split.data
@@ -920,6 +976,53 @@ def _send(
     return True
 
 
+def _pure_line(text: str, names: Sequence[str]) -> bool:
+    """A pure balance line (R-M3-25 (1)): nothing on it but balance or summary vocabulary,
+    figures and dates (`_vocabulary_only`), once any account detail on it is taken out ("Flat 3
+    Minimum payment £25.00"). It reads the line itself, never what a rule made of it."""
+    if _vocabulary_only(text):
+        return True
+    rest = sensitive.without_details(text, names=names)
+    return rest is not None and _vocabulary_only(rest)
+
+
+def _labelled_figures(texts: Sequence[str]) -> set[int]:
+    """Figures on their own line in a run of lines that are each a balance label or a figure,
+    with a label for every figure ("Available balance" over "£1,184.56"; "£1,184.56", "£20.00",
+    "Balance", "Spent today"): pure balances printed over two or more lines. Read from the lines
+    themselves, in one pass."""
+    label = [sensitive.is_balance_label(t) for t in texts]
+    figure = [not label[k] and sensitive.is_figure_line(t) for k, t in enumerate(texts)]
+    found: set[int] = set()
+    i = 0
+    while i < len(texts):
+        j = i
+        while j < len(texts) and (label[j] or figure[j]):
+            j += 1
+        figures = [k for k in range(i, j) if figure[k]]
+        if figures and len(figures) <= (j - i) - len(figures):
+            found.update(figures)
+        i = max(j, i + 1)
+    return found
+
+
+def _accounted(split: _Split, lines: Sequence[Line], names: Sequence[str]) -> _Split:
+    """The final accounting pass (R-M3-25 (1)): every line with an amount ends sent, held back
+    and reported, or a pure balance line (`_pure_line`, `_labelled_figures`). A line any rule
+    withheld that is none of these (the header above a table start, an address block, a balance
+    block, a summary) is reported here, so nothing with an amount is ever lost without a word.
+    A reported line is shown only to the person, never sent."""
+    shown = {*split.data, *split.held}
+    left = [i for i, line in enumerate(lines) if line.ref not in shown and has_amount(line.text)]
+    if not left:
+        return split
+    labelled = _labelled_figures([line.text for line in lines])
+    for i in left:
+        if not (i in labelled or _pure_line(lines[i].text, names)):
+            split.held.append(lines[i].ref)
+    return split
+
+
 def _split_preamble(
     lines: Sequence[Line],
     *,
@@ -934,7 +1037,8 @@ def _split_preamble(
     (`sensitive.mask_line`). Lines in `too_long` are withheld and reported without being read.
 
     Past the table start, the only lines with an amount that are withheld and not reported are
-    balances (read on this device) and totals."""
+    balances (read on this device) and totals. Anywhere, the final accounting pass reports every
+    withheld line with an amount that isn't a pure balance line (`_accounted`, R-M3-25 (1))."""
     if too_long:  # read as if empty; added back, withheld and reported, at the end
         kept = [line for line in lines if line.ref not in too_long]
         return _split_preamble(kept, names=names, deadline=deadline).with_too_long(
@@ -955,7 +1059,6 @@ def _split_preamble(
         _has_date(t)
         and _MONEY_TOKEN.search(t) is not None
         and not is_summary(t)
-        and not _BALANCE_PHRASE.search(t)
         and kinds[i] is None  # a summary line, pure or one that may be a row, is no run (R8)
         and (not sensitive_at[i] or masks(i) is not None)
         for i, t in enumerate(texts)
@@ -964,8 +1067,7 @@ def _split_preamble(
     leading = [_DATE_FIRST.match(t) is not None for t in texts]
     pages = [m.group(1) if (m := _PAGE_REF.fullmatch(line.ref)) else None for line in lines]
     addresses = _address_blocks(texts, ["holder_name" in found for found in classes])
-    header = [i in addresses for i in range(len(texts))]
-    first = _table_start(rows, headings, 0, len(lines), leading=leading, pages=pages, header=header)
+    first = _table_start(rows, headings, 0, len(lines), leading=leading, pages=pages)
     edge = _page_edge_repeats(lines)
     blocks = _balance_blocks(texts)
     balances = {k for block in blocks for k in block}
@@ -979,7 +1081,7 @@ def _split_preamble(
         names = [*names, *printed]
         sensitive_at = [is_sensitive(t, names=names) for t in texts]
         masks = _Masks(texts, names)
-    page_headers = _later_page_headers(lines, first, rows, headings, leading, header)
+    page_headers = _later_page_headers(lines, first, rows, headings, leading)
     out = _Split()
     unsure: set[int] = set()
 
@@ -1024,14 +1126,15 @@ def _split_preamble(
         if first is not None and block[0] > first:  # the summary box above the table never is
             unsure |= _unsure(texts, block, first)
     out.held = [lines[k].ref for k in sorted(unsure)]
-    return out
+    return _accounted(out, lines, names)
 
 
 _CURRENCY_FIGURE = re.compile(r"[£$€]\s?\d")
 
 
 def has_amount(text: str) -> bool:
-    """A money figure on the line: 12.30 with pence, or a currency sign before digits."""
+    """A money figure on the line: pence, grouped or not and signed or not ("12.30", "1,500.00",
+    "1500.00", "-1250.00"), or a currency sign before digits."""
     return _MONEY_TOKEN.search(text) is not None or _CURRENCY_FIGURE.search(text) is not None
 
 
@@ -1119,7 +1222,7 @@ def _split_screenshot(
         out.withheld.append(line.ref)
         if has_amount(text) and (i not in balances or i in unsure):
             out.held.append(line.ref)
-    return out
+    return _accounted(out, lines, names)
 
 
 def _capped(ref: str, text: str, too_long: list[str]) -> Line:
@@ -1150,7 +1253,7 @@ def _all_masked(lines: Sequence[Line], names: Sequence[str]) -> _Split:
             out.withheld.append(line.ref)
             if has_amount(line.text):
                 out.held.append(line.ref)
-    return out
+    return _accounted(out, lines, names)
 
 
 def text_document(

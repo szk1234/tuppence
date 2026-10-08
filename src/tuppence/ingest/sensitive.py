@@ -346,6 +346,9 @@ def mask(text: str, *, names: Sequence[str] = ()) -> str:
 _KEEP_MONEY = re.compile(
     r"(?<![\w.])(?:(?<!\d,)|(?!\d{3},))[-+−]?[£$€]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d|\.\d)"
     r"|(?<![\w.])[-+−]?[£$€]\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?(?![\d,])"
+    # an ungrouped amount with pence ("1500.00", R-M3-25) shorter than a long number (`LONG_RUN`):
+    # a longer one ("87654321.00") may be an account number, and is masked as one
+    r"|(?<![\w.,])[-+−]?\d{4,5}\.\d{2}(?!\d|[.,]\d)"
 )
 _KEEP_DATE = re.compile(
     r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b"
@@ -820,6 +823,16 @@ def is_masked_balance(text: str, *, names: Sequence[str] = ()) -> bool:
         return True
     masked = _mask(text, names)
     return masked is not None and _residue_is_balance(masked)
+
+
+def without_details(text: str, *, names: Sequence[str] = ()) -> str | None:
+    """`normalise(text)` with every account or identity detail taken out (a balance merged onto
+    an address row: "Flat 3   Minimum payment £25.00" gives "Minimum payment £25.00"); None when
+    it shows none, or they can't be told apart from its amounts and dates."""
+    masked = _mask(text, names)
+    if masked is None or not masked.hidden:
+        return None
+    return " ".join(_PLACEHOLDER.sub(" ", masked.text).split())
 
 
 def _residue_is_balance(masked: MaskedLine) -> bool:

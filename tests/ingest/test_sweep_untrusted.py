@@ -254,6 +254,7 @@ LINE: dict[str, LineCall] = {
     ),
     "sensitive.mask_line": sensitive.mask_line,
     "sensitive.is_masked_balance": sensitive.is_masked_balance,
+    "sensitive.without_details": sensitive.without_details,
     "sensitive.unmasked_label": sensitive.unmasked_label,
     "identify.header_facts": identify.header_facts,
     "check.figures": check.figures,

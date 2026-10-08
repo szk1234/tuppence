@@ -10,10 +10,21 @@ reported for the person to decide."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from tuppence.ingest import textprep
-from tuppence.ingest.textprep import has_amount, pages_document, text_document
+from tuppence.ingest.textprep import pages_document, text_document
+
+# The test's own reading of an amount (re-review 3 N2: not text prep's, which missed "1500.00"):
+# any figure with pence, grouped or not, signed or not, or a currency sign before digits.
+_AMOUNT = re.compile(r"(?<![\w.])[-+−]?[£$€]?\d[\d,]*\.\d{2}(?!\d|\.\d)|[£$€]\s?\d")
+
+
+def has_amount(text: str) -> bool:
+    return _AMOUNT.search(text) is not None
+
 
 HEAD = [
     "Example Bank",
