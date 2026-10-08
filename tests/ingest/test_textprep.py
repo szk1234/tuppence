@@ -346,3 +346,57 @@ def test_a_preamble_name_repeated_later_is_withheld():
     d2 = pages_document([["Date Description Amount", "Alex Example", "02 Oct 2026 Shop 4.00"]],
                         sha256="x", kind="pdf", names=["Alex Example"])  # fmt: skip
     assert "Alex Example" not in _data_texts(d2)
+
+
+def _page_data(doc):
+    by_ref = doc.by_ref()
+    return [by_ref[r].text for r in doc.data_refs]
+
+
+def test_each_later_pages_header_is_held_back():
+    pages = [
+        ["Alex Example", "Flat 2, The Old Mill", "Date Description Amount",
+         "02 Oct 2026 Shop 4.00"],
+        ["Statement continued", "Alex Example", "Flat 2, The Old Mill", "Riverside",
+         "Date Description Amount", "03 Oct 2026 Cafe 3.00"],
+        ["Exampleton branch", "04 Oct 2026 Shop 4.00", "Card payment"],  # a dated row anchors
+    ]  # fmt: skip
+    doc = pages_document(pages, sha256="x", kind="pdf")
+    assert _page_data(doc) == [
+        "Date Description Amount",
+        "02 Oct 2026 Shop 4.00",
+        "Date Description Amount",
+        "03 Oct 2026 Cafe 3.00",
+        "04 Oct 2026 Shop 4.00",
+        "Card payment",  # after the page's first row: a description line, as on page 1
+    ]
+    assert {"P2L1", "P2L2", "P2L3", "P2L4", "P3L1"} <= set(doc.preamble_refs)
+    assert doc.held_amount_refs == []
+
+
+def test_rows_above_a_later_pages_first_anchor_are_reported_not_lost():
+    pages = [
+        ["Date Description Amount Balance", "02 Oct 2026 Shop 4.00 996.00"],
+        ["Alex Example", "Little Cafe 3.40 992.60", "03 Oct 2026 Shop 4.00 988.60"],
+    ]
+    doc = pages_document(pages, sha256="x", kind="pdf")
+    assert "Little Cafe 3.40 992.60" not in _page_data(doc)
+    assert doc.held_amount_refs == ["P2L2"]
+
+
+def test_a_balance_brought_forward_above_a_later_pages_rows_stays_data():
+    pages = [
+        ["Date Description Amount Balance", "02 Oct 2026 Shop 4.00 996.00"],
+        ["Page 2", "Balance brought forward 996.00", "03 Oct 2026 Shop 4.00 992.00"],
+    ]
+    doc = pages_document(pages, sha256="x", kind="pdf")
+    assert "Balance brought forward 996.00" in _page_data(doc)
+    assert doc.held_amount_refs == []
+
+
+def test_text_files_have_no_pages_to_hold_back():
+    doc = text_document(
+        "Date Description Amount\n02 Oct 2026 Shop 4.00\nRiverside\n03 Oct 2026 Cafe 3.00\n",
+        sha256="x",
+    )
+    assert "Riverside" in _page_data(doc)

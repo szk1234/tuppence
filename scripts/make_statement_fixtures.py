@@ -154,6 +154,75 @@ def current_pdf() -> bytes:
     return buf.getvalue()
 
 
+def _current_headings(c: canvas.Canvas, y: float) -> None:
+    c.setFont("Helvetica-Bold", 10)
+    for x, label, right in (
+        (56, "Date", False),
+        (140, "Description", False),
+        (400, "Paid out", True),
+        (470, "Paid in", True),
+        (540, "Balance", True),
+    ):
+        (c.drawRightString if right else c.drawString)(x, y, label)
+    c.setFont("Helvetica", 10)
+
+
+def private_two_page_pdf() -> bytes:
+    """A current account statement that repeats every identity detail and balance line at the
+    top of page 2, for the privacy tests: none of it may reach a model."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4, invariant=1)
+    pages = [CURRENT_ROWS[:5], CURRENT_ROWS[5:]]
+    brought = "1,000.00"
+    for page_no, rows in enumerate(pages, start=1):
+        c.setFont("Helvetica-Bold", 18)
+        c.drawString(56, 790, "Current account statement")
+        c.setFont("Helvetica", 10)
+        c.drawRightString(540, 790, f"Page {page_no} of {len(pages)}")
+        y = 760
+        if page_no > 1:  # the period first, so the address isn't among the page's top lines
+            c.drawString(56, y, "Statement period 01/10/2026 to 31/10/2026")
+            y -= 20
+        y = _address(c, y) - 10
+        c.drawString(56, y, "Account number 12345678")
+        c.drawString(300, y, "Sort code 07-12-34")
+        c.drawString(56, y - 14, "Visa debit card ****4242")
+        y -= 28
+        if page_no == 1:
+            c.drawString(56, y, "Statement period 01/10/2026 to 31/10/2026")
+            c.drawString(56, y - 14, "Opening balance £1,000.00")
+            c.drawString(56, y - 28, "Closing balance £2,252.32")
+            y -= 42
+        c.drawString(56, y, "Available balance £2,252.32")
+        y -= 28
+        _current_headings(c, y)
+        y -= 16
+        c.drawString(140, y, "Balance brought forward")
+        c.drawRightString(540, y, brought)
+        y -= 15
+        for day, what, out, paid_in, balance in rows:
+            c.drawString(56, y, day)
+            c.drawString(140, y, what)
+            if out:
+                c.drawRightString(400, y, out)
+            if paid_in:
+                c.drawRightString(470, y, paid_in)
+            c.drawRightString(540, y, balance)
+            brought = balance
+            y -= 15
+        if page_no < len(pages):
+            c.drawString(140, y, "Balance carried forward")
+            c.drawRightString(540, y, brought)
+        else:
+            c.drawString(56, y - 10, "Closing balance £2,252.32")
+        c.setFont("Helvetica", 8)
+        c.drawString(56, 60, "Nationwide Building Society. This is a synthetic example statement.")
+        c.drawString(56, 48, WATERMARK)
+        c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 def scanned(pdf: bytes, dpi: int = 150) -> bytes:
     doc = pdfium.PdfDocument(pdf)
     pages = [doc[i].render(scale=dpi / 72).to_pil().convert("L") for i in range(len(doc))]
@@ -215,6 +284,7 @@ def main() -> None:
     (OUT / "pdf" / "card-text.pdf").write_bytes(card)
     (OUT / "pdf" / "card-scanned.pdf").write_bytes(scanned(card))
     (OUT / "pdf" / "current-text.pdf").write_bytes(current_pdf())
+    (OUT / "pdf" / "current-two-page.pdf").write_bytes(private_two_page_pdf())
     (OUT / "image" / "app-screenshot.png").write_bytes(screenshot_png())
     print(
         "wrote",

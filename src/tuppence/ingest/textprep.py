@@ -303,15 +303,43 @@ def _unsure(texts: Sequence[str], block: range, header_end: int) -> set[int]:
     return unsure
 
 
+_CARRIED = re.compile(r"\b(?:brought|carried)\s+forward\b", re.IGNORECASE)
+
+
+def _later_page_headers(lines: Sequence[Line], first: int | None) -> set[int]:
+    """Each later page's header: the lines of every page after the first anchor's page that
+    come before that page's own first anchor (all of a page that has none). A page repeats the
+    name, address and account details above its rows, and they never go to an AI reader.
+    A "balance brought forward" line stays data, as it is everywhere past the first anchor."""
+    if first is None or not (start := _PAGE_REF.fullmatch(lines[first].ref)):
+        return set()
+    held: set[int] = set()
+    page, in_header = start.group(1), False
+    for i in range(first + 1, len(lines)):
+        match = _PAGE_REF.fullmatch(lines[i].ref)
+        if match is None:
+            continue
+        if match.group(1) != page:
+            page, in_header = match.group(1), True
+        if not in_header:
+            continue
+        if is_anchor(lines[i].text):
+            in_header = False
+        elif not _CARRIED.search(lines[i].text):
+            held.add(i)
+    return held
+
+
 def split_preamble(
     lines: Sequence[Line], *, names: Sequence[str] = ()
 ) -> tuple[list[str], list[str]]:
     """(withheld refs, data refs).
 
-    Withheld lines never go to an AI reader: everything before the first anchor, and, after
-    it, any account or address line, balance or balance summary, or repeated page furniture.
-    A repeat is furniture when it has a page marker, sits at the edge of 2+ pages, or has
-    no figures or date and is a holder's name (`names`, or a name line in the preamble).
+    Withheld lines never go to an AI reader: everything before the first anchor, each later
+    page's header (before that page's first anchor), and, after them, any account or address
+    line, balance or balance summary, or repeated page furniture. A repeat is furniture when it
+    has a page marker, sits at the edge of 2+ pages, or has no figures or date and is a
+    holder's name (`names`, or a name line in the preamble).
     """
     withheld, data, _ = _split_preamble(lines, names=names)
     return withheld, data
@@ -321,7 +349,8 @@ def _split_preamble(
     lines: Sequence[Line], *, names: Sequence[str] = ()
 ) -> tuple[list[str], list[str], list[str]]:
     """`split_preamble`, plus the held-back figures past the first anchor that may be a
-    row's amount (see `_unsure`)."""
+    row's amount: in a balance block (see `_unsure`), or a line with an amount in a later
+    page's header, which may be a row printed above the page's first anchor."""
     counts: dict[str, int] = {}
     for line in lines:
         counts[_normal(line.text)] = counts.get(_normal(line.text), 0) + 1
@@ -334,8 +363,10 @@ def _split_preamble(
     for line in lines[: first if first is not None else 0]:
         if key := _name_key(line.text):
             known_names.add(key)
+    page_headers = _later_page_headers(lines, first)
     withheld: list[str] = []
     data: list[str] = []
+    unsure: set[int] = set()
     for i, line in enumerate(lines):
         text = line.text
         key = _normal(text)
@@ -356,9 +387,12 @@ def _split_preamble(
             or name_repeat
         ):
             withheld.append(line.ref)
+        elif i in page_headers:
+            withheld.append(line.ref)
+            if _MONEY_TOKEN.search(text):  # may be a row above the page's first anchor
+                unsure.add(i)
         else:
             data.append(line.ref)
-    unsure: set[int] = set()
     for block in blocks:
         if first is not None and block[0] > first:  # the summary box above the table never is
             unsure |= _unsure(texts, block, first)

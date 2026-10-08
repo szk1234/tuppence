@@ -97,6 +97,38 @@ def test_the_preamble_never_leaves_the_device(ingest_env, fixtures):
         assert figure not in sent
     for ref in doc.preamble_refs:
         assert doc.by_ref()[ref].text not in sent
+    # Page 2 of a statement repeats the holder, the address and the account details above its
+    # rows: each later page's header stays on the device too.
+    scripted.requests.clear()
+    two_page = extract_document(
+        fixtures / "pdf" / "current-two-page.pdf", "pdf", sha256="x", limits=LIMITS
+    )
+    read_document(
+        two_page,
+        llm=services.llm,
+        run=budget(),
+        perspective="household",
+        level="full",
+        account="current account",
+        facts=facts_of(two_page),
+        today=TODAY,
+        context_window=window,
+    )
+    sent = json.dumps(scripted.requests)
+    assert scripted.requests and "Greenbasket Stores" in sent
+    for secret in (
+        "Alex Example",
+        "1 Example Road",
+        "Exampletown",
+        "EX1 2MP",
+        "Account number 12345678",
+        "12345678",
+        "07-12-34",
+        "****4242",
+        "Card ending 4242",
+        "Available balance",
+    ):
+        assert secret not in sent, secret
 
 
 def test_a_wrong_reply_is_sent_back_with_the_errors(ingest_env, fixtures):
