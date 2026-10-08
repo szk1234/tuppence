@@ -378,3 +378,30 @@ def test_check_rows_never_trusts_a_skipped_line_with_no_ref():
         doc.lines, all_lines=doc.lines, context_refs=[], data_refs=["L1"], parsed=parsed
     )
     assert "missing refs: L1" in errors
+
+
+# --- "Balances add up" only when the arithmetic does --------------------------------------------
+
+
+def test_verified_needs_rows_balances_and_the_sums_to_pass():
+    from tuppence.ingest.check import balance_verified
+
+    row = _row(pence=-5000, text="50.00")
+    ok = _statement(row, opening_balance_pence=10000, closing_balance_pence=5000)
+    assert balance_verified(ok, [], "full")
+    # the errors a caller passes in aren't trusted to have included the sums
+    wrong = _statement(row, opening_balance_pence=10000, closing_balance_pence=9000)
+    assert not balance_verified(wrong, [], "full")
+    assert not balance_verified(
+        _statement(opening_balance_pence=100, closing_balance_pence=100), [], "full"
+    )  # no rows: nothing was checked
+    assert not balance_verified(_statement(row), [], "full")  # no balances to check
+    assert not balance_verified(_statement(row, opening_balance_pence=10000), [], "full")
+    assert not balance_verified(ok, [], "screenshot")
+    assert not balance_verified(ok, ["anything"], "full")
+    running = _statement(
+        _row(pence=-5000, text="50.00", balance_after_pence=1),
+        opening_balance_pence=10000,
+        closing_balance_pence=5000,
+    )
+    assert not balance_verified(running, [], "full")  # a running balance that doesn't follow

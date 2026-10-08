@@ -249,11 +249,18 @@ def check_document(
 
 
 def balance_verified(parsed: ParsedStatement, errors: Sequence[str], level: CheckLevel) -> bool:
+    """ "Balances add up": a full statement with rows, an opening and a closing balance, no
+    check failing, and the sums done here again (opening plus every amount gives the closing
+    balance, and every running balance follows). Nothing else counts: not a flag or a field
+    from the reader, nor `errors` that may not have included the sums. With no balance
+    printed there is nothing to verify, which is not the same as adding up."""
     return (
         level == "full"
         and not errors
+        and bool(parsed.rows)
         and parsed.opening_balance_pence is not None
         and parsed.closing_balance_pence is not None
+        and not check_statement(parsed, level=level)
     )
 
 
