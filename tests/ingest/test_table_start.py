@@ -136,3 +136,31 @@ def test_the_reviewers_card_pdf_sends_only_the_heading_and_rows(ingest_env):
     assert [s for s in SECRETS if s in sent] == []
     assert "Northwind Books" in sent and "City Cinema" in sent
     assert record.status in ("imported", "needs_review")
+
+
+# The reviewer's p_header probe: header lines a UK statement prints above the address, with
+# and without a column-heading row. Only the heading (if any) and the rows are ever sent.
+WORDINGS = [
+    "Balance as at 31 October 2026 £2,252.32", "Your balance on 31 Oct: £2,252.32",
+    "Balance at 31.10.26 £2,252.32", "Statement balance 31/10/2026 £2,252.32",
+    "Statement Balance on 31/10/2026 is £2,252.32", "Minimum payment due by 20/11/2026: £25.00",
+    "Please pay £25.00 by 20/11/2026", "Direct Debit of £25.00 will be collected on 20/11/2026",
+    "Total amount due 20/11/2026 £250.00", "New balance as at 05 Nov 2026 £250.00",
+    "Overdraft limit £500.00 Statement date 05/11/2026",
+    "Interest rate 1.5% Statement date 05/11/2026 Balance £100.00",
+    "05/11/2026 Statement balance £250.00 Credit limit £3,000.00",
+    "Pay by 20/11/2026 to avoid interest on £250.00",
+    "Your account summary 01/10/2026 - 31/10/2026 Opening £1,000.00",
+    "We will collect £25.00 on 20 November 2026", "As of 31/10/2026 you owe £250.00",
+    "Credit available £2,750.00 at 05/11/2026",
+    "Estimated interest next statement 05/12/2026 £3.21", "Amount to pay 20/11/2026 £25.00",
+]  # fmt: skip
+ADDRESS = ["MR ALEX EXAMPLE", "Flat 3", "Example House", "Exampletown", "EX1 2MP"]
+
+
+@pytest.mark.parametrize("heading", [True, False], ids=["heading", "no heading"])
+@pytest.mark.parametrize("wording", WORDINGS)
+def test_header_wordings_never_reach_the_reader(wording, heading):
+    page = ["Example Bank plc", wording, *ADDRESS, "Sort code 07-12-34 Account 12345678",
+            *([HEADING] if heading else []), *ROWS]  # fmt: skip
+    assert _sent(page) == [*([HEADING] if heading else []), *ROWS]

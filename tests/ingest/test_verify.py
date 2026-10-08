@@ -239,3 +239,71 @@ def test_an_unchanged_save_gives_the_same_checks_as_the_read(ingest_env, fixture
     assert record.status == "needs_review"
     saved = _save_unchanged(services, record)
     assert saved.check_errors == record.check_errors
+
+
+def test_a_balance_copied_from_the_days_last_row_proves_nothing(ingest_env):
+    """The reviewer's test_rr_copied_balance, through the one verify: a balance printed once
+    a day, copied by the model onto the day's earlier row with both signs swapped."""
+    from ingest.pdfgen import L, pdf
+
+    data = pdf([[
+        L((56, "Example Bank plc", False)),
+        L((56, "Statement period 01/10/2026 to 31/10/2026", False)),
+        L((56, "Opening balance £1,000.00", False)),
+        L((56, "Closing balance £1,020.00", False)),
+        L((56, "Date", False), (140, "Description", False), (400, "Paid out", True),
+          (470, "Paid in", True), (540, "Balance", True)),
+        L((56, "02 Oct 2026", False), (140, "Acme Payroll Ltd", False), (470, "50.00", True)),
+        L((140, "Greenbasket Stores", False), (400, "30.00", True), (540, "1,020.00", True)),
+    ]])  # fmt: skip
+
+    def answer(body):
+        user = body["messages"][-1]["content"].split("Your previous answer")[0]
+        rows, skipped = [], []
+        for ref, text in re.findall(r"^(D\d+): (.*)$", user, re.MULTILINE):
+            swapped = {
+                "Payroll": (-50.0, "50.00", "Paid out"),
+                "Greenbasket": (30.0, "30.00", "Paid in"),
+            }
+            hit = next((v for k, v in swapped.items() if k in text), None)
+            if hit:
+                rows.append(
+                    dict(
+                        ref=ref,
+                        date="2026-10-02",
+                        amount=hit[0],
+                        amount_text=hit[1],
+                        sign_from=hit[2],
+                        raw_desc=text[:30],
+                        merchant=None,
+                        bank_category=None,
+                        bank_type=None,
+                        running_balance=1020.0,
+                    )
+                )
+            else:
+                skipped.append({"ref": ref, "reason": "heading"})
+        statement = {
+            "period_start": "2026-10-01",
+            "period_end": "2026-10-31",
+            "opening_balance": 1000.0,
+            "closing_balance": 1020.0,
+            "currency": "GBP",
+        }
+        return json.dumps({"statement": statement, "transactions": rows, "skipped": skipped})
+
+    services, scripted = ingest_env
+    use_local_model(services)
+    account = add_account(services, "other", "current", "Probe")
+    scripted.replies = [answer] * 6
+    out = services.ingest.upload("cb.pdf", data)
+    drain(services)
+    record = services.statements.get(out.record.id)
+    if record.status == "needs_account":
+        services.ingest.answer_account(
+            record.id, account_id=account.id, expected_version=record.version
+        )
+        drain(services)
+        record = services.statements.get(out.record.id)
+    assert record.status == "needs_review" and not record.balance_verified
+    assert services.statements.transactions(record.id) == []

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 
 import pytest
 
@@ -265,3 +266,48 @@ def test_the_reviewers_statement_sends_no_account_number(ingest_env, mode):
     if record.status == "needs_review":
         stored = [r["raw_description"] for r in record.draft["parsed"]["rows"]]
     assert any("87654321" in d for d in stored) and any("41234567" in d for d in stored)
+
+
+# The reviewer's whole p_glued probe (m3): each identifier, in every spelling, is never sent.
+GLUED = [
+    "03/10/2026 FPO J SMITH20-11-33 41234567 -250.00", "03/10/2026 TFR A/C87654321 -250.00",
+    "03/10/2026 TFR TO A/C:87654321 -250.00", "03/10/2026 TFR ACC87654321 -250.00",
+    "03/10/2026 SC201133AC87654321 -250.00", "03/10/2026 TO 20-11-33/87654321 -250.00",
+    "03/10/2026 TO 201133 87654321 -250.00", "03/10/2026 TO 20 11 33 87654321 -250.00",
+    "03/10/2026 TO 20.11.33 87654321 -250.00", "03/10/2026 TO 20-11-33-87654321 -250.00",
+    "03/10/2026 CARD ENDING4242 -12.00", "03/10/2026 CARD ENDING 4242 -12.00",
+    "03/10/2026 CARD NO.4242 -12.00", "03/10/2026 VISA ****4242 -12.00",
+    "03/10/2026 VISA XXXX4242 -12.00", "03/10/2026 VISA X4242 -12.00",
+    "03/10/2026 VISA *4242 -12.00", "03/10/2026 IBANGB29NWBK60161331926819 -12.00",
+    "03/10/2026 GB29NWBK60161331926819 -12.00", "03/10/2026 GB29 NWBK 6016 1331 9268 19 -12.00",
+    "03/10/2026 4929123412341234 -12.00", "03/10/2026 4929-1234-1234-1234 -12.00",
+    "03/10/2026 ALEXEXAMPLE -12.00", "03/10/2026 AlexExample -12.00",
+    "03/10/2026 ALEX-EXAMPLE -12.00", "03/10/2026 ALEX_EXAMPLE -12.00",
+    "03/10/2026 EXAMPLE/ALEX -12.00", "03/10/2026 A.EXAMPLE -12.00",
+    "03/10/2026 MR A EXAMPLE -12.00", "03/10/2026 PAYPAL *ALEXEXAMPLE -12.00",
+    "03/10/2026 TO ALEX EXAMPLE123 -12.00", "03/10/2026 TO EXAMPLEA -12.00",
+    "03/10/2026 ＡＬＥＸ　ＥＸＡＭＰＬＥ -12.00", "03/10/2026 A​LEX EXAMPLE -12.00",
+    "03/10/2026 ÁLEX EXÁMPLE -12.00", "03/10/2026 ÁLEX EXAMPLE -12.00",
+    "03/10/2026 TO ２０－１１－３３ ８７６５４３２１ -250.00",
+    "03/10/2026 TO 20​-11-33 8765­4321 -250.00",
+    "03/10/2026 TO 20‐11‐33 87654321 -250.00",
+    "03/10/2026 TO 2⃣0⃣-1⃣1⃣-3⃣3⃣ -250.00",
+    "03/10/2026 TO 𝟐𝟎-𝟏𝟏-𝟑𝟑 𝟖𝟕𝟔𝟓𝟒𝟑𝟐𝟏 -250.00", "03/10/2026 TO ٢٠-١١-٣٣ ٨٧٦٥٤٣٢١ -250.00",
+    "03/10/2026 TO 20·11·33 87654321 -250.00", "03/10/2026 TO 20_11_33 87654321 -250.00",
+    "03/10/2026 PAYMENT REF 87654321 -250.00", "03/10/2026 TO 87654321 -250.00",
+    "03/10/2026 ROLL NO 1234/5678 -250.00", "03/10/2026 CUSTOMER REF:ABC12345678 -250.00",
+    "03/10/2026 FLAT 3 RENT -650.00", "03/10/2026 12 MILL LANE DELIVERY -6.50",
+    "03/10/2026 DELIVERY EX12MP -6.50", "03/10/2026 DELIVERY EX1 2MP -6.50",
+]  # fmt: skip
+GLUED_SECRETS = ["201133", "87654321", "4242", "60161331926819", "6016", "4929", "alexexample",
+                 "alex", "ex12mp", "flat3", "milllane", "12345678"]  # fmt: skip
+
+
+@pytest.mark.parametrize("line", GLUED)
+def test_every_spelling_the_reviewer_tried_is_masked(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    if out is None:
+        return  # withheld (and reported by text prep): nothing of it is sent
+    flat = re.sub(r"[\s\-./·_:]", "", fold(out.text)).casefold()
+    printed = re.sub(r"[\s\-./·_:]", "", fold(line)).casefold()
+    assert [s for s in GLUED_SECRETS if s in printed and s in flat] == [], out.text
