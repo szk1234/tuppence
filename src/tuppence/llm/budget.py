@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from tuppence.config.models import Budgets
 from tuppence.core.clock import to_iso, utcnow
@@ -51,6 +51,20 @@ def priced_cost(model: ModelInfo, usage: Usage, usd_to_gbp: float) -> tuple[floa
         price_out = FALLBACK_PRICE_OUT_USD_PER_MTOK
     usd = (usage.input_tokens * price_in + usage.output_tokens * price_out) / 1e6
     return round(usd * usd_to_gbp, 6), fallback
+
+
+class RunLimits(Protocol):
+    """What the client uses on a run's budget: a `RunBudget`, or anything that applies the same
+    calls to several (a specialist's own caps inside the whole run's: agents.runtime)."""
+
+    @property
+    def max_seconds(self) -> float: ...
+    def remaining_seconds(self) -> float: ...
+    def check_time(self) -> None: ...
+    def check_limits(self) -> None: ...
+    def over_cap(self, estimated_tokens: int, projected_gbp: float) -> str | None: ...
+    def start_call(self) -> None: ...
+    def record(self, tokens: int, gbp: float | None) -> None: ...
 
 
 @dataclass

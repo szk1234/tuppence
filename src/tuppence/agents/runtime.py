@@ -4,28 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
+from tuppence.llm.budget import RunLimits
 from tuppence.llm.types import BudgetExceeded, Message
 
 
-class BudgetLayer(Protocol):
-    """What the LLM client uses on a run budget (`RunBudget` has all of it)."""
+class BudgetLayer(RunLimits, Protocol):
+    """One layer of a LayeredBudget: what the LLM client uses on a run budget, and its
+    counters (`RunBudget` has all of it)."""
 
-    @property
-    def max_seconds(self) -> float: ...
     @property
     def calls(self) -> int: ...
     @property
     def tokens(self) -> int: ...
     @property
     def gbp(self) -> float: ...
-    def remaining_seconds(self) -> float: ...
-    def check_time(self) -> None: ...
-    def check_limits(self) -> None: ...
-    def over_cap(self, estimated_tokens: int, projected_gbp: float) -> str | None: ...
-    def start_call(self) -> None: ...
-    def record(self, tokens: int, gbp: float | None) -> None: ...
 
 
 class StructuredLLM(Protocol):
@@ -36,7 +30,7 @@ class StructuredLLM(Protocol):
         schema: type[Any],
         *,
         max_tokens: int = 4096,
-        run: Any = None,
+        run: LayeredBudget | None = None,
         run_id: str | None = None,
     ) -> Any: ...
 
@@ -116,3 +110,11 @@ class AnalysisContext:
 
     def budget(self, name: str) -> LayeredBudget:
         return self.budgets[name]
+
+
+if TYPE_CHECKING:  # checked by pyright only
+    from tuppence.llm.client import LLMClient
+
+    def _the_llm_client_is_a_structured_llm(client: LLMClient) -> StructuredLLM:
+        """The app's LLMClient is what a specialist calls: it takes a LayeredBudget as `run`."""
+        return client

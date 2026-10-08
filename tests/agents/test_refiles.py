@@ -2,7 +2,7 @@
 
 import pytest
 
-from agents.test_categoriser import _crowd
+from agents.helpers import crowd
 from tuppence.core.errors import InputError
 from tuppence.core.records import NotFound
 
@@ -15,7 +15,7 @@ SPLIT = {
 
 
 def _split(aenv) -> list[str]:
-    ids = _crowd(aenv)
+    ids = crowd(aenv)
     aenv.llm.script.append(SPLIT)
     aenv.categorise(ids)
     return ids
@@ -69,7 +69,7 @@ def test_undo_once_only_and_only_what_exists(aenv):
 
 
 def test_a_split_that_came_to_nothing_is_remembered_but_not_listed(aenv):
-    ids = _crowd(aenv)  # the oracle never splits
+    ids = crowd(aenv)  # the oracle never splits
     aenv.categorise(ids)
     assert aenv.refiles.list(include_undone=True) == []
     with aenv.db.connection() as conn:

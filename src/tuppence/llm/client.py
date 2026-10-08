@@ -17,7 +17,14 @@ from tuppence.core.clock import to_iso
 from tuppence.core.errors import safe_error_text
 from tuppence.core.household import HouseholdService
 from tuppence.core.settings_store import SettingsStore
-from tuppence.llm.budget import BreakerBoard, RunBudget, UsageLedger, estimate_tokens, priced_cost
+from tuppence.llm.budget import (
+    BreakerBoard,
+    RunBudget,
+    RunLimits,
+    UsageLedger,
+    estimate_tokens,
+    priced_cost,
+)
 from tuppence.llm.connections import Connection, ConnectionRegistry, ModelInfo
 from tuppence.llm.jsonextract import extract_json, to_strict_schema
 from tuppence.llm.pseudonymise import Pseudonymiser
@@ -111,7 +118,7 @@ class LLMClient:
         """A run budget limited by the agent manifest and the user's per-run £ cap."""
         return RunBudget.from_manifest(budgets, self.settings.get("llm.run_cap_gbp"))
 
-    def _wait(self, delay: float, run: RunBudget | None) -> None:
+    def _wait(self, delay: float, run: RunLimits | None) -> None:
         """Sleep before a retry or fallback, unless the run's time limit can't afford it."""
         if run is not None and delay >= run.remaining_seconds():
             raise BudgetExceeded(
@@ -133,7 +140,7 @@ class LLMClient:
         req: ChatRequest,
         redactions: int,
         require_local: bool,
-        run: RunBudget | None,
+        run: RunLimits | None,
     ) -> ChatResponse:
         """One model, with up to two retries; the run's time limit bounds every attempt.
 
@@ -184,7 +191,7 @@ class LLMClient:
         json_schema: dict[str, Any] | None = None,
         schema_name: str = "result",
         max_tokens: int = 4096,
-        run: RunBudget | None = None,
+        run: RunLimits | None = None,
         run_id: str | None = None,
     ) -> ChatResult:
         """Ask the task's models in order until one answers.
@@ -283,7 +290,7 @@ class LLMClient:
         json_schema: dict[str, Any] | None,
         schema_name: str,
         max_tokens: int,
-        run: RunBudget | None,
+        run: RunLimits | None,
         run_id: str | None,
         require_local: bool,
         cooldown: dict[str, float],
@@ -445,7 +452,7 @@ class LLMClient:
         schema: type[T],
         *,
         max_tokens: int = 4096,
-        run: RunBudget | None = None,
+        run: RunLimits | None = None,
         run_id: str | None = None,
     ) -> T:
         strict = to_strict_schema(schema.model_json_schema())

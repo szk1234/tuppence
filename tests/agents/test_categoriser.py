@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from agents.helpers import file_as
+from agents.helpers import crowd, file_as
 from tuppence.agents.categoriser import CategoriseOut, RefileOut
 from tuppence.core.secrets import SecretUnreadable
 from tuppence.llm.budget import estimate_tokens
@@ -381,7 +381,7 @@ def test_a_small_model_gets_a_shallower_tree_and_smaller_batches(aenv):
         assert repair_turn_tokens(call, CategoriseOut) <= ContextBudget(2048).input_tokens
 
 
-def test_a_model_too_small_for_even_three_rows_waits_for_a_bigger_one(aenv):
+def test_a_model_too_small_for_even_one_row_waits_for_a_bigger_one(aenv):
     aenv.window = 1024
     ids = [aenv.add_txn(D, -100 - i, f"GREENBASKET STORES {i:04d}") for i in range(3)]
     counts = aenv.categorise(ids)
@@ -390,30 +390,8 @@ def test_a_model_too_small_for_even_three_rows_waits_for_a_bigger_one(aenv):
     assert aenv.llm.calls == []
 
 
-def _crowd(aenv) -> list[str]:
-    aenv.categoriser_manifest.limits["crowded_category_rows"] = 8
-    names = ["GREENBASKET STORES", "VALUEMART", "FARMGATE BUTCHERS", "CRUSTY BAKERY"]
-    sizes = [5000, 4000, 1500, 1000]  # so the merchants are listed M1..M4 in this order
-    ids = [aenv.add_txn(date(2026, 9, d), -sizes[d % 4], names[d % 4]) for d in range(1, 13)]
-    aenv.llm.script = [
-        {
-            "transactions": [
-                {
-                    "ref": f"T{n}",
-                    "category_id": "food.groceries",
-                    "who": "household",
-                    "confidence": 0.9,
-                    "reason": "food",
-                }
-                for n in range(1, 13)
-            ]
-        }
-    ]
-    return ids
-
-
 def test_crowded_category_is_split_and_can_be_undone(aenv):
-    ids = _crowd(aenv)
+    ids = crowd(aenv)
     aenv.llm.script.append(
         {
             "subcategories": [
@@ -444,7 +422,7 @@ def _refile_calls(aenv) -> list[dict]:
 
 
 def test_a_refile_that_cannot_reach_a_model_is_asked_again_next_run(aenv):
-    ids = _crowd(aenv)
+    ids = crowd(aenv)
     aenv.llm.script.append(AllModelsFailed(["Example AI / m: HTTP 500"]))
     counts = aenv.categorise(ids)
     assert (counts["llm"], counts["new_categories"], counts["stopped"]) == (12, 0, "awaiting_ai")
@@ -457,7 +435,7 @@ def test_a_refile_that_cannot_reach_a_model_is_asked_again_next_run(aenv):
 
 
 def test_a_garbled_refile_is_asked_again_next_run(aenv):
-    ids = _crowd(aenv)
+    ids = crowd(aenv)
     aenv.llm.script.append("not json at all")
     counts = aenv.categorise(ids)
     assert (counts["bad_replies"], counts["new_categories"], counts["stopped"]) == (1, 0, "")
@@ -466,7 +444,7 @@ def test_a_garbled_refile_is_asked_again_next_run(aenv):
 
 
 def test_a_refile_stopped_by_the_budget_is_asked_again_next_run(aenv):
-    ids = _crowd(aenv)
+    ids = crowd(aenv)
     aenv.llm.script.append(BudgetExceeded("This run reached its limit of 1 AI calls."))
     counts = aenv.categorise(ids)
     assert (counts["stopped"], counts["new_categories"]) == ("budget", 0)
@@ -518,3 +496,94 @@ def test_rows_filed_into_a_category_since_retired_are_filed_again(aenv):
     assert counts["llm"] == 2
     for txn_id in (shop, tax):
         assert aenv.categories.tree().usable(aenv.understanding.get(txn_id).category_id)
+
+
+def test_a_review_whose_window_cannot_be_worked_out_keeps_the_guess_and_waits(aenv):
+    """M1: the review's own context_window() call fails (only the review task's chain is
+    unusable): the first answer stands as a guess, waiting for AI, and the reason is kept."""
+    t = aenv.add_txn(D, -2000, "PAT EXAMPLE")
+
+    def window(task):
+        if task == "review":
+            raise NoticeRequired(NOTICE)
+        return 8192
+
+    aenv.window_for = window
+    counts = aenv.categorise([t])
+    assert (counts["stopped"], counts["awaiting_ai"], counts["ai_problem"]) == (
+        "awaiting_ai",
+        1,
+        NOTICE,
+    )
+    row = aenv.understanding.get(t)
+    assert (row.decided_by, row.status, row.category_id, row.waiting) == (
+        "llm",
+        "guessed",
+        "other",
+        "awaiting_ai",
+    )
+    assert [c["task"] for c in aenv.llm.calls] == ["categorise"]
+
+
+def test_a_refile_whose_window_cannot_be_worked_out_is_asked_again_next_run(aenv):
+    """M1: the window fails only for the refile's call: the rows stay sorted, nothing is
+    recorded as considered, and the reason is kept."""
+    ids = crowd(aenv)
+    asked: list[str] = []
+
+    def window(task):
+        asked.append(task)
+        if len(asked) == 2:  # ask_model's call worked; this one is the refile's
+            raise SecretUnreadable("The saved API key can't be read.")
+        return 8192
+
+    aenv.window_for = window
+    counts = aenv.categorise(ids)
+    assert (counts["llm"], counts["stopped"]) == (12, "awaiting_ai")
+    assert counts["ai_problem"] == "The saved API key can't be read."
+    assert {aenv.understanding.get(i).category_id for i in ids} == {"food.groceries"}
+    assert {aenv.understanding.get(i).waiting for i in ids} == {None}
+    with aenv.db.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM category_refile").fetchone()[0] == 0
+    aenv.window_for = lambda task: 8192
+    aenv.categorise(ids)
+    assert len(_refile_calls(aenv)) == 1
+
+
+def test_a_refile_leaves_rows_filed_by_confirmed_memory(aenv):
+    """M4: a merchant confirmed by research (or the person) keeps its rows where its memory
+    files them; a refile moves only rows below confirmed memory, so the two never fight."""
+    ids = crowd(aenv)
+    aenv.categoriser_manifest.limits["max_refiles_per_run"] = 0
+    aenv.categorise(ids)
+    with aenv.db.transaction() as conn:
+        greenbasket = conn.execute(
+            "SELECT id FROM merchant WHERE key = 'greenbasket stores'"
+        ).fetchone()[0]
+        aenv.merchants.confirm_memory(
+            conn, greenbasket, category_id="food.groceries", source="research"
+        )
+    aenv.categoriser_manifest.limits["max_refiles_per_run"] = 1
+    aenv.llm.script = [
+        {
+            "subcategories": [
+                {"label": "Supermarkets", "merchants": ["M1", "M2"]},
+                {"label": "Specialist shops", "merchants": ["M3", "M4"]},
+            ]
+        }
+    ]
+    counts = aenv.categorise(ids)
+    assert counts["refiled"] == 9 and counts["new_categories"] == 2
+    rows = {i: aenv.understanding.get(i) for i in ids}
+    confirmed = [r for r in rows.values() if r.merchant_id == greenbasket]
+    assert len(confirmed) == 3
+    for row in confirmed:
+        assert (row.category_id, row.decided_by, row.authority) == ("food.groceries", "memory", 60)
+    moved = [r for r in rows.values() if r.merchant_id != greenbasket]
+    assert all(r.category_id.startswith("food.groceries.") for r in moved)
+    with aenv.db.transaction() as conn:  # back in scope later: nothing moves either way
+        aenv.versions.bump(conn, "merchant", merchant_id=greenbasket, note="checked again")
+    aenv.categorise(ids)
+    assert {i: aenv.understanding.get(i).category_id for i in ids} == {
+        i: r.category_id for i, r in rows.items()
+    }

@@ -4,6 +4,7 @@ raises (G5) and its JSON repair turn. Every request goes to a scripted server; n
 from datetime import date
 
 import pytest
+from evals import oracle
 
 from tuppence.agents import categoriser
 from tuppence.core.secrets import SecretUnreadable
@@ -91,3 +92,48 @@ def test_without_that_room_the_repair_turn_is_refused(cenv, monkeypatch):
     counts = env.categorise(ids)
     assert (counts["stopped"], counts["awaiting_ai"]) == ("awaiting_ai", 80)
     assert "too much text" in counts["ai_problem"]
+
+
+# Ordinary statement text: a payment type, a merchant and a place or date, with the merchant
+# the bank printed.
+SHOPS = ["GREENBASKET STORES", "CRUSTY BAKERY", "VALUEMART SUPERSTORE", "FARMGATE BUTCHERS",
+         "LITTLE CAFE EXAMPLETOWN", "STREAMLY SUBSCRIPTION", "NORTHERN RAIL TICKETS",
+         "EXAMPLE PHARMACY"]  # fmt: skip
+
+
+def _realistic(env) -> list[str]:
+    return [
+        env.add_txn(
+            date(2026, 10, day),
+            -(250 + 37 * n + day),
+            f"CARD PAYMENT TO {shop} ON {day:02d} OCT",
+            merchant_text=shop.title(),
+        )
+        for n, shop in enumerate(SHOPS)
+        for day in (1, 9, 17)
+    ]
+
+
+def _repair_turn(body: dict) -> bool:
+    return body["messages"][-2]["role"] == "assistant"
+
+
+def test_a_2048_token_model_sorts_realistic_rows_and_every_repair_turn_fits(cenv):
+    """I1 (R-M4-5): a 2,048-token model sorts 24 ordinary rows. Every batch's first reply is
+    garbage as long as it may be, so every batch is repaired: each request and each repair
+    turn passes the client's own size check, or the rows would end awaiting AI."""
+    env = cenv.agent
+    assert cenv.local_model(window=2048) == 2048
+    ids = _realistic(env)
+
+    def bad_first(body: dict) -> str:
+        return oracle.reply(body["messages"]) if _repair_turn(body) else _garbage(body)
+
+    cenv.scripted.replies = [bad_first] * 400
+    counts = env.categorise(ids)
+    assert (counts["stopped"], counts["awaiting_ai"], counts["ai_problem"]) == ("", 0, "")
+    assert (counts["llm"], counts["bad_replies"], counts["deferred"]) == (24, 0, 0)
+    assert all(env.understanding.get(i).status != "unknown" for i in ids)
+    chats = cenv.chats()
+    repairs = [body for body in chats if _repair_turn(body)]
+    assert len(chats) == 2 * len(repairs) > 2  # several batches, each repaired once

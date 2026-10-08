@@ -70,7 +70,7 @@ OUT_PER_ROW = 45  # reply tokens for one transaction
 REPAIR_FIXED = 260
 REPAIR_PER_ROW = OUT_PER_ROW
 TREE_DEPTHS = (AGENT_MAX_LEVEL, 3, 2, 1)  # small models get a shallower tree (spec §10.3)
-MIN_ROWS = 3  # a tree depth must leave room for at least this many rows per call
+MIN_ROWS = 3  # a deeper tree must leave room for this many rows per call (one at depth 1)
 REFILE_MAX_TOKENS = 600
 REFILE_MIN_MERCHANTS = 4  # a category is crowded with at least this many merchants
 DESCRIPTION_CHARS = 120
@@ -88,6 +88,7 @@ COUNT_KEYS = (
     "refiled",
     "new_categories",
     "memory_updates",
+    "scrub_failures",  # texts the masking code failed on: sent as <HIDDEN>, never raw
 )
 
 Stopped = Literal["", "budget", "awaiting_ai"]
@@ -256,6 +257,13 @@ class _Progress:
         self.ai_problem = self.ai_problem or safe_error_text(exc)
         return True
 
+    def scrub(self, text: str) -> str:
+        """`sensitive.scrub`, counting the texts the masking code failed on (hidden)."""
+        return scrub(text, failed=self._scrub_failed)
+
+    def _scrub_failed(self) -> None:
+        self.counts["scrub_failures"] += 1
+
     def update(self) -> dict[str, Any]:
         return {"counts": self.counts, "stopped": self.stopped, "ai_problem": self.ai_problem}
 
@@ -289,19 +297,21 @@ class Categoriser:
             return f"{kind} ({names.get(row.owner_ids[0], 'one person')})"
         return f"{kind} (joint)"
 
-    def _row_data(self, row: RowInfo, names: dict[str, str]) -> dict[str, Any]:
-        """What a prompt says about a transaction. Statement text is scrubbed whole, then
-        shortened (a cut first could leave part of an account number that no longer looks
+    def _row_data(
+        self, row: RowInfo, names: dict[str, str], clean: Callable[[str], str]
+    ) -> dict[str, Any]:
+        """What a prompt says about a transaction. Statement text is scrubbed (`clean`) whole,
+        then shortened (a cut first could leave part of an account number that no longer looks
         like one)."""
         data: dict[str, Any] = {
             "date": row.date,
             "amount": format_pounds(row.amount_pence),
-            "description": scrub(row.raw_description)[:DESCRIPTION_CHARS],
-            "merchant": scrub(row.merchant_name) if row.merchant_name else None,
+            "description": clean(row.raw_description)[:DESCRIPTION_CHARS],
+            "merchant": clean(row.merchant_name) if row.merchant_name else None,
             "account": self._account_label(row, names),
         }
         if row.bank_category:
-            data["bank_category"] = scrub(row.bank_category)[:BANK_CATEGORY_CHARS]
+            data["bank_category"] = clean(row.bank_category)[:BANK_CATEGORY_CHARS]
         return data
 
     @staticmethod
@@ -310,10 +320,10 @@ class Categoriser:
         return json.dumps({"ref": ref, **data}, ensure_ascii=False)
 
     @staticmethod
-    def _memory_line(row: RowInfo, tree: CategoryTree) -> str | None:
+    def _memory_line(row: RowInfo, tree: CategoryTree, clean: Callable[[str], str]) -> str | None:
         if not row.merchant_name or not tree.usable(row.memory_category):
             return None
-        name = scrub(row.merchant_name)
+        name = clean(row.merchant_name)
         return f"- {name}: {row.memory_category} (seen {row.memory_seen} times)"
 
     @staticmethod
@@ -336,6 +346,9 @@ class Categoriser:
         sample_tokens: int,
         wanted: int,
     ) -> str:
+        """The deepest tree that leaves room for `MIN_ROWS` of the longest rows per call; at
+        the smallest depth, room for one is enough (R-M4-5: a small model then sorts in more,
+        smaller batches rather than not at all). The repair turn's room is kept either way."""
         for depth in TREE_DEPTHS:
             text = tree.render(max_depth=depth)
             room = capacity(
@@ -344,7 +357,8 @@ class Categoriser:
                 tokens_per_item=sample_tokens + REPAIR_PER_ROW,
                 output_tokens_per_item=OUT_PER_ROW,
             )
-            if room >= min(MIN_ROWS, wanted):
+            needed = 1 if depth == TREE_DEPTHS[-1] else min(MIN_ROWS, wanted)
+            if room >= needed:
                 return text
         raise ContextTooLarge(
             f"This AI model's context window ({budget.context_window:,} tokens) is too small to"
@@ -547,9 +561,9 @@ class Categoriser:
         with self.d.db.connection() as conn:
             rows = _rows(conn, pending)
         pending = [i for i in pending if i in rows]
-        data = {i: self._row_data(rows[i], names) for i in pending}
+        data = {i: self._row_data(rows[i], names, progress.scrub) for i in pending}
         lines = {i: self._line("T000", data[i]) for i in pending}
-        memory_of = {i: self._memory_line(rows[i], tree) for i in pending}
+        memory_of = {i: self._memory_line(rows[i], tree, progress.scrub) for i in pending}
         sample = max((text_tokens(v) + 1 for v in lines.values()), default=40)
         head = f"TODAY: {self.d.today().isoformat()}\n{people_block}\n"
         fixed = self._fixed(
@@ -700,10 +714,10 @@ class Categoriser:
         review_below = self._threshold("review_below", 0.8)
         data = {
             i: {
-                **self._row_data(rows[i], names),
+                **self._row_data(rows[i], names, progress.scrub),
                 "given_category_id": given[i].category_id,
                 "given_confidence": round(given[i].confidence, 2),
-                "given_reason": scrub(str(given[i].evidence.get("reason", "")))[:80],
+                "given_reason": progress.scrub(str(given[i].evidence.get("reason", "")))[:80],
             }
             for i in low
         }
@@ -811,7 +825,8 @@ class Categoriser:
         )
         lines: list[str] = []
         for n, r in enumerate(merchants, start=1):
-            line = f"M{n}: {scrub(r['name'])} — {r['n']} payments, £{format_pounds(r['pence'])}"
+            name = progress.scrub(r["name"])
+            line = f"M{n}: {name} — {r['n']} payments, £{format_pounds(r['pence'])}"
             if text_tokens(line) + 1 > room:
                 break
             room -= text_tokens(line) + 1
@@ -873,13 +888,15 @@ class Categoriser:
                     continue
                 created.append(child.id)
                 version = self.d.versions.current_in(conn)
+                # Rows below confirmed memory only: a merchant confirmed by research or the
+                # person keeps its rows where that memory files them, so the two never fight.
                 ids = [
                     r[0]
                     for r in conn.execute(
                         "SELECT transaction_id FROM understanding WHERE category_id = ?"
                         " AND merchant_id IN (SELECT value FROM json_each(?))"
-                        " AND decided_by IN ('llm', 'review', 'memory')",
-                        [parent, json.dumps(merchant_ids)],
+                        " AND decided_by IN ('llm', 'review', 'memory') AND authority < ?",
+                        [parent, json.dumps(merchant_ids), CONFIRMED_MEMORY],
                     )
                 ]
                 for txn_id in ids:

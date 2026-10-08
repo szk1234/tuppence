@@ -3,8 +3,10 @@ in a row's description, merchant or bank category, in MEMORY and in a refile's m
 never reach the model; words, dates and amounts do."""
 
 import json
+import logging
 from datetime import date
 
+from tuppence.ingest import sensitive
 from tuppence.ingest.sensitive import scrub
 
 D = date(2026, 10, 1)
@@ -70,6 +72,75 @@ def test_an_account_number_cut_by_the_length_limit_is_still_hidden(aenv):
     for row in rows:
         assert len(row["description"]) <= 120
         assert not any(ch.isdigit() for ch in row["description"]), row["description"]
+
+
+def _sent_rows(aenv) -> list[dict]:
+    """Every transaction line the scripted model was sent (categorise and review)."""
+    return [
+        json.loads(line)
+        for call in aenv.llm.calls
+        for line in call["user"].splitlines()
+        if line.startswith('{"ref"')
+    ]
+
+
+def test_a_bank_category_cut_at_its_limit_is_still_hidden(aenv):
+    """M7: the bank category is scrubbed whole, then cut at 40 characters."""
+    bank_category = "SHOPPING " + "B" * 28 + " 93716482 X"
+    at = bank_category.index("93716482")
+    assert at < 40 < at + 8
+    assert any(ch.isdigit() for ch in scrub(bank_category[:40]))  # the wrong order leaks
+    t = aenv.add_txn(D, -1200, "SOMEWHERE", bank_category=bank_category)
+    aenv.categorise([t])
+    rows = _sent_rows(aenv)
+    assert len(rows) == 2
+    for row in rows:
+        assert len(row["bank_category"]) <= 40
+        assert not any(ch.isdigit() for ch in row["bank_category"]), row["bank_category"]
+
+
+def test_a_reason_that_quotes_a_detail_is_scrubbed_before_the_review(aenv):
+    """M7: the first model's reason goes into the review prompt (given_reason): scrubbed."""
+    t = aenv.add_txn(D, -1200, "SOMEWHERE")
+    aenv.llm.script = [
+        {
+            "transactions": [
+                {
+                    "ref": "T1",
+                    "category_id": "other",
+                    "who": "household",
+                    "confidence": 0.4,
+                    "reason": "paid to SORT 20-00-00 ACC 12345678",
+                }
+            ]
+        }
+    ]
+    aenv.categorise([t])
+    review = aenv.llm.calls[1]
+    assert review["task"] == "review"
+    (row,) = [json.loads(ln) for ln in review["user"].splitlines() if ln.startswith('{"ref"')]
+    assert row["given_reason"].startswith("paid to SORT <HIDDEN>")
+    assert leaked(aenv.prompts()) == []
+
+
+def test_text_that_cannot_be_checked_is_hidden_and_the_run_carries_on(aenv, monkeypatch, caplog):
+    """M2: if the masking code itself fails on a text, that text is sent as <HIDDEN>: never
+    raw, and never failing the run. The warning names no text and the failures are counted."""
+
+    def broken(text, **kw):
+        raise RuntimeError(f"cannot read {text}")
+
+    monkeypatch.setattr(sensitive, "prepare_outbound", broken)
+    t = aenv.add_txn(D, -1200, "SORT 20-00-00 ACC 12345678", bank_category="Shops 87654321")
+    with caplog.at_level(logging.WARNING):
+        counts = aenv.categorise([t])
+    assert (counts["stopped"], counts["llm"]) == ("", 1)
+    assert counts["scrub_failures"] >= 2
+    for row in _sent_rows(aenv):
+        assert row["description"] == "<HIDDEN>" and row["bank_category"] == "<HIDDEN>"
+    assert leaked(aenv.prompts()) == []
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings and all("cannot read" not in w and "12345678" not in w for w in warnings)
 
 
 def test_memory_and_merchant_names_are_scrubbed(aenv):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tomllib
 from dataclasses import dataclass, field
+from datetime import date
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -213,6 +214,30 @@ class ClientEnv:
     def chats(self) -> list[dict[str, Any]]:
         """The chat requests that left (model lists aren't counted)."""
         return list(self.scripted.requests)
+
+
+def crowd(env: AgentEnv) -> list[str]:
+    """Twelve rows of four merchants that the scripted model files under food.groceries, with
+    the crowding threshold lowered to 8: the merchants are listed M1..M4 by spend."""
+    env.categoriser_manifest.limits["crowded_category_rows"] = 8
+    names = ["GREENBASKET STORES", "VALUEMART", "FARMGATE BUTCHERS", "CRUSTY BAKERY"]
+    sizes = [5000, 4000, 1500, 1000]
+    ids = [env.add_txn(date(2026, 9, d), -sizes[d % 4], names[d % 4]) for d in range(1, 13)]
+    env.llm.script = [
+        {
+            "transactions": [
+                {
+                    "ref": f"T{n}",
+                    "category_id": "food.groceries",
+                    "who": "household",
+                    "confidence": 0.9,
+                    "reason": "food",
+                }
+                for n in range(1, 13)
+            ]
+        }
+    ]
+    return ids
 
 
 def file_as(env: KnowledgeEnv, txn_id: str, category_id: str, merchants: MerchantStore) -> None:
