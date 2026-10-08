@@ -411,6 +411,50 @@ def test_draft_lists_are_capped(client):
     assert client.put(f"/api/statements/{detail['id']}/draft", json=body).status_code == 422
 
 
+def test_a_statement_with_more_than_five_thousand_rows_can_be_edited(client):
+    """m6: the fix-up screen sends every row back; a long statement in review could be
+    imported as it was but not edited (422). Now its own size is the limit."""
+    import datetime as dt
+
+    from tuppence.ingest.models import Document, Line, ParsedRow, ParsedStatement
+
+    detail = _needs_review(client)
+    services = client.app.state.services
+    record = services.statements.get(detail["id"])
+    n = 6_000
+    lines = [Line(ref=f"L{i}", text=f"02/10/2026 Shop {i} 1.00") for i in range(1, n + 1)]
+    rows = [
+        ParsedRow(ref=f"L{i}", date=dt.date(2026, 10, 2), amount_pence=-100, amount_text="1.00",
+                  raw_description=f"Shop {i}")
+        for i in range(1, n + 1)
+    ]  # fmt: skip
+    doc = Document(kind="text", sha256="e" * 64, lines=lines, data_refs=[ln.ref for ln in lines])
+    parsed = ParsedStatement(importer="ai-read", rows=rows)
+    services.statements.update(
+        record.id,
+        draft={**record.draft, "document": doc.model_dump(mode="json"),
+               "parsed": parsed.model_dump(mode="json"), "basis": None},
+    )  # fmt: skip
+    detail = client.get(f"/api/statements/{record.id}").json()
+    assert len(detail["draft_rows"]) == n
+    body = {
+        "rows": [
+            {"ref": r["ref"], "date": r["date"], "amount": r["amount"], "description": "x"}
+            for r in detail["draft_rows"]
+        ],
+        "skipped": [],
+        "expected_version": detail["version"],
+    }
+    saved = client.put(f"/api/statements/{record.id}/draft", json=body)
+    assert saved.status_code == 200, saved.text[:300]
+    assert len(saved.json()["draft_rows"]) == n
+    # more lines than the statement has is still refused, plainly
+    body["rows"] = body["rows"] + body["rows"][:1]
+    body["expected_version"] = saved.json()["version"]
+    refused = client.put(f"/api/statements/{record.id}/draft", json=body)
+    assert refused.status_code == 422
+
+
 def test_empty_descriptions_and_skip_reasons_from_the_reader_can_be_saved(client):
     """M2: the reader left a description and a skip reason empty. The fix-up screen sends the
     draft back as it got it, and that saves."""

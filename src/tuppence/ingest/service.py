@@ -391,6 +391,8 @@ class IngestService:
             raise InputError("Only statements that need your check can be edited.")
         doc = Document.model_validate(record.draft["document"])
         parsed = ParsedStatement.model_validate(record.draft["parsed"])
+        if len(rows) + len(skipped) > len(doc.lines) + len(parsed.rows):  # each line once
+            raise InputError("That's more lines than this statement has.")
         original = {row.ref: row for row in parsed.rows}
         held = set(doc.held_amount_refs)
         seen: set[str] = set()

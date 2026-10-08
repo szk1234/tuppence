@@ -123,7 +123,10 @@ class AccountAnswer(BaseModel):
     expected_version: int
 
 
-MAX_DRAFT_LINES = 5_000  # rows or skipped lines in one save: more than any statement has
+# Rows or skipped lines in one save: a ceiling above any statement within the upload limit.
+# The real limit is the statement's own: every line listed must be one of its lines, listed
+# once (m6: the fix-up screen sends every row back, so a long statement must fit).
+MAX_DRAFT_LINES = 250_000
 Ref = Annotated[str, Field(min_length=1, max_length=40)]
 NO_DESCRIPTION = "(no description)"
 NO_REASON = "Not a transaction"
