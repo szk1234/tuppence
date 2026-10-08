@@ -513,11 +513,9 @@ class Categoriser:
                     row.decided_by in ("llm", "review") and txn_id in stale
                 ):
                     pending.append(txn_id)
-                elif (
-                    row.decided_by == "llm"
-                    and row.status == "guessed"
-                    and row.waiting in ("deferred", "awaiting_ai")
-                ):  # its second look was cut short last time: it gets that look now
+                elif row.decided_by == "llm" and row.status == "guessed":
+                    # an AI guess without its second look (cut short last time, or queued by
+                    # the sweep): it gets that look now
                     low.append(txn_id)
             # A rule that ended a transfer pairing released the other side (`apply`): when
             # that row is in this run too, the model files it now rather than next run.
@@ -530,12 +528,15 @@ class Categoriser:
                     [json.dumps([i for i in ids if i not in asked])],
                 )
             )
-            # Everything else in scope has had its look: it leaves the queue.
+            # Everything else in scope has had its look under this knowledge version: it
+            # leaves the queue, stamped with that version, so the sweep doesn't queue it again
+            # until something changes for it (a row only a rule or the matcher may change).
             waiting = set(pending) | set(low)
             conn.execute(
-                "UPDATE understanding SET waiting = NULL WHERE status != 'confirmed'"
+                "UPDATE understanding SET waiting = NULL,"
+                " knowledge_version = MAX(knowledge_version, ?) WHERE status != 'confirmed'"
                 " AND transaction_id IN (SELECT value FROM json_each(?))",
-                [json.dumps([i for i in ids if i not in waiting])],
+                [version, json.dumps([i for i in ids if i not in waiting])],
             )
             self.d.rules.record_hits(conn, hits)
         cap = self._limit("max_rows_per_run", 2000)
@@ -964,11 +965,28 @@ class Categoriser:
                 if guess is None:
                     continue
                 if self.d.merchants.remember(conn, merchant_id, guess, seen_count=len(rows)):
-                    self.d.versions.bump(
+                    # The rows this memory was learned from already agree with it: the bump
+                    # mustn't make them stale (the sweep would send them straight back to the
+                    # model). Rows that disagree, or were stale already, stay stale.
+                    agreeing = [
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT u.transaction_id FROM understanding u"  # noqa: S608
+                            " WHERE u.merchant_id = ? AND u.category_id = ?"
+                            " AND u.status != 'confirmed' AND NOT " + STALE_SQL,
+                            [merchant_id, guess.category_id],
+                        )
+                    ]
+                    version = self.d.versions.bump(
                         conn,
                         "merchant",
                         merchant_id=merchant_id,
                         note=f"usually {guess.category_id}",
+                    )
+                    conn.execute(
+                        "UPDATE understanding SET knowledge_version = ? WHERE status != 'confirmed'"
+                        " AND transaction_id IN (SELECT value FROM json_each(?))",
+                        [version, json.dumps(agreeing)],
                     )
                     updated += 1
         progress.counts["memory_updates"] = updated
