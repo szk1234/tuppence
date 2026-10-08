@@ -14,7 +14,7 @@
 
   async function send(list: FileList | null | undefined) {
     const files = Array.from(list ?? [])
-    if (!files.length) return
+    if (!files.length || busy) return
     busy = true
     error = ''
     rejected = []
@@ -47,17 +47,18 @@
 >
   <p class="lead">Drop your statements here</p>
   <p class="hint">CSV, OFX, QIF, CAMT.053, Excel (.xlsx), PDF or a screenshot. Up to 20 files at a time.</p>
-  <label class="button" for="statement-files">Choose files</label>
-  <input
-    id="statement-files"
-    class="visually-hidden"
-    type="file"
-    multiple
-    accept={ACCEPT}
-    disabled={busy}
-    bind:this={input}
-    onchange={(e) => send((e.currentTarget as HTMLInputElement).files)}
-  />
+  <label class="button">
+    Choose files
+    <input
+      class="visually-hidden"
+      type="file"
+      multiple
+      accept={ACCEPT}
+      disabled={busy}
+      bind:this={input}
+      onchange={(e) => send((e.currentTarget as HTMLInputElement).files)}
+    />
+  </label>
   {#if busy}<p role="status">Uploading…</p>{/if}
 </section>
 <Notice message={error} />

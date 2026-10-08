@@ -102,3 +102,17 @@ it('decides held-back lines, offers Wrong account and Try again with the cost wa
   await vi.waitFor(() => expect(calls.some((c) => c.url === '/api/statements/s_1/change-account')).toBe(true))
   expect(calls.find((c) => c.url === '/api/statements/s_1/change-account')!.body).toEqual({ account_id: 'a_1', expected_version: 5 })
 })
+
+it('guards re-reading an imported statement behind an explicit confirmation', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({
+    ...base, status: 'imported', status_label: 'Imported', version: 2, check_errors: [], draft_rows: [], held_lines: [], transactions: [],
+  })))
+  render(StatementDetail, { id: 's_1' })
+  expect(await screen.findByText('Something wrong with this import?')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Wrong account?' })).not.toBeInTheDocument()
+  expect(screen.getByText('This will remove these transactions and read the file again.')).toBeInTheDocument()
+  await fireEvent.click(screen.getByLabelText(/I understand/))
+  expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Wrong account?' })).toBeInTheDocument()
+})

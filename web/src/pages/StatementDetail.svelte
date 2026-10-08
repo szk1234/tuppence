@@ -24,6 +24,8 @@
   let saved = $state('')
   let busy = $state(false)
   let wrongAccount = $state(false)
+  let tick = $state(0)
+  let confirmed = $state(false)
 
   const fail = (err: unknown) => { saved = ''; error = errorText(err) }
 
@@ -37,12 +39,13 @@
   }
 
   async function load() {
-    try { show(await getStatement(id)) } catch (err) { fail(err) }
+    try { show(await getStatement(id)) } catch (err) { fail(err) } finally { tick++ }
   }
   onMount(load)
 
   // While the file is still being read, look again every 1.5 seconds.
   $effect(() => {
+    void tick // a failed look re-arms the timer
     if (!detail || !IN_PROGRESS.includes(detail.status)) return
     const timer = setTimeout(load, 1500)
     return () => clearTimeout(timer)
@@ -115,6 +118,18 @@
   }
 </script>
 
+{#snippet again()}
+  <div class="again">
+    <button onclick={retry} disabled={busy}>Try again</button>
+    <span class="hint">Reads the file again from scratch. If it needs your AI model, that may cost another read.</span>
+    {#if !wrongAccount}
+      <button class="link" onclick={() => (wrongAccount = true)}>Wrong account?</button>
+    {:else}
+      {#if detail}<AccountQuestion statement={detail} change onanswered={() => navigate('/statements')} />{/if}
+    {/if}
+  </div>
+{/snippet}
+
 <section>
   <p><a href="/statements" onclick={link}>← All statements</a></p>
   <Notice message={error} />
@@ -174,19 +189,20 @@
       <AccountQuestion statement={detail} onanswered={() => navigate('/statements')} />
     {:else if detail.status === 'failed'}
       <p class="warn">{detail.error}</p>
+    {:else if detail.status === 'needs_account'}
+      <p>This file is waiting for you to say which account it belongs to. Go back to all statements to answer.</p>
     {:else}
       <p role="status">Still reading this file…</p>
     {/if}
-    {#if detail.status === 'failed' || detail.status === 'needs_review' || detail.status === 'imported'}
-      <div class="again">
-        <button onclick={retry} disabled={busy}>Try again</button>
-        <span class="hint">Reads the file again from scratch. If it needs your AI model, that may cost another read.</span>
-        {#if !wrongAccount}
-          <button class="link" onclick={() => (wrongAccount = true)}>Wrong account?</button>
-        {:else}
-          <AccountQuestion statement={detail} change onanswered={() => navigate('/statements')} />
-        {/if}
-      </div>
+    {#if detail.status === 'failed' || detail.status === 'needs_review'}
+      {@render again()}
+    {:else if detail.status === 'imported'}
+      <details class="again">
+        <summary>Something wrong with this import?</summary>
+        <p class="warn">This will remove these transactions and read the file again.</p>
+        <label class="choice"><input type="checkbox" bind:checked={confirmed} /> I understand, remove them and read the file again</label>
+        {#if confirmed}{@render again()}{/if}
+      </details>
     {/if}
   {/if}
 </section>
@@ -203,5 +219,6 @@
   .held { list-style: none; padding: 0; }
   .held li { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .4rem 0; }
   .held button { margin-top: 0; }
+  .choice { display: flex; gap: .5rem; align-items: center; font-weight: 400; }
   .again { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: .5rem; }
 </style>

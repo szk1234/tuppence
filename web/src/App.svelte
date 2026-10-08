@@ -20,6 +20,7 @@
   import Timeline from './pages/settings/Timeline.svelte'
   import StatementDetail from './pages/StatementDetail.svelte'
   import Statements from './pages/Statements.svelte'
+  import { statementIdFromPath } from './lib/statements'
   import Usage from './pages/Usage.svelte'
   import Welcome from './pages/Welcome.svelte'
 
@@ -42,10 +43,8 @@
       .then((o) => { if (o?.started === false && router.path === '/') navigate('/welcome') })
       .catch(() => {})
   })
-  const statementId = $derived(
-    router.path.startsWith('/statements/') ? decodeURIComponent(router.path.slice('/statements/'.length)) : null,
-  )
-  const Page = $derived(routes[router.path] ?? NotFound)
+  const statementPath = $derived(statementIdFromPath(router.path))
+  const Page = $derived(statementPath === 'bad' ? NotFound : (routes[router.path] ?? NotFound))
 </script>
 
 {#if failed}
@@ -61,8 +60,8 @@
 {:else}
   <Nav />
   <main>
-    {#if statementId}
-      {#key statementId}<StatementDetail id={statementId} />{/key}
+    {#if typeof statementPath === 'object'}
+      {#key statementPath.id}<StatementDetail id={statementPath.id} />{/key}
     {:else}
       <Page />
     {/if}

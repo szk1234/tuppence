@@ -17,6 +17,8 @@
   let error = $state('')
   let vision = $state<{ on: boolean; version: number } | null>(null)
   let visionBusy = $state(false)
+  let acting = $state(false)
+  let tick = $state(0)
 
   const fail = (err: unknown) => { error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
 
@@ -24,7 +26,7 @@
     try {
       statements = await listStatements()
       loaded = true
-    } catch (err) { fail(err) }
+    } catch (err) { fail(err) } finally { tick++ }
   }
   onMount(async () => {
     await load()
@@ -48,6 +50,7 @@
   }
 
   $effect(() => {
+    void tick // a failed refresh re-arms the timer
     if (!statements.some((s) => IN_PROGRESS.includes(s.status))) return
     const timer = setTimeout(load, 1500)
     return () => clearTimeout(timer)
@@ -65,14 +68,18 @@
   }
 
   async function retry(s: StatementView) {
+    if (acting) return
     error = ''
-    try { await retryStatement(s.id, s.version); await load() } catch (err) { fail(err) }
+    acting = true
+    try { await retryStatement(s.id, s.version); await load() } catch (err) { fail(err) } finally { acting = false }
   }
 
   async function remove(s: StatementView) {
     if (!confirm(`Remove ${s.filename} and its transactions?`)) return
+    if (acting) return
     error = ''
-    try { await removeStatement(s.id); await load() } catch (err) { fail(err) }
+    acting = true
+    try { await removeStatement(s.id); await load() } catch (err) { fail(err) } finally { acting = false }
   }
 </script>
 
@@ -87,7 +94,7 @@
       <li class="card" aria-label={s.filename}>
         <div class="title">
           <strong>{s.filename}</strong>
-          <span class="badge status-{s.status}" role="status">{s.status_label}</span>
+          <span class="badge status-{s.status}">{s.status_label}</span>
         </div>
         {#if s.account_name}<p class="meta">{s.account_name}{period(s)}</p>{/if}
         {#if s.status === 'imported'}
@@ -100,10 +107,10 @@
           <a href={`/statements/${s.id}`} onclick={link}>Check and fix</a>
         {:else if s.status === 'failed'}
           <p class="warn">{s.error}</p>
-          <button onclick={() => retry(s)}>Try again</button>
+          <button onclick={() => retry(s)} disabled={acting}>Try again</button>
         {/if}
         {#each s.warnings as warning}<p class="hint">{warning}</p>{/each}
-        <button class="link" onclick={() => remove(s)} aria-label={`Remove ${s.filename}`}>Remove</button>
+        <button class="link" disabled={acting} onclick={() => remove(s)} aria-label={`Remove ${s.filename}`}>Remove</button>
       </li>
     {/each}
   </ul>

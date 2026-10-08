@@ -39,12 +39,22 @@ export type NewAccount = {
   last4: string | null; owner_ids: string[]
 }
 
+const ID_SHAPE = /^s_[0-9a-f]{10}$/
+
+/** The statement id in a /statements/... path: a valid id, 'none' when the path is not a statement page, or 'bad'. */
+export function statementIdFromPath(path: string): { id: string } | 'none' | 'bad' {
+  if (!path.startsWith('/statements/')) return 'none'
+  let id: string
+  try { id = decodeURIComponent(path.slice('/statements/'.length)) } catch { return 'bad' }
+  return ID_SHAPE.test(id) ? { id } : 'bad'
+}
+
 export const IN_PROGRESS: Status[] = ['received', 'identifying', 'parsing']
 
 export const listStatements = async () =>
   (await api<{ statements: StatementView[] }>('/api/statements')).statements
 
-export const getStatement = (id: string) => api<StatementDetail>(`/api/statements/${id}`)
+export const getStatement = (id: string) => api<StatementDetail>(`/api/statements/${encodeURIComponent(id)}`)
 
 export function uploadStatements(files: File[]) {
   const form = new FormData()
@@ -55,12 +65,12 @@ export function uploadStatements(files: File[]) {
 
 export const answerAccount = (
   id: string, body: { account_id?: string; new_account?: NewAccount; expected_version: number },
-) => api<StatementView>(`/api/statements/${id}/account`, { method: 'POST', body })
+) => api<StatementView>(`/api/statements/${encodeURIComponent(id)}/account`, { method: 'POST', body })
 
 /** "Wrong account?": the file is read again for the chosen account (which may cost another AI read). */
 export const changeAccount = (
   id: string, body: { account_id?: string; new_account?: NewAccount; expected_version: number },
-) => api<StatementView>(`/api/statements/${id}/change-account`, { method: 'POST', body })
+) => api<StatementView>(`/api/statements/${encodeURIComponent(id)}/change-account`, { method: 'POST', body })
 
 export const saveDraft = (
   id: string,
@@ -69,12 +79,12 @@ export const saveDraft = (
     skipped: { ref: string; reason: string }[]
     expected_version: number
   },
-) => api<StatementDetail>(`/api/statements/${id}/draft`, { method: 'PUT', body })
+) => api<StatementDetail>(`/api/statements/${encodeURIComponent(id)}/draft`, { method: 'PUT', body })
 
 export const acceptDraft = (id: string, version: number) =>
-  api<StatementView>(`/api/statements/${id}/accept`, { method: 'POST', body: { expected_version: version } })
+  api<StatementView>(`/api/statements/${encodeURIComponent(id)}/accept`, { method: 'POST', body: { expected_version: version } })
 
 export const retryStatement = (id: string, version: number) =>
-  api<StatementView>(`/api/statements/${id}/retry`, { method: 'POST', body: { expected_version: version } })
+  api<StatementView>(`/api/statements/${encodeURIComponent(id)}/retry`, { method: 'POST', body: { expected_version: version } })
 
-export const removeStatement = (id: string) => api<void>(`/api/statements/${id}`, { method: 'DELETE' })
+export const removeStatement = (id: string) => api<void>(`/api/statements/${encodeURIComponent(id)}`, { method: 'DELETE' })

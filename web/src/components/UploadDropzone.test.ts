@@ -25,3 +25,12 @@ it('uploads every chosen file and lists the ones refused', async () => {
   expect(new Headers(init!.headers).get('Content-Type')).toBeNull()
   expect(onuploaded).toHaveBeenCalledWith([{ id: 's_1', filename: 'monzo.csv' }])
 })
+
+it('keeps the file input inside its label so focus shows on the button', () => {
+  render(UploadDropzone, {})
+  const input = screen.getByLabelText('Choose files')
+  expect(input.closest('label')).toHaveClass('button')
+  input.focus()
+  expect(input).toHaveFocus()
+  expect(input.closest('label')!.matches(':focus-within')).toBe(true)
+})
