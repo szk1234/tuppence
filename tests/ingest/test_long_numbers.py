@@ -101,6 +101,38 @@ WORDS = [
     "02/10/2026 O2 MOBILE 15.00", "02/10/2026 BOSS LOOKS 7.00 1,000.00", "05.10.26 SHOP 4.00",
     "05 10 26 HOMEWARE DIRECT 43.27", "Mon 5 Oct Little Cafe -£3.40", "02/10/2026 SHOP 1234.56",
 ]  # fmt: skip
+# Re-review 2 R2: the halves of a number joined by a separator outside the old join set, an
+# account number after a label written with a comma, and card endings after punctuation.
+SEPARATED = [
+    "03/10/2026 TO 20-11-33 8765 - 4321 -250.00", "03/10/2026 TO 20-11-33 8765 / 4321 -250.00",
+    "03/10/2026 TO 20-11-33 8765,4321 -250.00", "03/10/2026 TO 20-11-33 8765+4321 -250.00",
+    "03/10/2026 TO 20-11-33 8765#4321 -250.00", "03/10/2026 TO 20-11-33 8765\\4321 -250.00",
+    "03/10/2026 TO 20-11-33 8765:4321 -250.00", "03/10/2026 ACC NO 8765,4321 -250.00",
+    "03/10/2026 TO 8765 - 4321 RENT -250.00", "03/10/2026 TO 8765 / 4321 RENT -250.00",
+    "03/10/2026 REF 1234, 5678 -1.00", "03/10/2026 REF 123 + 456 -1.00",
+]  # fmt: skip
+CARD_ENDINGS = [
+    "03/10/2026 CARD ENDING IN: 9012 -12.00", "03/10/2026 ENDING-9012 -12.00",
+    "03/10/2026 CARD #9012 -12.00", "03/10/2026 CARD ENDING: 9012 -12.00",
+    "03/10/2026 CARD ENDING # 9012 -12.00", "03/10/2026 VISA ENDING IN - 9012 -12.00",
+    "03/10/2026 CARD: 9012 -12.00",
+]  # fmt: skip
+# R5: numbers joined by a slash and nothing else, and a sort code spelled with spaces or dots
+# at the start of a line (where a date may be), with the account number joined after it.
+SLASHED = [
+    "03/10/2026 PAYMENT 1234/5678 -250.00", "03/10/2026 MANDATE 123/456/789 -12.00",
+    "03/10/2026 REF 12/34/5678 -1.00", "PAYMENT 1234/5678 -250.00",
+]  # fmt: skip
+LEADING = [
+    "20.11.33 87654321 RENT", "20 11 33 87654321 RENT", "20.11.33 87654321 RENT 250.00",
+    "20 11 33 8765 4321 RENT 250.00", "20.11.33 8765.4321 RENT 250.00",
+    "Mon 20.11.33 87654321 RENT 250.00", "03.10.26 04.10.26 87654321 RENT 12.50",
+]  # fmt: skip
+# R4: a row's two dates (transaction and posting) printed with dots or spaces.
+TWO_DATES = [
+    "03.10.26 04.10.26 TESCO STORES 12.50", "03 10 26 04 10 26 TESCO STORES 12.50",
+    "03.10.2026 04.10.2026 TESCO STORES 12.50", "Mon 03.10.26 04.10.26 LITTLE CAFE 3.40",
+]  # fmt: skip
 M3_SECRETS = {
     M3[0]: ["4242"], M3[1]: ["4242"], M3[2]: ["4242"], M3[3]: ["60161331926819", "GB29"],
     M3[4]: ["ALEX"], M3[5]: ["ALEX"], M3[6]: ["ALEX"], M3[7]: ["ALEX"], M3[8]: ["201133"],
@@ -165,7 +197,8 @@ def _corpus() -> list[str]:
     from ingest.test_sensitive_parity import EVERY, PLAIN, REGRESSION, WITH_DETAILS
 
     return list(dict.fromkeys([*EVERY, *PLAIN, *REGRESSION, *WITH_DETAILS, *BALANCES, *UNSURE,
-                               *ROWS_STILL_SENT, *N3, *M3, *DOTTED, *OCR, *PROBE]))  # fmt: skip
+                               *ROWS_STILL_SENT, *N3, *M3, *DOTTED, *OCR, *PROBE, *SEPARATED,
+                               *SLASHED, *LEADING, *TWO_DATES]))  # fmt: skip
 
 
 def _fuzz(seed: int, count: int = 400) -> list[str]:
@@ -186,6 +219,26 @@ def _fuzz(seed: int, count: int = 400) -> list[str]:
         rnd.shuffle(parts)
         amount = rnd.choice(["-250.00", "1,250.00", "£5", "12.30 1,000.00"])
         out.append(f"0{rnd.randint(1, 9)}/10/2026 {''.join(parts)} {amount}")
+    return out
+
+
+_SEPARATORS = [" - ", " / ", ",", ", ", "+", " + ", "#", "\\", ":", ": ", "/", " -", "- "]
+
+
+def _fuzz_split(seed: int, count: int = 400) -> list[str]:
+    """R2: a number of six to twelve digits split in two, each half too short to be a long
+    number alone, joined by any separator, after a sort code or a word, with or without the
+    line's own date."""
+    rnd = random.Random(seed)
+    out = []
+    for _ in range(count):
+        number = "".join(rnd.choice("0123456789") for _ in range(rnd.randint(6, 10)))
+        cut = rnd.randint(2, len(number) - 2)
+        joined = number[:cut] + rnd.choice(_SEPARATORS) + number[cut:]
+        before = rnd.choice(["TO 20-11-33 ", "TO ", "REF ", "ACC NO ", "FPO J SMITH ", ""])
+        after = rnd.choice([" RENT", "", " J SMITH"])
+        date = rnd.choice(["03/10/2026 ", "03.10.26 ", "03 Oct ", ""])
+        out.append(f"{date}{before}{joined}{after} {rnd.choice(['-250.00', '12.30 1,000.00'])}")
     return out
 
 
@@ -211,17 +264,66 @@ def test_words_dates_and_amounts_are_left_as_printed(line):
     assert out is not None and out.text == line
 
 
-@pytest.mark.parametrize("source", ["corpus", "fuzz"])
-def test_no_run_of_six_digits_survives_prepare_outbound(source):
-    """The guard over every line the parity corpus holds and a fuzz of joined numbers: what
-    `prepare_outbound` sends keeps no run of six digits from the printed line."""
-    lines = _corpus() if source == "corpus" else _fuzz(0) + _fuzz(1)
+def _leaks(lines: list[str]) -> dict[str, tuple[str, list[str]]]:
     leaked = {}
     for line in lines:
         out = sensitive.prepare_outbound(line, names=NAMES)
         if out is not None and (bad := survivors(line, out.text)):
             leaked[line] = (out.text, bad)
-    assert leaked == {}
+    return leaked
+
+
+@pytest.mark.parametrize("source", ["corpus", "fuzz", "split"])
+def test_no_run_of_six_digits_survives_prepare_outbound(source):
+    """The guard over every line the parity corpus holds and a fuzz of joined and split
+    numbers: what `prepare_outbound` sends keeps no run of six digits from the printed line.
+    A failure is reported plainly (R5): comparing a large dict made a failing run take minutes."""
+    lines = {
+        "corpus": _corpus,
+        "fuzz": lambda: _fuzz(0) + _fuzz(1),
+        "split": lambda: _fuzz_split(0) + _fuzz_split(1),
+    }[source]()
+    leaked = _leaks(lines)
+    if leaked:
+        sample = list(leaked.items())[:5]
+        pytest.fail(f"{len(leaked)} of {len(lines)} lines leak a long number, e.g. {sample}")
+
+
+@pytest.mark.parametrize("line", SEPARATED + SLASHED + LEADING)
+def test_a_number_split_by_any_separator_is_masked_whole(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is not None, line  # masked, not withheld
+    assert survivors(line, out.text) == [], out.text
+    assert not re.search(r"8765|4321|5678|456|789", re.sub(r"[\d,.]+\.\d{2}", "", out.text))
+
+
+@pytest.mark.parametrize("line", CARD_ENDINGS)
+def test_a_card_ending_after_punctuation_is_masked(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is None or "9012" not in out.text, out
+
+
+@pytest.mark.parametrize("line", TWO_DATES)
+def test_a_rows_two_leading_dates_are_left_as_printed(line):
+    """R4: "03.10.26 04.10.26 ..." (transaction and posting date) was masked as one run, so
+    the row's own date was hidden."""
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is not None and out.text == line
+
+
+def test_the_guard_catches_a_slash_left_out_of_the_joins(monkeypatch):
+    """R5, the reviewer's blind-spot mutation: with "/" no longer joining the groups of a
+    number, "PAYMENT 1234/5678" goes out whole, and the guard says so."""
+    monkeypatch.setattr(sensitive, "_RUN_JOINS", sensitive._RUN_JOINS - {"/"})
+    monkeypatch.setattr(sensitive, "_WIDE_JOINS", sensitive._WIDE_JOINS - {"/"})
+    assert _leaks(SLASHED)
+
+
+def test_the_guard_catches_a_leading_sort_code_taken_for_a_date(monkeypatch):
+    """R5, the other blind spot: with any group of digits at the start of a line taken for its
+    date, whatever is joined after it, "20.11.33 87654321 RENT" sends the sort code."""
+    monkeypatch.setattr(sensitive, "_OWN_DATE_JOINED", 10**9)
+    assert _leaks(LEADING)
 
 
 def test_a_heading_with_a_long_number_is_hidden_in_a_layout_sketch():

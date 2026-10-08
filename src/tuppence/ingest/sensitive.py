@@ -98,6 +98,8 @@ VALUES: dict[str, re.Pattern[str]] = {
         r"\bending\s+(?:in\s+)?\d{3,4}\b|(?<!\*)\*{2,}[\s-]*\d{2,4}|(?<![a-z])x{2,}[\s-]*\d{4}\b"
         # the short forms (R-M3-23 (a)): "ENDING4242", "*4242", "X4242"
         r"|\bending(?:\s*in)?\s*\d{4}(?!\d)|(?<![\w*])\*\s?\d{4}(?!\d)|(?<![a-z0-9])x\s?\d{4}(?!\d)"
+        # after punctuation (re-review 2 R2): "ENDING IN: 9012", "ENDING-9012", "CARD #9012"
+        r"|\bending(?:\s*in)?\s*[:#\-]\s*\d{3,4}(?!\d)|\bcard\s*[:#]\s*\d{4}(?!\d)"
         r"|\b\d{4}[\s-]*(?:[*•●·∙◦∗]{2,}|[xX]{4})"
         # the last digits behind bullets, dots or an ellipsis: "•••• 4242", "...4242", "…4242"
         # (a mask run is tried from its first character only, so a long run stays fast)
@@ -344,9 +346,10 @@ _NAME_LABEL = re.compile(r"name|holder|type|joint", _I)
 
 
 def _value_token(token: str) -> bool:
-    """A token that gives a value: letters, digits, mask characters, dots, dashes or slashes,
-    with at least one digit or mask character ("12345678", "12-34-56", "****4242")."""
-    return all(ch.isalnum() or ch in _MASK_CHARS or ch in "./-" for ch in token) and any(
+    """A token that gives a value: letters, digits, mask characters, dots, dashes, slashes or
+    commas, with at least one digit or mask character ("12345678", "12-34-56", "****4242",
+    "8765,4321")."""
+    return all(ch.isalnum() or ch in _MASK_CHARS or ch in "./-," for ch in token) and any(
         ch.isdigit() or ch in _MASK_CHARS for ch in token
     )
 
@@ -395,26 +398,32 @@ def _tokens_after(text: str, start: int, keep: Sequence[bool], name_words: bool)
 #
 # Inside a line that is sent, every run of six or more digits that isn't an amount or a date is
 # masked: an account, card, roll or reference number, or a sort code and account number
-# together, however they are joined (one space, hyphen, slash, dot, middle dot or underscore
-# between groups) and whatever is glued to them ("ACCNO87654321", "J SMITH20-11-33").
+# together, however they are joined and whatever is glued to them ("ACCNO87654321", "J
+# SMITH20-11-33"). Groups are joined by one space, hyphen, slash, dot, middle dot or underscore,
+# or by one hyphen, slash, comma, plus, hash, backslash or colon with a space either side or
+# none ("8765 - 4321", "8765,4321", "8765:4321": re-review 2 R2).
 #
 # Left alone: a well-formed amount (one point, two decimals, comma grouping only: 12.30,
 # 1234.56, 1,234.56; or whole pounds after £), a date a pattern reads (02/10/2026, 05.10.2026),
 # and a date printed with spaces or dots ("05 10 26", "05.10.26") only where it is the line's
-# own date, at its start, with no number of four or more digits joined after it. Anywhere else
-# such a group may be a sort code ("TO 20.11.33 87.65.43.21").
+# own date, at its start, with no number of four or more digits joined after it, and a second
+# such date right after it (the posting date: "03.10.26 04.10.26 TESCO", R4) on the same terms.
+# Anywhere else such a group may be a sort code ("TO 20.11.33 87.65.43.21").
 #
 # A scan may read a digit as a letter (0 as O, 5 as S, 1 as l, I or |, 8 as B, 2 as Z). Inside a
 # token that is at least half digits those letters are read as digits for finding numbers, so
 # "2O-11-33 876S4321" is masked whole; a word ("BOOTS", "SO", "ZARA") is never read so.
 
 LONG_RUN = 6
-_RUN_JOINS = frozenset(" -/.·_")
+_RUN_JOINS = frozenset(" -/.·_")  # one of these between two groups of digits
+_WIDE_JOINS = frozenset("-/,+#\\:")  # or one of these, with a space either side or none
+_OWN_DATE_JOINED = 4  # digits joined after a leading date that make it a sort code instead
 _DAY_NAME = r"(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+"
 _LEADING_DATE = re.compile(
     rf"^\s*(?:{_DAY_NAME})?(\d{{1,2}})([ .])(\d{{1,2}})\2(\d{{4}}|\d{{2}})(?![\d,:/]|\.\d)",
     re.IGNORECASE,
 )
+_NEXT_DATE = re.compile(r" (\d{1,2})([ .])(\d{1,2})\2(\d{4}|\d{2})(?![\d,:/]|\.\d)")
 _WELL_FORMED = re.compile(r"(?<![\d,])(?<!\d\.)(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d|[.,]\d)")
 _LOOKALIKES = frozenset("OoSslI|BZz")
 _AS_DIGITS = str.maketrans("OoSslI|BZz", "0055111822")
@@ -453,6 +462,55 @@ def _digits_read(seen: str) -> str:
     return _TOKEN.sub(lambda m: _read_token(m.group(0)), seen)
 
 
+def _join(view: str, k: int, part: Sequence[bool]) -> int:
+    """Length of the separator at `k` when it joins two groups of digits (see above), else 0."""
+    size = len(view)
+    if view[k] in _RUN_JOINS and k + 1 < size and part[k + 1]:
+        return 1
+    j = k + 1 if view[k] == " " else k
+    if j < size and view[j] in _WIDE_JOINS:
+        j += 1
+        if j < size and view[j] == " ":
+            j += 1
+        if j < size and part[j]:
+            return j - k
+    return 0
+
+
+def _joined_digits(view: str, at: int, part: Sequence[bool]) -> int:
+    """How many digits the number joined to `view` at `at` holds."""
+    k, digits = at, 0
+    while k < len(view) and (step := _join(view, k, part)):
+        k += step
+        while k < len(view) and part[k]:
+            digits += 1
+            k += 1
+    return digits
+
+
+def _real_day(match: re.Match[str]) -> bool:
+    return 1 <= int(match.group(1)) <= 31 and 1 <= int(match.group(3)) <= 12
+
+
+def _own_dates(view: str, part: Sequence[bool]) -> tuple[int, int] | None:
+    """The span of the line's own date printed with spaces or dots, or of its two dates (the
+    transaction and the posting date), when no number of four or more digits is joined after
+    the last of them; None when the line doesn't start with one."""
+    lead = _LEADING_DATE.match(view)
+    if lead is None or not _real_day(lead):
+        return None
+    second = _NEXT_DATE.match(view, lead.end())
+    if (
+        second is not None
+        and _real_day(second)
+        and _joined_digits(view, second.end(), part) < _OWN_DATE_JOINED
+    ):
+        return lead.start(1), second.end()
+    if _joined_digits(view, lead.end(), part) < _OWN_DATE_JOINED:
+        return lead.start(1), lead.end()
+    return None  # a sort code before an account number, not the line's date
+
+
 def _long_runs(seen: str) -> list[tuple[int, int]]:
     """Spans of the runs of six or more digits in `seen` (see above), read with look-alikes as
     digits. One pass over the line."""
@@ -463,18 +521,10 @@ def _long_runs(seen: str) -> list[tuple[int, int]]:
     for match in _WELL_FORMED.finditer(view):
         for k in range(match.start(), match.end()):
             part[k] = False
-    lead = _LEADING_DATE.match(view)
-    if lead and 1 <= int(lead.group(1)) <= 31 and 1 <= int(lead.group(3)) <= 12:
-        after = lead.end()
-        k, digits_after = after, 0
-        while k + 1 < size and view[k] in _RUN_JOINS and part[k + 1]:  # a number joined after
-            k += 1
-            while k < size and part[k]:
-                digits_after += 1
-                k += 1
-        if digits_after < 4:  # the line's own date, not a sort code before an account number
-            for k in range(lead.start(1), after):
-                part[k] = False
+    own = _own_dates(view, part)
+    if own is not None:
+        for k in range(*own):
+            part[k] = False
     spans: list[tuple[int, int]] = []
     k = 0
     while k < size:
@@ -482,10 +532,13 @@ def _long_runs(seen: str) -> list[tuple[int, int]]:
             k += 1
             continue
         start = end = k
-        while end < size and (
-            part[end] or (view[end] in _RUN_JOINS and end + 1 < size and part[end + 1])
-        ):
-            end += 1
+        while end < size:
+            if part[end]:
+                end += 1
+            elif step := _join(view, end, part):
+                end += step
+            else:
+                break
         k = end
         if sum(1 for j in range(start, end) if part[j]) < LONG_RUN:
             continue
