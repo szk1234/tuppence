@@ -3,9 +3,12 @@
     uv run python -m evals.run --model oracle
     uv run python -m evals.run --model "<connection id or name>/<model id>" [--data-dir DIR]
         [--cases csv-monzo,pdf-card-text] [--out evals/results/<name>.json] [--require-pass]
+        [--allow-cloud] [--max-gbp 2]
 
 A real model is used through the same LLM client as the app, so its usage and cost
-are recorded in that data folder's Usage page like any other AI call.
+are recorded in that data folder's Usage page like any other AI call. The corpus is
+synthetic, but a cloud model is used only with --allow-cloud, and a run spends at most
+--max-gbp pounds (£2 unless told otherwise).
 """
 
 from __future__ import annotations
@@ -14,10 +17,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from evals.corpus import CASES
-from evals.harness import CaseResult, run_case
+from evals.harness import DEFAULT_MAX_GBP, CaseResult, eval_budget, run_case
 from evals.oracle import OracleLLM
 
 
@@ -34,7 +37,9 @@ class FixedRouter:
         return self.inner.is_pinned_local(task)
 
 
-def real_model(spec: str, data_dir: str | None) -> tuple[Any, int, str]:
+def real_model(
+    spec: str, data_dir: str | None, *, allow_cloud: bool = False
+) -> tuple[Any, int, str]:
     from tuppence.app.services import build_services
     from tuppence.llm.client import LLMClient
     from tuppence.paths import InstanceLocked, acquire_instance_lock, resolve_data_dir
@@ -45,13 +50,26 @@ def real_model(spec: str, data_dir: str | None) -> tuple[Any, int, str]:
         sys.exit('Use --model "<connection>/<model id>", for example "Ollama/qwen2.5:7b".')
     folder = resolve_data_dir(data_dir)
     try:  # build_services migrates and purges launch sessions, so no app may be using the folder
-        acquire_instance_lock(folder)
+        lock = acquire_instance_lock(folder)
     except InstanceLocked:
         sys.exit("Close Tuppence first: this data folder is in use by a running Tuppence.")
     services = build_services(RuntimeSettings.for_mode("local", data_dir=folder))
+
+    def refuse(message: str) -> NoReturn:
+        services.stop()
+        lock.release()
+        sys.exit(message)
+
     connection = next((c for c in services.connections.list() if reference in (c.id, c.name)), None)
     if connection is None:
-        sys.exit(f"No AI connection called {reference!r} in that data folder.")
+        refuse(f"No AI connection called {reference!r} in that data folder.")
+    if not connection.is_local:
+        if not allow_cloud:
+            refuse(
+                f"{connection.name} is a cloud model: the eval would send it the synthetic "
+                "statements. Add --allow-cloud to run it anyway."
+            )
+        print(f"Sending the synthetic statements to {connection.name}, a cloud model.")
     model = services.connections.model(connection.id, model_id)
     llm = LLMClient(
         connections=services.connections,
@@ -109,7 +127,7 @@ def print_table(results: list[CaseResult], summary: dict[str, Any]) -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m evals.run", description=__doc__.splitlines()[0]
     )
@@ -122,14 +140,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--require-pass", action="store_true", help="exit 1 unless every case passes"
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--allow-cloud",
+        action="store_true",
+        help="allow a cloud model (the synthetic statements are sent to it)",
+    )
+    parser.add_argument(
+        "--max-gbp",
+        type=float,
+        default=DEFAULT_MAX_GBP,
+        help=f"the most the whole run may spend (default £{DEFAULT_MAX_GBP:.0f})",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     wanted = set(args.cases.split(",")) if args.cases else None
     cases = [c for c in CASES if wanted is None or c.id in wanted]
     if args.model == "oracle":
         llm, window, label = OracleLLM(), 4096, "oracle"
     else:
-        llm, window, label = real_model(args.model, args.data_dir)
-    results = [run_case(case, llm=llm, context_window=window) for case in cases]
+        llm, window, label = real_model(args.model, args.data_dir, allow_cloud=args.allow_cloud)
+    results: list[CaseResult] = []
+    spent = 0.0
+    for case in cases:  # every case draws on what is left of --max-gbp
+        budget = eval_budget(max(args.max_gbp - spent, 0.0))
+        results.append(run_case(case, llm=llm, context_window=window, budget=budget))
+        spent += budget.gbp
     summary = summarise(label, results)
     print_table(results, summary)
     if args.out:

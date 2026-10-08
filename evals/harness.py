@@ -15,6 +15,7 @@ from tuppence.ingest.check import balance_verified
 from tuppence.ingest.dedupe import similar_descriptions
 from tuppence.ingest.extract import ExtractLimits, extract_document
 from tuppence.ingest.identify import identify
+from tuppence.ingest.mapping import summarise_checks
 from tuppence.ingest.models import ParsedRow
 from tuppence.ingest.parse import ReaderLimits, parse_document
 from tuppence.ingest.registry import LayoutRegistry, load_bank_pack
@@ -41,9 +42,19 @@ class CaseResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
-def eval_budget() -> RunBudget:
-    """Counts usage for the report; generous limits, as the eval sets no caps of its own."""
-    return RunBudget(max_calls=10_000, max_tokens=100_000_000, max_gbp=1_000.0, max_seconds=3_600)
+DEFAULT_MAX_GBP = 2.0  # what a whole eval run may spend on a paid model, unless told otherwise
+
+
+def eval_budget(max_gbp: float = DEFAULT_MAX_GBP) -> RunBudget:
+    """Counts usage for the report. Calls, tokens and time are generous; money is capped (the
+    app's own monthly cap still applies on top)."""
+    return RunBudget(max_calls=10_000, max_tokens=100_000_000, max_gbp=max_gbp, max_seconds=3_600)
+
+
+def plain_errors(errors: list[str]) -> list[str]:
+    """Check failures as fixed descriptions with counts: what the model read (a figure, a
+    payee, a line ref) never goes into a saved result."""
+    return summarise_checks(errors)
 
 
 def score(expected: list[Row], rows: list[ParsedRow]) -> tuple[int, float]:
@@ -70,11 +81,12 @@ def run_case(
     context_window: int | None,
     today: dt.date = TODAY,
     fixtures: Path = FIXTURES,
+    budget: RunBudget | None = None,
 ) -> CaseResult:
     pack = load_bank_pack()
     registry = LayoutRegistry(pack)
     path = fixtures / case.path
-    budget = eval_budget()
+    budget = budget or eval_budget()
     started = time.monotonic()
     try:
         doc = extract_document(
@@ -127,5 +139,5 @@ def run_case(
         tokens=budget.tokens,
         cost_gbp=round(budget.gbp, 4),
         seconds=round(time.monotonic() - started, 2),
-        errors=outcome.errors[:10],
+        errors=plain_errors(outcome.errors)[:10],
     )
