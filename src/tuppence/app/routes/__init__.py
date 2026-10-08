@@ -18,6 +18,7 @@ from tuppence.app.routes import (
     onboarding,
     privacy,
     settings,
+    statements,
     usage,
 )
 
@@ -34,6 +35,7 @@ PROTECTED = [
     privacy.router,
     llm.router,
     usage.router,
+    statements.router,
 ]
 
 
