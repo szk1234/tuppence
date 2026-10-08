@@ -320,3 +320,28 @@ def test_a_street_line_standing_alone_after_a_row_is_withheld(line):
     doc = text_document("\n".join(lines), sha256="x")
     assert "L2" not in doc.data_refs and "L2" not in doc.held_amount_refs  # no amount on it
     assert doc.data_refs == ["L1", "L3"]
+
+
+# R-M3-25 (2): a line that starts with a row's date is never an address line ("02 Oct 26 VIS
+# TESCO HIGH ST", a row's details over two lines), but a house number before a house or street
+# named after a month ("12 March Cottage", "1 May Road") still may be one.
+MONTH_NAMED = [
+    ["Alex Example", "12 March Cottage", "Exampletown EX1 1AA"],
+    ["1 May House", "Exampletown"],
+    ["1 May Road", "Exampletown"],
+    ["Rose Cottage", "3 June Villas", "Littlebury"],
+]
+
+
+@pytest.mark.parametrize("heading", [True, False], ids=["heading", "no heading"])
+@pytest.mark.parametrize("block", MONTH_NAMED, ids=[" / ".join(b) for b in MONTH_NAMED])
+def test_an_address_named_after_a_month_is_still_withheld(block, heading):
+    lines = [*(["Example Bank", "Date Description Amount"] if heading else []), ROW_A, ROW_B,
+             *block, ROW_C, ROW_D]  # fmt: skip
+    for doc in (
+        text_document("\n".join(lines), sha256="x", names=["Alex Example"]),
+        pages_document([lines], sha256="x", kind="pdf", names=["Alex Example"]),
+    ):
+        sent = [doc.by_ref()[r].text for r in doc.data_refs]
+        assert [line for line in block if line in sent] == [], sent
+        assert all(row in sent for row in (ROW_A, ROW_B, ROW_C, ROW_D))
