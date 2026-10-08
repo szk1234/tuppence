@@ -400,3 +400,56 @@ def test_text_files_have_no_pages_to_hold_back():
         sha256="x",
     )
     assert "Riverside" in _page_data(doc)
+
+
+def test_card_endings_in_a_later_pages_header_and_mid_table_are_withheld():
+    pages = [
+        ["Nationwide Building Society", "Alex Example", "1 Example Road", "Exampletown EX1 2MP",
+         "Account number 12345678", "Card ending 4242",
+         "Date Description Paid out Paid in Balance",
+         "02 Oct 2026 Greenbasket Stores 42.18 957.82"],
+        ["Statement continued", "Alex Example", "Card ending 4242", "Account number 12345678",
+         "Date Description Paid out Paid in Balance",
+         "05 Oct 2026 Little Cafe 3.40 954.42",
+         "Card ending 4242",  # mid-table
+         "06 Oct 2026 Northline Rail 28.90 925.52"],
+    ]  # fmt: skip
+    doc = pages_document(pages, sha256="x", kind="pdf", names=["Alex Example"])
+    sent = "\n".join(render(c.lines) for c in plan_chunks(doc, rows_per_chunk=2))
+    for secret in ("4242", "12345678", "Alex Example", "Example Road", "EX1 2MP"):
+        assert secret not in sent
+    assert _page_data(doc) == [
+        "Date Description Paid out Paid in Balance",
+        "02 Oct 2026 Greenbasket Stores 42.18 957.82",
+        "Date Description Paid out Paid in Balance",
+        "05 Oct 2026 Little Cafe 3.40 954.42",
+        "06 Oct 2026 Northline Rail 28.90 925.52",
+    ]
+
+
+def test_an_anchor_like_line_first_on_a_later_page_exposes_nothing_below_it():
+    page1 = ["Barclaycard", "Alex Example", "Flat 2, The Old Mill", "Riverside",
+             "Exampletown EX1 2MP", "Card number ending 4242",
+             "Date Description Amount", "02 Oct 2026 Greenbasket Stores 42.18"]  # fmt: skip
+    page2 = ["02 Nov 2026 Minimum payment due 25.00",  # a dated amount: the page's anchor
+             "Alex Example", "Flat 2, The Old Mill", "Riverside", "Exampletown EX1 2MP",
+             "Date Description Amount", "05 Oct 2026 Little Cafe 3.40"]  # fmt: skip
+    doc = pages_document([page1, page2], sha256="x", kind="pdf")
+    data = _page_data(doc)
+    for secret in ("Alex Example", "Flat 2", "Riverside", "Exampletown", "4242"):
+        assert not any(secret in line for line in data), secret
+    assert "05 Oct 2026 Little Cafe 3.40" in data
+
+
+def test_an_unlabelled_address_printed_only_on_page_two_is_withheld():
+    page1 = ["Nationwide Building Society", "Date Description Amount",
+             "02 Oct 2026 Greenbasket Stores 42.18"]  # fmt: skip
+    page2 = ["Mr A Example", "14 Quarry Lane", "Exampleton", "EX9 9ZZ",
+             "Date Description Amount", "05 Oct 2026 Little Cafe 3.40"]  # fmt: skip
+    doc = pages_document([page1, page2], sha256="x", kind="pdf")
+    assert _page_data(doc) == [
+        "Date Description Amount",
+        "02 Oct 2026 Greenbasket Stores 42.18",
+        "Date Description Amount",
+        "05 Oct 2026 Little Cafe 3.40",
+    ]

@@ -167,9 +167,10 @@ def _current_headings(c: canvas.Canvas, y: float) -> None:
     c.setFont("Helvetica", 10)
 
 
-def private_two_page_pdf() -> bytes:
+def private_two_page_pdf(card_line: str = "Card ending 4242") -> bytes:
     """A current account statement that repeats every identity detail and balance line at the
-    top of page 2, for the privacy tests: none of it may reach a model."""
+    top of page 2, for the privacy tests: none of it may reach a model. `card_line` is how it
+    prints the debit card's number."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4, invariant=1)
     pages = [CURRENT_ROWS[:5], CURRENT_ROWS[5:]]
@@ -186,7 +187,7 @@ def private_two_page_pdf() -> bytes:
         y = _address(c, y) - 10
         c.drawString(56, y, "Account number 12345678")
         c.drawString(300, y, "Sort code 07-12-34")
-        c.drawString(56, y - 14, "Visa debit card ****4242")
+        c.drawString(56, y - 14, card_line)
         y -= 28
         if page_no == 1:
             c.drawString(56, y, "Statement period 01/10/2026 to 31/10/2026")

@@ -124,7 +124,6 @@ def test_the_preamble_never_leaves_the_device(ingest_env, fixtures):
         "Account number 12345678",
         "12345678",
         "07-12-34",
-        "****4242",
         "Card ending 4242",
         "Available balance",
     ):
