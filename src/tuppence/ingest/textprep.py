@@ -392,6 +392,39 @@ _FIGURE_TOKEN = re.compile(r"[-+\u2212(]?\s?[£$€]?\d[\d,]*(?:\.\d+)?\)?")
 
 
 _BALANCE_WORDING = _SUMMARY_VOCAB | _QUALIFIERS | _ANCHORS
+# R1 (re-review 2): words that make a line of balance wording a sentence about what is due or
+# owed ("Your minimum payment of £25.00 is due by ...", "Pay by ... to avoid interest on ...",
+# "Interest rate ...") rather than a row's description.
+_SENTENCE = frozenset(
+    ["is", "are", "will", "be", "we", "ll", "please", "avoid", "collect", "collected", "by",
+     "to", "next", "estimated", "rate"]
+)  # fmt: skip
+# The words of a balance itself, however it is printed (dated, or signed when overdrawn):
+# "01 Oct BALANCE B/F 1,000.00", "Balance -£250.00".
+_BALANCE_ONLY = frozenset(
+    ["balance", "bal", "balances", "forward", "brought", "carried", "b/f", "c/f", "bf", "cf",
+     "fwd", "b/fwd", "c/fwd", "opening", "closing", "previous", "new", "start", "starting",
+     "end", "current", "available", "cleared", "funds", "remaining", "outstanding", "overdrawn",
+     "owed", "spendable", "limit", "statement", "account", "your", "the", "of", "on", "at", "as",
+     "this", "after", "today", "pending", "excluding", "including", "cr", "dr", "od", "close",
+     "business", "date"]
+)  # fmt: skip
+
+
+_ROW_HEADS = frozenset(["payment", "credit", "debit"])
+
+
+def _names_a_row(words: Sequence[str]) -> bool:
+    """Balance wording that names a transaction: interest, or a payment, a credit or a debit
+    ("INTEREST ON CREDIT BALANCE", "CLOSING INTEREST", "STATEMENT CREDIT", "PAYMENT OF MINIMUM
+    AMOUNT DUE", "MINIMUM PAYMENT DIRECT DEBIT"), and not a sentence about what is due."""
+    if _SENTENCE.intersection(words):
+        return False
+    return "interest" in words or words[0] == "payment" or words[-1] in _ROW_HEADS
+
+
+def _balance_only(words: Sequence[str]) -> bool:
+    return bool(words) and _BALANCE_ONLY.issuperset(words)
 
 
 def _labelled(text: str) -> bool:
@@ -416,11 +449,23 @@ def _summary_kind(text: str) -> str | None:
       with each figure under its own label). Withheld, read here, never a row: not reported.
     - "held": summary wording that may be a row's ("CREDIT 900.00 1,900.00", "PAID IN AT POST
       OFFICE", "Money in +£25.00", a pot). Withheld and reported for the person to decide.
-    - None: a row's line like any other."""
-    if sensitive.is_balance_line(text) or _BALANCE_PHRASE.search(text):
-        return "balance"
+    - None: a row's line like any other.
+
+    A line of balance wording is a balance only when nothing on it says it is a row (R1): it
+    names no transaction (`_names_a_row`), and it has no date in front and no signed figure or
+    figure pair, unless all its words are a balance's own ("01 Oct BALANCE B/F 1,000.00")."""
     words = _summary_words(text)
-    if words and all(w in _BALANCE_WORDING for w in words) and any(w in _ANCHORS for w in words):
+    if _BALANCE_PHRASE.search(text) or (
+        sensitive.is_balance_line(text) and (_labelled(text) or _balance_only(words))
+    ):
+        return "balance"
+    if (
+        words
+        and all(w in _BALANCE_WORDING for w in words)
+        and any(w in _ANCHORS for w in words)
+        and not _names_a_row(words)
+        and (_balance_only(words) or (_DATE_FIRST.match(text) is None and _labelled(text)))
+    ):
         return "balance"
     dated = _has_date(text)
     if words and all(w in _SUMMARY_VOCAB for w in words):
@@ -438,7 +483,16 @@ def pure_balance(text: str, *, names: Sequence[str] = ()) -> bool:
     """A line with an amount that is only a balance or a summary (`_summary_kind`), or a
     balance line with an account detail on it: the only lines with an amount that are withheld
     without being reported."""
-    return _summary_kind(text) == "balance" or sensitive.is_masked_balance(text, names=names)
+    return _summary_kind(text) == "balance" or _masked_balance(text, names)
+
+
+def _masked_balance(text: str, names: Sequence[str]) -> bool:
+    """A balance line with an account detail on it (`sensitive.is_masked_balance`). A line
+    that is a balance line as printed is one only as `_summary_kind` reads it: "MINIMUM PAYMENT
+    -£25.00" has a row's sign."""
+    if sensitive.is_balance_line(text):
+        return _summary_kind(text) == "balance"
+    return sensitive.is_masked_balance(text, names=names)
 
 
 def only_summary_vocab(text: str) -> bool:
@@ -832,9 +886,7 @@ def _split_preamble(
     unsure: set[int] = set()
 
     def pure(i: int) -> bool:  # only a balance or a summary: never a row, so not reported
-        return kinds[i] == "balance" or (
-            sensitive_at[i] and sensitive.is_masked_balance(texts[i], names=names)
-        )
+        return kinds[i] == "balance" or (sensitive_at[i] and _masked_balance(texts[i], names))
 
     for i, line in enumerate(lines):
         tick(i)
@@ -917,10 +969,13 @@ def _split_screenshot(
     texts = [line.text for line in lines]
     blocks = _balance_blocks(texts)
     balances = {k for block in blocks for k in block}
-    balances |= {i for i, text in enumerate(texts) if sensitive.is_balance_line(text)}
     # The same summary rule as text and PDFs (R-M3-23 (e)): a pure balance or summary is never
-    # sent nor reported; one that may be a row is withheld and reported.
+    # sent nor reported; one that may be a row is withheld and reported. A balance line without
+    # an amount ("Balance 1234") has nothing to report.
     kinds = [_summary_kind(t) if has_amount(t) else None for t in texts]
+    balances |= {
+        i for i, t in enumerate(texts) if not has_amount(t) and sensitive.is_balance_line(t)
+    }
     balances |= {i for i, kind in enumerate(kinds) if kind == "balance"}
     summaries = {i for i, kind in enumerate(kinds) if kind == "held"}
     first = next(
@@ -950,7 +1005,7 @@ def _split_screenshot(
             and detail
             and _name_key(text) is None
             and has_amount(text)
-            and sensitive.is_masked_balance(text, names=names)
+            and _masked_balance(text, names)
         ):
             balances.add(i)  # a balance with a detail on it: withheld, not reported
         if (

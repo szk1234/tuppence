@@ -57,6 +57,17 @@ SENT = [
     "BALANCE TRANSFER FEE 5.00 995.00",
     "02/10/2026 YOUR PAYMENT 25.00 975.00",
 ]
+# Re-review 2 R1: rows made only of balance or summary words, dated, signed or beside a balance.
+ROWS_OF_SUMMARY_WORDS = [
+    f"{form.format(d=d)}"
+    for d in ("INTEREST ON CREDIT BALANCE", "CREDIT BALANCE INTEREST",
+              "DEBIT INTEREST ON OVERDRAWN BALANCE", "INTEREST ON BALANCE", "BALANCE INTEREST",
+              "CLOSING INTEREST", "STATEMENT CREDIT", "STATEMENT BALANCE PAYMENT",
+              "MINIMUM PAYMENT", "PAYMENT OF MINIMUM AMOUNT DUE", "INTEREST ON AVAILABLE FUNDS",
+              "CLEARED FUNDS INTEREST")
+    for form in ("02/10/2026 {d} 10.00", "02/10/2026 {d} 10.00 1,010.00", "{d} 10.00 1,010.00",
+                 "{d} -10.00", "{d} +10.00")
+]  # fmt: skip
 # m1: balance wording outside the old vocabulary; never sent, never reported.
 BALANCE_WORDS = [
     "Balance after this transaction 1,234.56", "Cleared funds £900.00", "Remaining balance £250.00",
@@ -144,7 +155,7 @@ def _corpus() -> list[str]:
     return list(dict.fromkeys([
         *EVERY, *PLAIN, *REGRESSION, *WITH_DETAILS, *BALANCES, *UNSURE, *ROWS_STILL_SENT,
         *MIXED_SUMMARIES, *(line for line, _ in OUTCOMES), *N3, *HELD_TEXT, *HELD_SHOT, *SENT,
-        *BALANCE_WORDS, *CARD_SENTENCES,
+        *BALANCE_WORDS, *CARD_SENTENCES, *ROWS_OF_SUMMARY_WORDS,
     ]))  # fmt: skip
 
 
@@ -162,6 +173,6 @@ def test_nothing_with_an_amount_is_withheld_unreported_unless_a_pure_balance_lin
     assert lost == []
 
 
-@pytest.mark.parametrize("line", [*HELD_TEXT, *HELD_SHOT, *SENT])
+@pytest.mark.parametrize("line", [*HELD_TEXT, *HELD_SHOT, *SENT, *ROWS_OF_SUMMARY_WORDS])
 def test_a_line_that_may_be_a_row_is_never_a_pure_balance_line(line):
     assert not textprep.pure_balance(line, names=())
