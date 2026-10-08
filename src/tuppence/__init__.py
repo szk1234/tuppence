@@ -24,7 +24,8 @@ TRACING_OFF = {
 def disable_tracing() -> None:
     """Force LangSmith tracing off for this process (and the processes it starts)."""
     _os.environ.update(TRACING_OFF)
-    for name in ("LANGSMITH_RUNS_ENDPOINTS", "LANGCHAIN_RUNS_ENDPOINTS"):  # extra destinations
+    # Extra destinations, and the legacy v1 switch (langchain_core refuses every run with it).
+    for name in ("LANGSMITH_RUNS_ENDPOINTS", "LANGCHAIN_RUNS_ENDPOINTS", "LANGCHAIN_HANDLER"):
         _os.environ.pop(name, None)
     utils = _sys.modules.get("langsmith.utils")
     if utils is not None:  # already imported: forget the environment it read

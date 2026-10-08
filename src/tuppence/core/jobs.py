@@ -130,7 +130,14 @@ class JobQueue:
         if kinds is not None and not kinds:
             return None
         now = to_iso(self.clock())
-        clauses = ["j.status = 'queued'", "j.run_after <= ?"]
+        # One running job per kind and scope: a job queued while another for the same thing
+        # is still running (an answer that arrives as a statement's job finishes) waits.
+        clauses = [
+            "j.status = 'queued'",
+            "j.run_after <= ?",
+            "NOT EXISTS (SELECT 1 FROM job r WHERE r.status = 'running' AND r.kind = j.kind"
+            " AND r.scope_key = j.scope_key)",
+        ]
         params: list[Any] = [now]
         if kinds is not None:
             marks = ",".join("?" for _ in kinds)

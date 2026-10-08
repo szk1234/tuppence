@@ -433,3 +433,20 @@ def test_stop_is_prompt_during_a_long_idle_wait(env):
     w.stop()
     assert time.monotonic() - start < 1.0
     assert not any(t.is_alive() for t in w._threads)
+
+
+def test_one_job_runs_per_kind_and_scope(env):
+    """M5 (M3 final review): an answer that arrives while a statement's job is finishing
+    queues a second job for it; that one waits until the first is done."""
+    q, _ = env
+    q.enqueue("ingest", scope_key="s_1", payload={"n": 1})
+    first = q.claim()
+    assert first is not None
+    q.enqueue("ingest", scope_key="s_1", payload={"n": 2})  # queued behind the running one
+    q.enqueue("ingest", scope_key="s_2")
+    other = q.claim()
+    assert other is not None and other.scope_key == "s_2"
+    assert q.claim() is None  # s_1's second job waits
+    q.complete(first.id)
+    second = q.claim()
+    assert second is not None and second.scope_key == "s_1" and second.payload == {"n": 2}
