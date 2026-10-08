@@ -49,6 +49,7 @@ LLM_SPECIALISTS = ("categoriser", "commitments")
 # long for the same transaction to come back (R-M4-2).
 CARRY_DAYS = 90
 INTERRUPTED = "Tuppence stopped during this run."
+UNDO_SPLIT = "(you can undo this on the Spending page, under “Sub-categories Tuppence added”)"
 WILL_RETRY = "Something went wrong during this run. Tuppence will try again."
 
 
@@ -121,7 +122,7 @@ def summarise(counts: dict[str, Any]) -> str:
     if c.get("new_categories"):
         parts.append(
             f"Added {c['new_categories']} sub-categories and moved {c.get('refiled', 0)}"
-            " transactions into them (you can undo this)."
+            f" transactions into them {UNDO_SPLIT}."
         )
     pairs = int(counts.get("transfers", {}).get("pairs", 0))
     if pairs:

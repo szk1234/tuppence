@@ -6,6 +6,7 @@ from agents.helpers import crowd
 from tuppence.core.errors import InputError
 from tuppence.core.records import NotFound
 from tuppence.ingest.store import StatementStore
+from tuppence.knowledge.why import explain
 
 SPLIT = {
     "subcategories": [
@@ -90,3 +91,19 @@ def test_undo_skips_rows_removed_since(aenv):
     assert aenv.refiles.undo(refile.id) == 11
     assert {aenv.understanding.get(i).category_id for i in ids[1:]} == {"food.groceries"}
     assert aenv.refiles.list() == []
+
+
+def test_why_says_where_a_split_can_be_undone(aenv):
+    ids = _split(aenv)
+    with aenv.db.connection() as conn:
+        why = explain(
+            conn,
+            aenv.categories.tree(),
+            aenv.understanding.get(ids[0]),
+            aenv.understanding.history(ids[0]),
+            aenv.versions.current(),
+        )
+    assert (
+        "Moved into a new sub-category when its category got crowded (you can undo this on the"
+        " Spending page, under “Sub-categories Tuppence added”)."
+    ) in why.steps

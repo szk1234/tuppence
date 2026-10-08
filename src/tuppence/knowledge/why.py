@@ -130,8 +130,8 @@ def explain(
         )
     if ev.get("refiled_from"):
         steps.append(
-            "Moved into a new sub-category when its category got crowded"
-            " (you can undo this in Spending)."
+            "Moved into a new sub-category when its category got crowded (you can undo this"
+            " on the Spending page, under “Sub-categories Tuppence added”)."
         )
     if u.decided_by == "human" and history:
         steps.append(f"You set this on {_uk(history[0].created_at)}.")

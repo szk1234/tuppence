@@ -9,9 +9,9 @@
   import { link } from '../lib/router.svelte'
   import { dmyDate } from '../lib/dates'
   import {
-    correct, createRule, getAnalysis, getCategories, getSpending, getTransactions, runAnalysis,
-    STATUS_LABELS, type AnalysisStatus, type Category, type Filters, type RuleOffer, type SpendingView,
-    type Tile, type Txn,
+    correct, createRule, getAnalysis, getCategories, getRefiles, getSpending, getTransactions, runAnalysis,
+    STATUS_LABELS, undoRefile, type AnalysisStatus, type Category, type Filters, type Refile, type RuleOffer,
+    type SpendingView, type Tile, type Txn,
   } from '../lib/understanding'
 
   type Account = { id: string; nickname: string; provider_name: string }
@@ -27,6 +27,8 @@
   let people = $state<Person[]>([])
   let analysis = $state<AnalysisStatus | null>(null)
   let why = $state<string | null>(null)
+  let unpairing = $state<string | null>(null)  // the row whose "Not a transfer" chooser is open
+  let refiles = $state<Refile[]>([])
   let offer = $state<{ offer: RuleOffer; transactionId: string } | null>(null)
   let error = $state('')
   let saved = $state('')
@@ -36,16 +38,27 @@
 
   const fail = (err: unknown) => { saved = ''; error = err instanceof ApiError ? err.detail : 'Something went wrong.' }
 
+  const kindOf = $derived(new Map(categories.map((c) => [c.id, c.kind])))
+  const notTransfers = $derived(categories.filter((c) => c.kind !== 'transfer'))
+  // Income, savings and transfers aren't spending: their lists open from the top-level figures.
+  const outside = $derived(view && view.path.length > 1 ? kindOf.get(view.path[1].id ?? '') : undefined)
+  const OUTSIDE: Record<string, string> = {
+    income: "Money that came in isn't spending. If something here isn't income (a shop refund, say), change its category.",
+    transfer: "Money moved to your own accounts, to savings or taken as cash isn't spending. If a payment here isn't one of these, choose “Not a transfer”.",
+  }
+  const named = (row: Txn) => `${row.merchant ?? row.description} on ${dmyDate(row.date)}`
+
   let token = 0  // the latest load wins: an older response never overwrites a newer one
   let epoch = $state(0)  // bumped after a failed save so each category select shows the saved value
   async function load() {
     const mine = ++token
     try {
-      const [v, a] = await Promise.all([getSpending(on, category, filters), getAnalysis()])
+      const [v, a, r] = await Promise.all([getSpending(on, category, filters), getAnalysis(), getRefiles()])
       const list = v.period && category ? await getTransactions(v.period.start, category, filters) : []
       if (mine !== token) return
       view = v
       analysis = a
+      refiles = r
       on = v.period.start
       rows = list
     } catch (err) { if (mine === token) fail(err) }
@@ -85,6 +98,7 @@
   function open(tile: Tile) {
     category = tile.id
     why = null
+    unpairing = null
     offer = null
     error = ''
     load()
@@ -93,6 +107,7 @@
   function goTo(id: string | null) {
     category = id
     why = null
+    unpairing = null
     offer = null
     error = ''
     load()
@@ -115,6 +130,36 @@
       offer = result.rule_offer ? { offer: result.rule_offer, transactionId: row.id } : null
       const label = categories.find((c) => c.id === categoryId)?.label ?? 'that category'
       saved = `Filed under ${label}.`
+      await load()
+    } catch (err) { await failed(err) } finally { busy = false }
+  }
+
+  /** "Not a transfer": the person files it as what it really is; its pair is released. */
+  async function notTransfer(row: Txn, categoryId: string) {
+    if (locked) return
+    saved = ''
+    error = ''
+    busy = true
+    try {
+      const result = await correct(row.id, { category_id: categoryId, is_transfer: false, expected_version: row.version })
+      offer = result.rule_offer ? { offer: result.rule_offer, transactionId: row.id } : null
+      unpairing = null
+      const label = categories.find((c) => c.id === categoryId)?.label ?? 'that category'
+      saved = `Filed under ${label}. It's no longer counted as a transfer.`
+      await load()
+    } catch (err) { await failed(err) } finally { busy = false }
+  }
+
+  /** Undo a split Tuppence made: the payments go back and the new sub-categories go. */
+  async function undo(r: Refile) {
+    if (locked) return
+    saved = ''
+    error = ''
+    busy = true
+    try {
+      const out = await undoRefile(r.id)
+      saved = `Undone: ${out.moved} payment${out.moved === 1 ? ' is' : 's are'} back in ${r.parent}.`
+      categories = await getCategories()
       await load()
     } catch (err) { await failed(err) } finally { busy = false }
   }
@@ -198,7 +243,16 @@
         {/each}
       </ol>
     </nav>
-    <p><strong>{formatGBP(view.total)}</strong> spent{#if view.path.length === 1} · {formatGBP(view.money_in)} came in · {formatGBP(view.saved)} saved or invested{/if}</p>
+    {#if view.path.length === 1}
+      <p><strong>{formatGBP(view.total)}</strong> spent
+        · <button class="link" onclick={() => goTo('income')}>{formatGBP(view.money_in)} came in</button>
+        · <button class="link" onclick={() => goTo('savings')}>{formatGBP(view.saved)} saved or invested</button>
+        · <button class="link" onclick={() => goTo('transfers')}>{formatGBP(view.moved)} moved between your accounts or taken as cash</button></p>
+    {:else if outside === 'income' || outside === 'transfer'}
+      <p>{OUTSIDE[outside]}</p>
+    {:else}
+      <p><strong>{formatGBP(view.total)}</strong> spent</p>
+    {/if}
     {#if view.tiles.length}
       <Treemap tiles={view.tiles} total={view.total} onopen={open} />
       <table class="list">
@@ -231,9 +285,19 @@
                 <td>{dmyDate(row.date)}</td>
                 <td>{row.merchant ?? row.description}<br /><span class="meta">{STATUS_LABELS[row.status]}</span></td>
                 <td class="num">{formatGBP(row.amount)}</td>
-                <td>{#key epoch}<CategorySelect {categories} disabled={locked} value={row.category_id} label={`Category for ${row.merchant ?? row.description} on ${dmyDate(row.date)}`} onchange={(id) => recategorise(row, id)} />{/key}</td>
+                <td>{#key epoch}<CategorySelect {categories} disabled={locked} value={row.category_id} label={`Category for ${named(row)}`} onchange={(id) => recategorise(row, id)} />{/key}
+                  {#if kindOf.get(row.category_id ?? '') === 'transfer'}
+                    <br /><button class="link" disabled={locked} onclick={() => (unpairing = unpairing === row.id ? null : row.id)} aria-label={`Not a transfer: ${named(row)}`}>Not a transfer</button>
+                  {/if}</td>
                 <td><button class="link" onclick={() => (why = row.id)} aria-label={`Why? ${row.merchant ?? row.description} on ${dmyDate(row.date)}`}>Why?</button></td>
               </tr>
+              {#if unpairing === row.id}
+                <tr><td colspan="5"><div class="card">
+                  <p>What is it instead? Tuppence will stop counting it as money moving between your accounts.</p>
+                  {#key epoch}<CategorySelect categories={notTransfers} disabled={locked} value={null} label={`What is ${named(row)} instead?`} onchange={(id) => notTransfer(row, id)} />{/key}
+                  <button class="link" onclick={() => (unpairing = null)}>Cancel</button>
+                </div></td></tr>
+              {/if}
               {#if why === row.id}
                 <tr><td colspan="5"><WhyPanel id={row.id} onclose={() => (why = null)} onchanged={() => { why = null; load() }} /></td></tr>
               {/if}
@@ -241,6 +305,18 @@
           </tbody>
         </table>
       </div>
+    {/if}
+    {#if view.path.length === 1 && refiles.length}
+      <section class="card" aria-labelledby="refiles-heading">
+        <h2 id="refiles-heading">Sub-categories Tuppence added</h2>
+        <p class="meta">When a category gets crowded, Tuppence splits it. Undo puts the payments back and removes the new sub-categories (one you've filed a payment into yourself stays).</p>
+        <ul class="refiles">
+          {#each refiles as r (r.id)}
+            <li>Split {r.parent} into {r.created.join(', ')} · moved {r.moved} payment{r.moved === 1 ? '' : 's'} · {dmyDate(r.created_at)}
+              <button class="link" disabled={locked} onclick={() => undo(r)} aria-label={`Undo: the split of ${r.parent}`}>Undo</button></li>
+          {/each}
+        </ul>
+      </section>
     {/if}
     <p class="meta"><a href="/settings/rules" onclick={link}>Your rules</a></p>
   {/if}
@@ -258,4 +334,6 @@
   caption { text-align: left; font-weight: 600; padding: .5rem 0; }
   .list { margin-top: .75rem; }
   .filters > div { min-width: 10rem; }
+  .refiles { list-style: none; padding: 0; }
+  .refiles li { padding: .4rem 0; border-bottom: 1px solid var(--line); }
 </style>

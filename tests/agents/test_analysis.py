@@ -223,6 +223,11 @@ def test_summary_wording():
     )
     assert text.startswith("Sorted 7 transactions (2 by your rules, 5 by the AI).")
     assert "4 transactions are waiting for an AI model" in text
+    split = summarise({"categoriser": {"new_categories": 2, "refiled": 12}})
+    assert split == (
+        "Added 2 sub-categories and moved 12 transactions into them (you can undo this on the"
+        " Spending page, under “Sub-categories Tuppence added”)."
+    )
 
 
 # --- G5: an AI problem ends the run partial, with the reason ---------------------------------

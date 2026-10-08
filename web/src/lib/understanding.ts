@@ -8,7 +8,7 @@ export type PeriodView = {
 export type Tile = { id: string; label: string; amount: string; count: number; has_children: boolean }
 export type SpendingView = {
   period: PeriodView; path: { id: string | null; label: string }[]; total: string; direct: string
-  money_in: string; saved: string; tiles: Tile[]; waiting_for_ai: number
+  money_in: string; saved: string; moved: string; tiles: Tile[]; waiting_for_ai: number
 }
 export type Txn = {
   id: string; date: string; amount: string; description: string; merchant: string | null
@@ -81,6 +81,14 @@ export const resetUnderstanding = (id: string, version: number) =>
   api(`/api/transactions/${encodeURIComponent(id)}/understanding/reset`, { method: 'POST', body: { expected_version: version } })
 
 export const getCategories = async () => (await api<{ categories: Category[] }>('/api/categories')).categories
+
+/** A crowded category Tuppence split into sub-categories (labels), and how many payments moved. */
+export type Refile = { id: string; parent: string; created: string[]; moved: number; created_at: string }
+
+export const getRefiles = async () => (await api<{ refiles: Refile[] }>('/api/categories/refiles')).refiles
+
+export const undoRefile = (id: string) =>
+  api<{ moved: number }>(`/api/categories/refiles/${encodeURIComponent(id)}/undo`, { method: 'POST' })
 
 export const createRule = (body: Record<string, unknown>) =>
   api<{ rule: RuleView; changed: number }>('/api/rules', { method: 'POST', body })
