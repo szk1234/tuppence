@@ -14,10 +14,10 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from tuppence.ingest.clock import Deadline, ticking
 from tuppence.ingest.models import (
     CheckLevel,
     Document,
-    Line,
     ParsedRow,
     ParsedStatement,
     Perspective,
@@ -125,17 +125,18 @@ def _figure(tail: str, perspective: Perspective) -> int | None:
     return _signed(match.group(0), plain[match.end() :], perspective)
 
 
-def _below(doc: Document, ref: str, withheld: set[str]) -> str | None:
-    """The withheld line just below `ref` when it is only a figure: the label's figure printed
-    on the next line ("Opening balance" over "£1,000.00")."""
-    at = next((i for i, line in enumerate(doc.lines) if line.ref == ref), None)
+def _below(doc: Document, at: int | None, withheld: set[str]) -> str | None:
+    """The withheld line just below line `at` when it is only a figure: the label's figure
+    printed on the next line ("Opening balance" over "£1,000.00")."""
     if at is None or at + 1 >= len(doc.lines):
         return None
     below = doc.lines[at + 1]
     return below.text if below.ref in withheld and is_figure_line(below.text) else None
 
 
-def local_balances(doc: Document, *, perspective: Perspective) -> LocalBalances:
+def local_balances(
+    doc: Document, *, perspective: Perspective, deadline: Deadline | None = None
+) -> LocalBalances:
     """Opening and closing balance from the withheld lines (the summary box, and the balance
     lines withheld from the table). A figure that appears twice with different values, or that
     isn't plainly labelled, is left out. A label with nothing after it but a date takes the
@@ -154,7 +155,9 @@ def local_balances(doc: Document, *, perspective: Perspective) -> LocalBalances:
     found: dict[str, set[int]] = {"opening": set(), "closing": set()}
     forward: dict[str, set[int]] = {"opening": set(), "closing": set()}
     unclear: set[str] = set()
-    for ref in doc.preamble_refs:
+    tick = ticking(deadline)
+    for n, ref in enumerate(doc.preamble_refs):
+        tick(n)
         line = by_ref.get(ref)
         if line is None:
             continue
@@ -163,7 +166,7 @@ def local_balances(doc: Document, *, perspective: Perspective) -> LocalBalances:
             end = labels[i + 1].start() if i + 1 < len(labels) else len(line.text)
             tail = line.text[label.end() : end]
             if end == len(line.text) and _FILLER.match(_DATE.sub(" ", tail)):
-                tail = f"{tail} {_below(doc, ref, withheld) or ''}"
+                tail = f"{tail} {_below(doc, order.get(ref), withheld) or ''}"
             pence = _figure(tail, perspective)
             if label.group("brought") or label.group("carried"):
                 at = order.get(ref, 0)
@@ -202,36 +205,47 @@ def _has_printed_sign(text: str) -> bool:
     )
 
 
-def _page_text(ref: str, lines: Sequence[Line]) -> str:
-    match = _PAGE.match(ref)
-    if not match:
-        return "\n".join(line.text for line in lines)
-    return "\n".join(
-        line.text for line in lines if (m := _PAGE.match(line.ref)) and m.group(1) == match.group(1)
-    )
+class _Lines:
+    """The document's lines indexed once for sign repair: by ref, and each page's text with
+    the column label found on it for each direction (looked for once per page)."""
 
+    def __init__(self, doc: Document) -> None:
+        self.by_ref = doc.by_ref()
+        pages: dict[str, list[str]] = {}
+        for line in doc.lines:
+            match = _PAGE.match(line.ref)
+            pages.setdefault(match.group(1) if match else "", []).append(line.text)
+        self._pages = {page: "\n".join(texts) for page, texts in pages.items()}
+        self._labels: dict[tuple[str, bool], str | None] = {}
 
-def _label_for(positive: bool, row: ParsedRow, lines: Sequence[Line]) -> str | None:
-    text = _page_text(row.ref, lines)
-    for label in _IN_LABELS if positive else _OUT_LABELS:
-        found = re.search(rf"\b{re.escape(label)}\b", text, re.IGNORECASE)
-        if found:
-            return found.group(0)
-    return None
+    def label_for(self, positive: bool, ref: str) -> str | None:
+        match = _PAGE.match(ref)
+        page = match.group(1) if match else ""
+        key = (page, positive)
+        if key not in self._labels:
+            text = self._pages.get(page) or "\n".join(self._pages.values())
+            self._labels[key] = next(
+                (
+                    found.group(0)
+                    for label in (_IN_LABELS if positive else _OUT_LABELS)
+                    if (found := re.search(rf"\b{re.escape(label)}\b", text, re.IGNORECASE))
+                ),
+                None,
+            )
+        return self._labels[key]
 
-
-def _carried(doc: Document, ref: str) -> int | None:
-    """A skipped 'balance brought (or carried) forward' line's figure: the balance at that
-    point, read on this device."""
-    line = doc.by_ref().get(ref)
-    if line is None or not _CARRIED.search(line.text):
-        return None
-    plain = _DATE.sub(" ", line.text)
-    figures = list(_MONEY.finditer(plain))
-    if not figures:
-        return None
-    last = figures[-1]
-    return _signed(last.group(0), plain[last.end() :], "household")
+    def carried(self, ref: str) -> int | None:
+        """A skipped 'balance brought (or carried) forward' line's figure: the balance at that
+        point, read on this device."""
+        line = self.by_ref.get(ref)
+        if line is None or not _CARRIED.search(line.text):
+            return None
+        plain = _DATE.sub(" ", line.text)
+        figures = list(_MONEY.finditer(plain))
+        if not figures:
+            return None
+        last = figures[-1]
+        return _signed(last.group(0), plain[last.end() :], "household")
 
 
 @dataclass
@@ -250,6 +264,7 @@ def repair_signs(
     opening: int | None,
     closing: int | None = None,
     level: CheckLevel,
+    deadline: Deadline | None = None,
 ) -> SignRepair:
     """Prove the direction of amounts printed without a sign, from printed balances.
 
@@ -269,6 +284,8 @@ def repair_signs(
     result = SignRepair([], [])
     if level == "screenshot" or parsed.perspective == "card":
         return result
+    index = _Lines(doc)
+    tick = ticking(deadline)
     skipped = {s.ref for s in parsed.skipped}
     by_base: dict[str, list[ParsedRow]] = {}
     for row in parsed.rows:
@@ -282,27 +299,28 @@ def repair_signs(
     between = {ref for ref in lines[first:] if ref in withheld}
     start = opening
     group: list[ParsedRow] = []
-    for ref in lines[first:]:
+    for n, ref in enumerate(lines[first:]):
+        tick(n)
         if ref in between:
-            if (figure := _carried(doc, ref)) is not None:
+            if (figure := index.carried(ref)) is not None:
                 if group:
-                    _settle(doc, group, start, figure, result)
+                    _settle(index, group, start, figure, result)
                 start, group = figure, []
             continue
         if ref not in data:
             continue
-        if ref in skipped and (figure := _carried(doc, ref)) is not None:
+        if ref in skipped and (figure := index.carried(ref)) is not None:
             if group:
-                _settle(doc, group, start, figure, result)
+                _settle(index, group, start, figure, result)
             start, group = figure, []
             continue
         for row in by_base.get(ref, []):
             group.append(row)
             if row.balance_after_pence is not None:
-                _settle(doc, group, start, row.balance_after_pence, result)
+                _settle(index, group, start, row.balance_after_pence, result)
                 start, group = row.balance_after_pence, []
     if group:
-        _settle(doc, group, start, closing, result)
+        _settle(index, group, start, closing, result)
     return result
 
 
@@ -334,7 +352,7 @@ def _ways(sizes: Sequence[int], target: int) -> int:
 
 
 def _settle(
-    doc: Document,
+    index: _Lines,
     rows: list[ParsedRow],
     before: int | None,
     after: int | None,
@@ -358,7 +376,7 @@ def _settle(
         row = rows[0]
         if target != row.amount_pence and abs(target) == abs(row.amount_pence):
             row.amount_pence = target
-            row.sign_from = _label_for(target > 0, row, doc.lines)
+            row.sign_from = index.label_for(target > 0, row.ref)
             result.repaired.append(row.ref)
         return
     if len(unsigned) > MAX_UNSIGNED:

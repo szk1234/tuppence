@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from pydantic import BaseModel, Field
 
 from tuppence.core.errors import UserFacing
+from tuppence.ingest.clock import Deadline, ticking
 from tuppence.ingest.models import Document, ParsedRow, ParsedStatement, SkippedLine
 from tuppence.ingest.registry import CsvLayout, column_getter, data_records, header_cells, norm
 from tuppence.ingest.textnum import (
@@ -32,14 +33,18 @@ class LayoutMismatch(UserFacing, ValueError):
     """The file lacks a column the layout needs."""
 
 
-def parse_with_layout(doc: Document, layout: CsvLayout) -> ImportResult:
+def parse_with_layout(
+    doc: Document, layout: CsvLayout, *, deadline: Deadline | None = None
+) -> ImportResult:
     header = header_cells(doc)
     _require_columns(layout, header)
     get = column_getter(layout, header)
     records: list[tuple[list[ParsedRow], list[SkippedLine]]] = []
     problems: list[str] = []
     last4: str | None = None
-    for ref, cells in data_records(doc):
+    tick = ticking(deadline)
+    for n, (ref, cells) in enumerate(data_records(doc)):
+        tick(n)
         rows, skips, problem = _record(ref, cells, layout, get)
         records.append((rows, skips))
         if problem:

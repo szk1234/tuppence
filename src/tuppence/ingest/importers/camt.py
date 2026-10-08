@@ -10,6 +10,7 @@ from xml.etree.ElementTree import Element
 from defusedxml import DefusedXmlException, ElementTree
 
 from tuppence.core.errors import UserFacing
+from tuppence.ingest.clock import Deadline, ticking
 from tuppence.ingest.models import Document, Line, ParsedRow, ParsedStatement, SkippedLine
 from tuppence.ingest.refusals import Refusal
 from tuppence.ingest.textnum import parse_date, parse_money, to_pence
@@ -214,9 +215,13 @@ def read_camt_facts(path: str) -> dict[str, object]:
     return asdict(camt_facts(data))
 
 
-def document_from_facts(facts: CamtFacts, *, sha256: str) -> Document:
+def document_from_facts(
+    facts: CamtFacts, *, sha256: str, deadline: Deadline | None = None
+) -> Document:
     lines = [Line(ref="H1", text=f"Account {facts.iban} {facts.bic}".strip())]
-    for e in facts.entries:
+    tick = ticking(deadline)
+    for n, e in enumerate(facts.entries):
+        tick(n)
         lines.append(
             Line(
                 ref=e.ref,
@@ -235,7 +240,7 @@ def document_from_facts(facts: CamtFacts, *, sha256: str) -> Document:
     )
 
 
-def parsed_from_facts(facts: CamtFacts) -> ParsedStatement:
+def parsed_from_facts(facts: CamtFacts, *, deadline: Deadline | None = None) -> ParsedStatement:
     code = (facts.currency or "GBP").strip().upper()
     if code != "GBP":  # its figures would otherwise be stored as pounds
         shown = code if code.isalpha() and len(code) <= 3 else "another currency"
@@ -252,7 +257,9 @@ def parsed_from_facts(facts: CamtFacts) -> ParsedStatement:
         opening_balance_pence=facts.opening_pence,
         closing_balance_pence=facts.closing_pence,
     )
-    for e in facts.entries:
+    tick = ticking(deadline)
+    for n, e in enumerate(facts.entries):
+        tick(n)
         if e.status and e.status != "BOOK":
             parsed.skipped.append(SkippedLine(ref=e.ref, reason="not booked yet (pending)"))
             continue

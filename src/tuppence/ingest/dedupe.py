@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import date, timedelta
 from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 
+from tuppence.ingest.clock import Deadline, ticking
 from tuppence.ingest.models import ParsedRow
 from tuppence.ingest.textnum import pounds
 
@@ -60,7 +62,10 @@ def description_tokens(raw: str) -> frozenset[str]:
 
 
 def similar_descriptions(a: str, b: str) -> bool:
-    ta, tb = description_tokens(a), description_tokens(b)
+    return _similar(description_tokens(a), description_tokens(b))
+
+
+def _similar(ta: frozenset[str], tb: frozenset[str]) -> bool:
     if not ta or not tb:
         return False
     return ta <= tb or tb <= ta or len(ta & tb) / len(ta | tb) >= 0.5
@@ -80,6 +85,54 @@ class DedupePlan(BaseModel):
     similar: dict[int, str] = Field(default_factory=dict)  # new row index → existing transaction id
 
 
+# Stored rows looked at for one new row in one pass, beyond those already taken. A real
+# statement has a handful of the same amount within a few days; only a crafted file has more,
+# and it can't make planning slow (R-M3-23 (d)).
+MAX_CANDIDATES = 32
+
+
+class _Bucket:
+    """Stored rows of one amount on one day, in order, skipping those already matched in
+    near-constant time (each taken row points past itself)."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[int, Existing]] = []
+        self._next: list[int] = []
+
+    def add(self, order: int, row: Existing) -> None:
+        self._next.append(len(self.rows))
+        self.rows.append((order, row))
+
+    def take(self, k: int) -> None:
+        self._next[k] = k + 1
+
+    def unused(self, k: int) -> int:
+        root = k
+        while root < len(self._next) and self._next[root] != root:
+            root = self._next[root]
+        while k < len(self._next) and self._next[k] != k:
+            self._next[k], k = root, self._next[k]
+        return root
+
+    def walk(self) -> Iterator[int]:
+        k = self.unused(0)
+        while k < len(self.rows):
+            yield k
+            k = self.unused(k + 1)
+
+
+def _nearest(buckets: Sequence[_Bucket]) -> Iterator[tuple[_Bucket, int]]:
+    """Untaken rows of buckets the same distance away (the day before and the day after), in
+    stored order."""
+
+    def walk(i: int, bucket: _Bucket) -> Iterator[tuple[int, int, int]]:
+        for k in bucket.walk():
+            yield bucket.rows[k][0], k, i
+
+    for _, k, i in heapq.merge(*(walk(i, bucket) for i, bucket in enumerate(buckets))):
+        yield buckets[i], k
+
+
 def plan_dedupe(
     rows: Sequence[ParsedRow],
     fingerprints: Sequence[str],
@@ -87,6 +140,7 @@ def plan_dedupe(
     *,
     window: tuple[date, date],
     exact_only: Sequence[Existing] = (),
+    deadline: Deadline | None = None,
 ) -> DedupePlan:
     """Decide which new rows to store.
 
@@ -97,12 +151,17 @@ def plan_dedupe(
     the same month, or a screenshot). Each stored row matches at most one new row,
     same-day matches first. `exact_only` rows (a statement's own rows from its earlier read)
     match only by fingerprint: a corrected row replaces its old self.
+
+    Time is in proportion to the rows: each new row looks at no more than `MAX_CANDIDATES`
+    untaken stored rows a pass.
     """
+    tick = ticking(deadline)
     plan = DedupePlan()
     stored = {e.fingerprint: e for e in [*existing, *exact_only]}
     used: set[str] = set()
     pending: list[int] = []
     for i, fp in enumerate(fingerprints):
+        tick(i)
         if fp in stored:
             plan.exact.append(i)
             used.add(stored[fp].id)
@@ -111,30 +170,52 @@ def plan_dedupe(
     lo, hi = window
     # Stored rows inside the window by amount, then by day: each new row looks only at rows of
     # its own amount a few days either side (M10: this runs inside the import's write lock).
-    by_amount: dict[int, dict[date, list[tuple[int, Existing]]]] = {}
+    by_amount: dict[int, dict[date, _Bucket]] = {}
     for order, e in enumerate(existing):
+        tick(order)
         if lo <= e.date <= hi:
-            by_amount.setdefault(e.amount_pence, {}).setdefault(e.date, []).append((order, e))
+            by_amount.setdefault(e.amount_pence, {}).setdefault(e.date, _Bucket()).add(order, e)
+    tokens: dict[str, frozenset[str]] = {}
+
+    def tokens_of(text: str) -> frozenset[str]:
+        if text not in tokens:
+            tokens[text] = description_tokens(text)
+        return tokens[text]
+
     for max_gap in (0, SOFT_DAYS):
-        for i in list(pending):
+        matched: set[int] = set()
+        for n, i in enumerate(pending):
+            tick(n)
             row = rows[i]
             if not lo <= row.date <= hi:
                 continue
             days = by_amount.get(row.amount_pence)
             if not days:
                 continue
-            near = [
-                (abs(gap), order, e)
-                for gap in range(-max_gap, max_gap + 1)
-                for order, e in days.get(row.date + timedelta(days=gap), ())
-            ]
-            for _, _, e in sorted(near, key=lambda item: (item[0], item[1])):
-                if e.id in used:
-                    continue
-                if similar_descriptions(e.raw_description, row.raw_description):
-                    plan.similar[i] = e.id
-                    used.add(e.id)
-                    pending.remove(i)
+            mine = tokens_of(row.raw_description)
+            looked = 0
+            for gap in range(max_gap + 1):
+                near = [
+                    bucket
+                    for day in {row.date - timedelta(days=gap), row.date + timedelta(days=gap)}
+                    if (bucket := days.get(day)) is not None
+                ]
+                for bucket, k in _nearest(near):
+                    e = bucket.rows[k][1]
+                    if e.id in used:  # matched by fingerprint, or taken by another row
+                        bucket.take(k)
+                        continue
+                    if looked >= MAX_CANDIDATES:
+                        break
+                    looked += 1
+                    if _similar(tokens_of(e.raw_description), mine):
+                        plan.similar[i] = e.id
+                        used.add(e.id)
+                        bucket.take(k)
+                        matched.add(i)
+                        break
+                if i in matched or looked >= MAX_CANDIDATES:
                     break
+        pending = [i for i in pending if i not in matched]
     plan.insert = pending
     return plan

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
 from tuppence.core.records import NotFound, VersionConflict
+from tuppence.ingest.clock import Deadline
 from tuppence.ingest.dedupe import Existing, assign_fingerprints, plan_dedupe
 from tuppence.ingest.models import FileKind, ParsedStatement, StatementStatus
 
@@ -267,6 +268,7 @@ class StatementStore:
         stats: dict[str, Any],
         expected_version: int | None = None,
         within: Callable[[sqlite3.Connection], object] | None = None,
+        deadline: Deadline | None = None,
     ) -> PersistResult:
         """Import a statement in one transaction: every new row, a link from the statement to
         every row it covers, the closing balance, the account answer for its layout
@@ -327,6 +329,7 @@ class StatementStore:
                 existing,
                 window=(lo or date.min, hi or date.max),
                 exact_only=[Existing(*e[:5]) for e in own.values() if e.account_id == account_id],
+                deadline=deadline,
             )
             stored = {e.fingerprint: e.id for e in [*existing, *own.values()]}
             links: list[tuple[str, str, str]] = [  # (transaction id, line on this statement, match)

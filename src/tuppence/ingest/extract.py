@@ -82,17 +82,21 @@ def extract_document(
             decode_text(path.read_bytes()), sha256=sha256, names=names, deadline=clock.remaining
         )
     if kind == "ofx":
-        return ofx_document(decode_text(path.read_bytes()), sha256=sha256)
+        return ofx_document(decode_text(path.read_bytes()), sha256=sha256, deadline=clock.remaining)
     if kind == "qif":
-        return qif_document(decode_text(path.read_bytes()), sha256=sha256)
+        return qif_document(decode_text(path.read_bytes()), sha256=sha256, deadline=clock.remaining)
     if kind == "camt053":
         return document_from_facts(
-            clock.run(parse_camt_facts, read_camt_facts, str(path)), sha256=sha256
+            clock.run(parse_camt_facts, read_camt_facts, str(path)),
+            sha256=sha256,
+            deadline=clock.remaining,
         )
     if kind == "xlsx":
         check_zip(path)
         records = clock.run(parse_xlsx_records, xlsx_records, str(path))
-        return table_document(records, sha256=sha256, kind="xlsx", known=known_header)
+        return table_document(
+            records, sha256=sha256, kind="xlsx", known=known_header, deadline=clock.remaining
+        )
     if kind == "pdf":
         return _pdf(path, sha256, limits, clock, vision, names)
     return _image(path, sha256, limits, clock, vision, names)

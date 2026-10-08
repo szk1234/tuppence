@@ -32,10 +32,11 @@ from tuppence.core.money import MAX_PENCE
 from tuppence.core.records import NotFound, VersionConflict
 from tuppence.core.secrets import SecretError
 from tuppence.ingest.check import balance_verified, check_rows, check_statement
+from tuppence.ingest.clock import Deadline, after
 from tuppence.ingest.files import StatementFiles
 from tuppence.ingest.handoff import ANALYSIS_JOB
 from tuppence.ingest.models import CheckLevel, Document, ParsedRow, ParsedStatement, SkippedLine
-from tuppence.ingest.parse import held_back_message, too_long_message
+from tuppence.ingest.parse import LOCAL_SECONDS, held_back_message, too_long_message
 from tuppence.ingest.pipeline import READ_FAILED, IngestGraph, RunContext, hand_off
 from tuppence.ingest.registry import CsvLayout
 from tuppence.ingest.sniff import UploadRejected, check_zip, sniff
@@ -75,7 +76,13 @@ def clean_filename(name: str | None) -> str:
     return (base or "statement")[:255]
 
 
-def recheck(doc: Document, parsed: ParsedStatement, level: CheckLevel) -> list[str]:
+def recheck(
+    doc: Document,
+    parsed: ParsedStatement,
+    level: CheckLevel,
+    *,
+    deadline: Deadline | None = None,
+) -> list[str]:
     """Every check again after the person's edits. Rows they changed skip the line checks.
     A held-back line counts once the person makes it a row or skips it; until then it is
     reported, as the parse step did."""
@@ -89,8 +96,9 @@ def recheck(doc: Document, parsed: ParsedStatement, level: CheckLevel) -> list[s
         data_refs=[*doc.data_refs, *decided],
         parsed=parsed,
         level=level,
+        deadline=deadline,
     )
-    errors += check_statement(parsed, level=level, dates=True)
+    errors += check_statement(parsed, level=level, dates=True, deadline=deadline)
     held_left = [r for r in doc.held_amount_refs if r not in used and r not in long]
     if held := held_back_message(doc, len(held_left)):
         errors.append(held)
@@ -451,7 +459,10 @@ class IngestService:
         level = _level(record.draft)
         draft = {**record.draft, "parsed": parsed.model_dump(mode="json")}
         return self.store.update_versioned(
-            statement_id, expected_version, draft=draft, check_errors=recheck(doc, parsed, level)
+            statement_id,
+            expected_version,
+            draft=draft,
+            check_errors=recheck(doc, parsed, level, deadline=after(LOCAL_SECONDS)),
         )
 
     def accept(self, statement_id: str, *, expected_version: int) -> StatementRecord:
@@ -487,6 +498,7 @@ class IngestService:
             stats=stats,
             expected_version=expected_version,
             within=within,
+            deadline=after(LOCAL_SECONDS, "Importing this statement"),
         )
         hand_off(self.deps.on_imported, statement_id)
         self._forget(record)

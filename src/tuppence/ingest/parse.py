@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from tuppence.core.errors import safe_error_text
 from tuppence.ingest.balances import local_balances, repair_signs
 from tuppence.ingest.check import balance_printed, check_document, check_rows, check_statement
+from tuppence.ingest.clock import after
 from tuppence.ingest.extract import ExtractLimits, read_camt
 from tuppence.ingest.identify import Evidence
 from tuppence.ingest.importers.camt import CamtError, parsed_from_facts
@@ -43,6 +44,9 @@ ACCOUNT_LABELS: dict[str, str] = {
     "savings": "savings account",
     "credit_card": "credit card (the statement prints purchases as positive figures)",
 }
+
+
+LOCAL_SECONDS = 180.0  # this device's own work on one statement, a pass at a time
 
 
 class ReaderLimits(BaseModel):
@@ -254,11 +258,14 @@ def parse_document(
     prompts_dir: Path | None = None,
     names: Sequence[str] = (),
     extract_limits: ExtractLimits | None = None,
+    local_seconds: float = LOCAL_SECONDS,
 ) -> ParseOutcome:
     """`context_window` is the read model's, or None when no model is set up (an AI step then
     raises NoModelConfigured through `llm`). `names` are the household's own names, hidden
     from layout learning like any account detail. `extract_limits` bound the sandbox that
-    reads a CAMT.053 file's XML."""
+    reads a CAMT.053 file's XML. Each pass of this device's own over the file (reading it,
+    checking the rows) stops after `local_seconds` (R-M3-23 (d)); AI calls have their own
+    budget."""
     outcome = _parse(
         doc,
         path,
@@ -273,6 +280,7 @@ def parse_document(
         prompts_dir=prompts_dir,
         names=names,
         extract_limits=extract_limits,
+        local_seconds=local_seconds,
     )
     if doubt := kind_doubt(evidence, account_kind):
         outcome.errors.append(doubt)
@@ -294,15 +302,19 @@ def _parse(
     prompts_dir: Path | None,
     names: Sequence[str],
     extract_limits: ExtractLimits | None,
+    local_seconds: float,
 ) -> ParseOutcome:
     level = level_for(doc)
+    deadline = after(local_seconds)
     if doc.kind in ("ofx", "qif", "camt053"):
         try:
             if doc.kind == "camt053":  # the XML is parsed in the sandbox, never in the app
-                parsed = parsed_from_facts(read_camt(path, extract_limits or ExtractLimits()))
+                facts = read_camt(path, extract_limits or ExtractLimits())
+                parsed = parsed_from_facts(facts, deadline=deadline)
             else:
                 text = decode_text(path.read_bytes())
-                parsed = parse_ofx(text) if doc.kind == "ofx" else parse_qif(text)
+                read = parse_ofx if doc.kind == "ofx" else parse_qif
+                parsed = read(text, deadline=deadline)
         except (OfxError, QifError, CamtError) as exc:
             return ParseOutcome(
                 parsed=ParsedStatement(importer=doc.kind),
@@ -310,21 +322,23 @@ def _parse(
                 info={"importer": doc.kind},
             )
         return ParseOutcome(
-            parsed=parsed, errors=check_document(doc, parsed), info={"importer": parsed.importer}
+            parsed=parsed,
+            errors=check_document(doc, parsed, deadline=deadline),
+            info={"importer": parsed.importer},
         )
     if doc.kind in ("csv", "xlsx"):
         # A learned layout only for this side of account (a card's or a bank account's).
         layout = registry.match(doc, kind=account_kind)
         if layout is not None:
             try:
-                result = parse_with_layout(doc, layout)
+                result = parse_with_layout(doc, layout, deadline=deadline)
             except LayoutMismatch as exc:
                 return ParseOutcome(
                     parsed=ParsedStatement(importer=f"csv:{layout.id}"),
                     errors=[safe_error_text(exc)],
                     info={"importer": f"csv:{layout.id}"},
                 )
-            errors = result.problems + check_document(doc, result.parsed)
+            errors = result.problems + check_document(doc, result.parsed, deadline=deadline)
             if layout.source == "learned" and (
                 doubt := sign_doubt(result.parsed, account_kind, layout, new=False)
             ):
@@ -340,10 +354,13 @@ def _parse(
             names=names,
             max_attempts=limits.max_attempts_per_chunk,
             prompt=load_prompt("csv_mapping", prompts_dir),
+            local_seconds=local_seconds,
         )
         if outcome.layout is not None and outcome.result is not None:
             # The rows a fresh mapping read go through the same Check as any importer's.
-            checked = outcome.result.problems + check_document(doc, outcome.result.parsed)
+            checked = outcome.result.problems + check_document(
+                doc, outcome.result.parsed, deadline=after(local_seconds)
+            )
             doubt = sign_doubt(outcome.result.parsed, account_kind, outcome.layout, new=True)
             if doubt or checked:  # read the file, but don't trust the layout enough to keep it
                 parsed = outcome.result.parsed
@@ -385,14 +402,16 @@ def _parse(
         max_attempts=limits.max_attempts_per_chunk,
         parallel=limits.parallel_chunks,
         prompt=load_prompt("read", prompts_dir),
+        deadline=deadline,
     )
     # Period and balances come from the lines that were withheld from the model, read on this
     # device. The model's own values are only fallbacks when those lines gave none.
+    deadline = after(local_seconds)  # this device's work after the read has its own time
     parsed, facts = read.parsed, evidence.facts
     restore_masked(parsed, doc)
     if facts.period_start and facts.period_end:
         parsed.period_start, parsed.period_end = facts.period_start, facts.period_end
-    local = local_balances(doc, perspective=perspective)
+    local = local_balances(doc, perspective=perspective, deadline=deadline)
     # The model's own opening or closing balance is a fallback only when it is printed as the
     # balance of a line it was sent ("Balance brought forward 1,000.00"); otherwise it is
     # something the model worked out, and it could make anything add up.
@@ -407,7 +426,14 @@ def _parse(
         else _sent_balance(doc, parsed.closing_balance_pence, perspective)
     )
     # Directions are proved from balances read on this device only, never the model's.
-    repair = repair_signs(doc, parsed, opening=local.opening, closing=local.closing, level=level)
+    repair = repair_signs(
+        doc,
+        parsed,
+        opening=local.opening,
+        closing=local.closing,
+        level=level,
+        deadline=deadline,
+    )
     whole_file = check_rows(
         doc.lines,
         all_lines=doc.lines,
@@ -415,11 +441,12 @@ def _parse(
         data_refs=doc.data_refs,
         parsed=parsed,
         level=level,
+        deadline=deadline,
     )
     errors = [
         *read.errors,
         *whole_file,
-        *check_statement(parsed, level=level, dates=True),
+        *check_statement(parsed, level=level, dates=True, deadline=deadline),
         *repair.errors,
     ]
     if held := held_back_message(doc):

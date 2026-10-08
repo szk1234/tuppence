@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from tuppence.core.errors import UserFacing
 from tuppence.ingest import sensitive
+from tuppence.ingest.clock import Deadline, ticking
 from tuppence.ingest.models import Document, FileKind, Line, MaskedLine
 from tuppence.ingest.textnum import decode_text, parse_date, parse_money
 
@@ -33,22 +34,7 @@ class UnreadableFile(UserFacing, ValueError):
 # A statement line is never this long. A longer one isn't read (no pattern runs over it): it is
 # kept cut short, left out of what is sent, and reported so the person can say what it is.
 MAX_LINE_CHARS = 10_000
-Deadline = Callable[[], object]  # raises once the extraction's time is up
-
-
-def _no_deadline() -> None:
-    return None
-
-
-def _ticking(deadline: Deadline | None, every: int = 256) -> Callable[[int], None]:
-    """A per-line hook that calls `deadline` every `every` lines."""
-    check = deadline or _no_deadline
-
-    def tick(i: int) -> None:
-        if i % every == 0:
-            check()
-
-    return tick
+_ticking = ticking
 
 
 _DELIMITERS = (",", ";", "\t", "|")
@@ -182,8 +168,14 @@ def table_document(
     sha256: str,
     kind: FileKind,
     known: Callable[[Sequence[str]], bool] | None = None,
+    deadline: Deadline | None = None,
 ) -> Document:
-    kept = [(n, raw, cells) for n, raw, cells in records if any(c.strip() for c in cells)]
+    tick = _ticking(deadline)
+    kept: list[tuple[int, str, list[str]]] = []
+    for i, (n, raw, cells) in enumerate(records):
+        tick(i)
+        if any(c.strip() for c in cells):
+            kept.append((n, raw, cells))
     lines = [Line(ref=f"L{n}", text=raw) for n, raw, _ in kept]
     table = [cells for _, _, cells in kept]
     header = find_header(table, known=known)
@@ -209,7 +201,7 @@ def csv_document(
     deadline: Deadline | None = None,
 ) -> Document:
     records = csv_records(decode_text(data), deadline=deadline)
-    return table_document(records, sha256=sha256, kind="csv", known=known)
+    return table_document(records, sha256=sha256, kind="csv", known=known, deadline=deadline)
 
 
 def _has_date(text: str) -> bool:
@@ -382,10 +374,13 @@ def _single_transaction(text: str, row: bool) -> bool:
     return row or (not _has_date(text) and len(_MONEY_TOKEN.findall(text)) <= 2)
 
 
+_HEADING_RE = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in _HEADING_WORDS) + r")\b")
+
+
 def is_heading(text: str) -> bool:
     lowered = text.casefold()
     return (
-        sum(1 for word in _HEADING_WORDS if re.search(rf"\b{re.escape(word)}\b", lowered)) >= 2
+        len(set(_HEADING_RE.findall(lowered))) >= 2
         and not _MONEY_TOKEN.search(text)
         and ":" not in text  # "Payment type: Direct debit" is a label, not column headings
         and not is_sensitive(text)
@@ -959,8 +954,11 @@ def sent_lines(doc: Document) -> dict[str, Line]:
     return lines
 
 
-def plan_chunks(doc: Document, *, rows_per_chunk: int) -> list[Chunk]:
+def plan_chunks(
+    doc: Document, *, rows_per_chunk: int, deadline: Deadline | None = None
+) -> list[Chunk]:
     """Data lines in slices of `rows_per_chunk`, each with the headings it needs."""
+    tick = _ticking(deadline)
     by_ref = sent_lines(doc)
     order = {line.ref: i for i, line in enumerate(doc.lines)}
     data = [by_ref[r] for r in doc.data_refs]
@@ -969,6 +967,7 @@ def plan_chunks(doc: Document, *, rows_per_chunk: int) -> list[Chunk]:
     last_heading: dict[int, Line | None] = {}
     current: Line | None = None
     for i, line in enumerate(data):
+        tick(i)
         if i % step == 0:
             last_heading[i] = current
         if not doc.header_refs and is_heading(line.text):

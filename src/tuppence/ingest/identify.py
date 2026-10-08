@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from tuppence.core.clock import to_iso, utcnow
 from tuppence.core.db import Database
+from tuppence.ingest.clock import Deadline, no_deadline
 from tuppence.ingest.models import AccountKind, Document
 from tuppence.ingest.registry import (
     BankPack,
@@ -196,11 +197,23 @@ def _sort_code_provider(pack: BankPack, bankid: str) -> str | None:
 MAX_LINE_CHARS = 10_000
 
 
-def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry, key: bytes) -> Evidence:
+def identify(
+    doc: Document,
+    *,
+    pack: BankPack,
+    registry: LayoutRegistry,
+    key: bytes,
+    deadline: Deadline | None = None,
+) -> Evidence:
+    """Which bank and account the statement is from, read on this device. Each step is linear
+    in the lines it reads, with a look at `deadline` between them."""
+    check = deadline or no_deadline
+    check()
     by_ref = doc.by_ref()
     preamble_text = "\n".join(
         by_ref[r].text[:MAX_LINE_CHARS] for r in doc.preamble_refs if r in by_ref
     )
+    check()
     if doc.kind in ("csv", "xlsx"):
         return _identify_table(doc, registry, header_facts(preamble_text))
     if doc.kind == "ofx":
@@ -245,6 +258,7 @@ def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry, key: by
     top = f"{preamble_text}\n{first_lines}".casefold()
     facts = header_facts(preamble_text or first_lines)
     hint = facts.kind_hint
+    check()
     for marker in pack.pdf_markers:
         if any(needle.casefold() in top for needle in marker.any):
             return Evidence(

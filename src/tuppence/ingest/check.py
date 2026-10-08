@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from tuppence.core.money import MAX_PENCE
+from tuppence.ingest.clock import Deadline, ticking
 from tuppence.ingest.models import (
     CheckLevel,
     Document,
@@ -26,7 +27,7 @@ from tuppence.ingest.models import (
     Perspective,
     SkippedLine,
 )
-from tuppence.ingest.textnum import direction_of, pounds, to_pence
+from tuppence.ingest.textnum import MAX_FIGURE_CHARS, direction_of, pounds, to_pence
 
 MAX_PERIOD_DAYS = 400
 DATE_SLACK = timedelta(days=3)
@@ -65,22 +66,38 @@ class Figure:
 def _grouped_start(whole: str) -> int:
     """Where the valid number starts in `whole` (digits and commas): the longest tail that is
     a lone digit run or a 1-3 digit head followed by groups of exactly three ("2026,12" is the
-    year and then 12; "1,250" is one number)."""
+    year and then 12; "1,250" is one number). One pass from each end, so a long run of groups
+    takes time in proportion to its length (N1)."""
     groups = whole.split(",")
+    # from `tail` on, every group is exactly three digits long
+    tail = len(groups)
+    while tail > 0 and len(groups[tail - 1]) == 3:
+        tail -= 1
     offset = 0
     for k, head in enumerate(groups):
-        rest = groups[k + 1 :]
-        if head and (not rest or (len(head) <= 3 and all(len(g) == 3 for g in rest))):
+        last = k == len(groups) - 1
+        if head and (last or (len(head) <= 3 and k + 1 >= tail)):
             return offset
         offset += len(head) + 1
     return len(whole)
 
 
+_BEFORE_CELL = frozenset(" £$€-+\u2212\u2013(")
+_AFTER_CELL = frozenset(" )-\u2212")
+
+
 def _at_cell_edge(text: str, start: int, end: int) -> bool:
-    """The number is a whole cell of a CSV line, allowing a sign, £ or brackets round it."""
-    before = text[:start].rstrip(" £$€-+\u2212\u2013(")
-    after = text[end:].lstrip(" )-\u2212")
-    return (not before or before[-1] in _CELL_EDGE) and (not after or after[0] in _CELL_EDGE)
+    """The number is a whole cell of a CSV line, allowing a sign, £ or brackets round it. Only
+    the characters next to the number are looked at, never a copy of the line."""
+    before = start - 1
+    while before >= 0 and text[before] in _BEFORE_CELL:
+        before -= 1
+    after = end
+    while after < len(text) and text[after] in _AFTER_CELL:
+        after += 1
+    return (before < 0 or text[before] in _CELL_EDGE) and (
+        after >= len(text) or text[after] in _CELL_EDGE
+    )
 
 
 def figures(text: str) -> list[Figure]:
@@ -96,8 +113,8 @@ def figures(text: str) -> list[Figure]:
         if "." in run and len(pennies) != 2:
             continue
         offset = _grouped_start(whole)
-        if offset >= len(whole):
-            continue
+        if offset >= len(whole) or len(whole) - offset > MAX_FIGURE_CHARS:
+            continue  # no money figure is that long (and reading it would be slow)
         start, end = match.start() + offset, match.start() + len(run)
         if not pennies and not (
             (start > 0 and text[start - 1] in "£$€") or _at_cell_edge(text, start, end)
@@ -153,11 +170,10 @@ def balance_printed(row: ParsedRow, text: str, perspective: Perspective) -> bool
     if len(printed) < 2:  # a single figure is the row's own amount
         return False
     last = printed[-1]  # the balance column is the last on the line
-    after = text[last.end :]
     if perspective == "card":  # a card prints what is owed; CR means in credit
-        negative = last.negative or _CREDIT_AFTER.match(after) is not None
+        negative = last.negative or _CREDIT_AFTER.match(text, last.end) is not None
     else:
-        negative = last.negative or _OVERDRAWN_AFTER.match(after) is not None
+        negative = last.negative or _OVERDRAWN_AFTER.match(text, last.end) is not None
     return last.pence == abs(balance) and negative == (balance < 0)
 
 
@@ -184,14 +200,21 @@ def check_rows(
     data_refs: Sequence[str],
     parsed: ParsedStatement,
     level: CheckLevel = "full",
+    deadline: Deadline | None = None,
 ) -> list[str]:
+    """Each row against the line it cites, and every data line used once. Every pass is
+    linear in the lines and rows it reads, and looks at `deadline` as it goes."""
     lines = _combine(all_lines, chunk)
     if level == "screenshot":
-        return _too_large(parsed.rows) + _zero(parsed.rows) + _evidence_only(parsed.rows, lines)
+        return (
+            _too_large(parsed.rows)
+            + _zero(parsed.rows)
+            + _evidence_only(parsed.rows, lines, deadline)
+        )
     errors = _too_large(parsed.rows) + _zero(parsed.rows)
     errors.extend(_coverage(parsed.rows, parsed.skipped, context_refs, data_refs))
     period_errors = _period(parsed)
-    errors.extend(_rows(parsed, lines, context_refs))
+    errors.extend(_rows(parsed, lines, context_refs, deadline))
     errors.extend(_skipped(parsed.skipped))
     errors.extend(_running(parsed.rows, None, parsed.perspective))
     errors.extend(period_errors)
@@ -199,7 +222,11 @@ def check_rows(
 
 
 def check_statement(
-    parsed: ParsedStatement, *, level: CheckLevel = "full", dates: bool = False
+    parsed: ParsedStatement,
+    *,
+    level: CheckLevel = "full",
+    dates: bool = False,
+    deadline: Deadline | None = None,
 ) -> list[str]:
     """Opening plus every amount against closing, and running balances.
 
@@ -211,9 +238,11 @@ def check_statement(
     if level == "screenshot":
         return []
     errors: list[str] = []
+    tick = ticking(deadline)
     start, end = parsed.period_start, parsed.period_end
     if dates and start is not None and end is not None:
-        for row in parsed.rows:
+        for i, row in enumerate(parsed.rows):
+            tick(i)
             if not row.edited and not start - DATE_SLACK <= row.date <= end + DATE_SLACK:
                 errors.append(_outside(row, start, end))
     opening, closing = parsed.opening_balance_pence, parsed.closing_balance_pence
@@ -232,7 +261,11 @@ def check_statement(
 
 
 def check_document(
-    doc: Document, parsed: ParsedStatement, *, level: CheckLevel = "full"
+    doc: Document,
+    parsed: ParsedStatement,
+    *,
+    level: CheckLevel = "full",
+    deadline: Deadline | None = None,
 ) -> list[str]:
     """Every check over a whole file at once (fixed importers and learned CSV mappings)."""
     errors = check_rows(
@@ -242,9 +275,10 @@ def check_document(
         data_refs=doc.data_refs,
         parsed=parsed,
         level=level,
+        deadline=deadline,
     )
     return list(
-        dict.fromkeys(errors + check_statement(parsed, level=level))
+        dict.fromkeys(errors + check_statement(parsed, level=level, deadline=deadline))
     )  # running-balance errors appear in both
 
 
@@ -377,7 +411,7 @@ def _period(parsed: ParsedStatement) -> list[str]:
     return errors
 
 
-def _evidence(row: ParsedRow, line: Line) -> list[str]:
+def _evidence(row: ParsedRow, line: Line, printed: Sequence[Figure]) -> list[str]:
     """`amount_text` is one figure (read by `figures`, like every figure here), its size is the
     row's amount, and it is printed on the line as a whole figure: "50.00" is not found in
     "150.00" or "£1,250.00"."""
@@ -392,69 +426,83 @@ def _evidence(row: ParsedRow, line: Line) -> list[str]:
             f'{row.ref}: amount_text "{row.amount_text}" is {pounds(figure.pence)}, '
             f"amount is {pounds(row.amount_pence)}"
         )
-    printed = {(f.start, f.end) for f in figures(line.text)}
+    spans = {(f.start, f.end) for f in printed}
     start = 0
     while (index := line.text.find(row.amount_text, start)) >= 0:
-        if (index + figure.start, index + figure.end) in printed:
+        if (index + figure.start, index + figure.end) in spans:
             return errors
         start = index + 1
     errors.append(f'{row.ref}: amount_text "{row.amount_text}" not found on line')
     return errors
 
 
-def _evidence_only(rows: Sequence[ParsedRow], lines: Sequence[Line]) -> list[str]:
+class _Figures:
+    """`figures` of each line, read once however many rows cite it."""
+
+    def __init__(self) -> None:
+        self._done: dict[str, list[Figure]] = {}
+
+    def __call__(self, line: Line) -> list[Figure]:
+        if line.ref not in self._done:
+            self._done[line.ref] = figures(line.text)
+        return self._done[line.ref]
+
+
+def _evidence_only(
+    rows: Sequence[ParsedRow], lines: Sequence[Line], deadline: Deadline | None = None
+) -> list[str]:
     by_ref = {line.ref: line for line in lines}
+    printed = _Figures()
+    tick = ticking(deadline)
     errors: list[str] = []
-    for row in rows:
+    for i, row in enumerate(rows):
+        tick(i)
         if row.edited:
             continue
         line = by_ref.get(base_ref(row.ref))
         if line is None:
             errors.append(f"{row.ref}: source line not found")
             continue
-        errors.extend(_evidence(row, line))
+        errors.extend(_evidence(row, line, printed(line)))
     return errors
 
 
-def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence[str]) -> list[str]:
+def _rows(
+    parsed: ParsedStatement,
+    lines: Sequence[Line],
+    context_refs: Sequence[str],
+    deadline: Deadline | None = None,
+) -> list[str]:
     by_ref: dict[str, Line] = {}
     for line in lines:
         by_ref.setdefault(line.ref, line)
     context_set = set(context_refs)
     context_text = "\n".join(line.text for line in lines if line.ref in context_set)
-    page_cache: dict[str, str] = {}
+    pages = _Pages(lines, context_text)
+    printed = _Figures()
+    tick = ticking(deadline)
     start, end = parsed.period_start, parsed.period_end
     errors: list[str] = []
-    for row in parsed.rows:
+    for i, row in enumerate(parsed.rows):
+        tick(i)
         if row.edited:
             continue
         line = by_ref.get(base_ref(row.ref))
         if line is None:
             errors.append(f"{row.ref}: source line not found")
             continue
-        errors.extend(_evidence(row, line))
+        shown = printed(line)
+        errors.extend(_evidence(row, line, shown))
         label = (row.sign_from or "").strip()
         # Only a CSV importer's own split-out fee rows ("L12#fee", from a Fee column) are
         # printed as a plain charge. A ref the AI reader returns never gets this.
         fee = row.ref.endswith("#fee") and parsed.importer.startswith("csv:")
         # A card's figure is read the card's way unless a DR/CR cell on the row gives its sign.
         if parsed.perspective == "card" and _cell_direction(label, line.text) is None:
-            errors.extend(_card_sign(row, line.text))
+            errors.extend(_card_sign(row, line.text, shown))
         else:
-            errors.extend(_sign(row, line.text, label, fee=fee))
-        page = _PAGE.fullmatch(base_ref(row.ref))
-        if page and page.group(1) not in page_cache:
-            page_cache[page.group(1)] = _page_text(row.ref, lines)
-        where = page_cache[page.group(1)] if page else context_text
-        errors.extend(
-            _sign_from(
-                row,
-                label,
-                where,
-                "page" if _PAGE.fullmatch(base_ref(row.ref)) else "header",
-                line.text,
-            )
-        )
+            errors.extend(_sign(row, line.text, label, shown, fee=fee))
+        errors.extend(_sign_from(row, label, pages.where(row.ref), line.text))
         if (
             start is not None
             and end is not None
@@ -465,9 +513,70 @@ def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence
     return errors
 
 
-def _sign(row: ParsedRow, text: str, sign_from: str, *, fee: bool = False) -> list[str]:
+MAX_LABELS = 32  # different sign labels looked for on one page
+
+
+class _Pages:
+    """Where a row's sign label must be printed: its own page (page refs), else the column
+    headings. Each page's text is built once, and each label is looked for once per page,
+    so many rows on a long page don't each read the whole page again."""
+
+    def __init__(self, lines: Sequence[Line], context_text: str) -> None:
+        texts: dict[str, list[str]] = {}
+        for line in lines:
+            if match := _PAGE.fullmatch(line.ref):
+                texts.setdefault(match.group(1), []).append(line.text)
+        self._texts = {page: "\n".join(parts) for page, parts in texts.items()}
+        self._context = context_text
+        self._folded: dict[str, str] = {}
+        self._found: dict[tuple[str, str], bool] = {}
+        self._looked: dict[str, int] = {}
+
+    def where(self, ref: str) -> _Where:
+        page = _PAGE.fullmatch(base_ref(ref))
+        if page:
+            return _Where(self, page.group(1), "page")
+        return _Where(self, None, "header")
+
+    def text(self, page: str | None) -> str:
+        return self._context if page is None else self._texts.get(page, "")
+
+    def has(self, page: str | None, label: str) -> bool | None:
+        """Whether `label` is printed there; None once more than `MAX_LABELS` different labels
+        have been looked for on one page (a statement prints a handful)."""
+        key = (page or "", label)
+        if key not in self._found:
+            looked = self._looked.get(page or "", 0)
+            if looked >= MAX_LABELS:
+                return None
+            self._looked[page or ""] = looked + 1
+            text = self.text(page)
+            if len(label) <= 3:  # "DR" must not match inside "Address"
+                found = re.search(rf"\b{re.escape(label)}\b", text, re.IGNORECASE) is not None
+            else:
+                folded = self._folded.get(page or "")
+                if folded is None:
+                    folded = self._folded[page or ""] = text.casefold()
+                found = label.casefold() in folded
+            self._found[key] = found
+        return self._found[key]
+
+
+@dataclass(frozen=True)
+class _Where:
+    pages: _Pages
+    page: str | None
+    place: str  # "page" or "header", for the message
+
+    def has(self, label: str) -> bool | None:
+        return self.pages.has(self.page, label)
+
+
+def _sign(
+    row: ParsedRow, text: str, sign_from: str, printed: Sequence[Figure], *, fee: bool = False
+) -> list[str]:
     amount = row.amount_pence
-    found = _occurrences(text, amount, debit_is_negative=True)
+    found = _occurrences(text, amount, printed, debit_is_negative=True)
     negatives = [shown for negative, shown in found if negative]
     positives = [shown for negative, shown in found if not negative]
     if negatives and amount >= 0:
@@ -483,11 +592,11 @@ def _sign(row: ParsedRow, text: str, sign_from: str, *, fee: bool = False) -> li
     return []
 
 
-def _card_sign(row: ParsedRow, text: str) -> list[str]:
+def _card_sign(row: ParsedRow, text: str, printed: Sequence[Figure]) -> list[str]:
     # A card file prints the card's view: a purchase is a plain figure (stored
     # negative), a payment or refund has a minus or CR (stored positive).
     amount = row.amount_pence
-    credit = _credit_showing(text, amount)
+    credit = _credit_showing(text, amount, printed)
     if credit:
         if amount <= 0:
             return [
@@ -495,7 +604,7 @@ def _card_sign(row: ParsedRow, text: str) -> list[str]:
                 f"amount is {pounds(amount)})"
             ]
         return []
-    found = _occurrences(text, amount, debit_is_negative=False)
+    found = _occurrences(text, amount, printed, debit_is_negative=False)
     negatives = [shown for negative, shown in found if negative]
     positives = [shown for negative, shown in found if not negative]
     if negatives and amount <= 0:
@@ -516,25 +625,27 @@ def _card_sign(row: ParsedRow, text: str) -> list[str]:
     return []
 
 
-def _credit_showing(text: str, pence: int) -> str | None:
+def _credit_showing(text: str, pence: int, printed: Sequence[Figure]) -> str | None:
     """The printed figure when this amount is followed by CR, else None."""
-    for figure in figures(text):
-        if figure.pence == abs(pence) and (marker := _CREDIT_MARKER.match(text[figure.end :])):
+    for figure in printed:
+        if figure.pence == abs(pence) and (marker := _CREDIT_MARKER.match(text, figure.end)):
             return text[figure.start : figure.end] + marker.group(0)
     return None
 
 
-def _occurrences(text: str, pence: int, *, debit_is_negative: bool) -> list[tuple[bool, str]]:
+def _occurrences(
+    text: str, pence: int, printed: Sequence[Figure], *, debit_is_negative: bool
+) -> list[tuple[bool, str]]:
     """(negative?, as printed) for each figure on the line the size of this amount.
 
     Negative means a leading minus, brackets, a trailing minus or, on a current account,
     DR. On a card, DR is a plain purchase, so it counts as printed positive.
     """
     found: list[tuple[bool, str]] = []
-    for figure in figures(text):
+    for figure in printed:
         if figure.pence != abs(pence):
             continue
-        debit = _DEBIT_MARKER.match(text[figure.end :])
+        debit = _DEBIT_MARKER.match(text, figure.end)
         if not figure.negative and debit and debit_is_negative:
             found.append((True, text[figure.start : figure.end] + debit.group(0)))
         else:
@@ -549,19 +660,16 @@ def _cell_direction(label: str, own: str) -> int | None:
     return direction_of(label) if re.search(cell, own, re.IGNORECASE) else None
 
 
-def _sign_from(row: ParsedRow, label: str, where: str, place: str, own: str = "") -> list[str]:
+def _sign_from(row: ParsedRow, label: str, where: _Where, own: str = "") -> list[str]:
     if not label:
         return []
     direction = _cell_direction(label, own)
     if direction is None:
-        short = len(label) <= 3  # "DR" must not match inside "Address"
-        present = (
-            re.search(rf"\b{re.escape(label)}\b", where, re.IGNORECASE) is not None
-            if short
-            else label.casefold() in where.casefold()
-        )
+        present = where.has(label)
+        if present is None:
+            return [f'{row.ref}: sign_from "{label}" is one of too many different labels']
         if not present:
-            return [f'{row.ref}: sign_from "{label}" not on {place}']
+            return [f'{row.ref}: sign_from "{label}" not on {where.place}']
         direction = _label_sign(label)
     if direction is None:
         return [f'{row.ref}: sign_from "{label}" is not a sign label']
@@ -594,16 +702,6 @@ def _label_sign(label: str) -> int | None:
         if re.search(pattern, text):
             return sign
     return None
-
-
-def _page_text(ref: str, lines: Sequence[Line]) -> str:
-    match = _PAGE.fullmatch(base_ref(ref))
-    if not match:
-        return ""
-    page = match.group(1)
-    return "\n".join(
-        ln.text for ln in lines if (m := _PAGE.fullmatch(ln.ref)) and m.group(1) == page
-    )
 
 
 def _skipped(skipped: Sequence[SkippedLine]) -> list[str]:

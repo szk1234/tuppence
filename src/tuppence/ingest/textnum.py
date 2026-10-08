@@ -7,6 +7,8 @@ import re
 from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
+from typing import Literal
 
 from tuppence.core.money import format_pounds
 
@@ -42,6 +44,10 @@ DATE_FORMATS: tuple[str, ...] = (
     "%d/%m/%Y %H:%M:%S",
     "%Y%m%d",
 )
+# The longest whole-pounds part a money figure may have, commas included ("1,000,000,000,000"):
+# a longer run of digits is a reference or an account number, never money, and reading it as
+# one would make a huge number (slow to convert, and larger than any balance).
+MAX_FIGURE_CHARS = 20
 _ORDINAL = re.compile(r"(\d)(st|nd|rd|th)\b", re.IGNORECASE)
 
 
@@ -57,6 +63,8 @@ def parse_money(text: str | None) -> Decimal | None:
     if not match:
         return None
     if bool(match["open"]) != bool(match["close"]):
+        return None
+    if len(match["num"]) > MAX_FIGURE_CHARS:  # no statement prints money this long
         return None
     try:
         value = Decimal(match["num"].replace(",", "") + "." + (match["dec"] or "0"))
@@ -94,17 +102,54 @@ def to_pence(value: Decimal) -> int:
     return int((value * 100).to_integral_value())
 
 
-def parse_date(text: str | None, formats: Sequence[str] = DATE_FORMATS) -> date | None:
-    if not text:
+# Numeric dates, read without trying every format in turn: "01/10/2026", "1/10/26",
+# "01-10-2026", "01.10.2026", "2026-10-01". Exactly what `DATE_FORMATS` accepts for them (a
+# date-shaped figure such as a sort code costs one look, not sixteen failed formats).
+_NUMERIC = re.compile(r"(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})|(\d{4})-(\d{1,2})-(\d{1,2})")
+_NUMERIC_FORMATS = {"/4", "/2", "-4", ".4"}  # %d/%m/%Y, %d/%m/%y, %d-%m-%Y, %d.%m.%Y
+
+
+def _numeric_date(cleaned: str) -> date | None | Literal[False]:
+    """With `DATE_FORMATS`: the date for a numeric spelling, None when it is one that isn't a
+    date, or False when it isn't numeric (the formats are tried one by one then)."""
+    match = _NUMERIC.fullmatch(cleaned)
+    if match is None:
+        return False
+    if match.group(5) is not None:
+        year, month, day = int(match.group(5)), int(match.group(6)), int(match.group(7))
+    else:
+        if f"{match.group(2)}{len(match.group(4))}" not in _NUMERIC_FORMATS:
+            return None  # "12-34-56": no format reads it
+        day, month, year = int(match.group(1)), int(match.group(3)), int(match.group(4))
+        if len(match.group(4)) == 2:  # as strptime reads %y
+            year += 1900 if year >= 69 else 2000
+    try:
+        return date(year, month, day)
+    except ValueError:
         return None
-    cleaned = _ORDINAL.sub(r"\1", " ".join(text.strip().split()))
-    cleaned = re.sub(r"\bSept\b", "Sep", cleaned, flags=re.IGNORECASE)
+
+
+@lru_cache(maxsize=8192)
+def _parse_date(cleaned: str, formats: tuple[str, ...]) -> date | None:
+    quick = _numeric_date(cleaned) if formats == DATE_FORMATS else False
+    if quick is not False:
+        return quick
     for fmt in formats:
         try:
             return datetime.strptime(cleaned, fmt).date()
         except ValueError:
             continue
     return None
+
+
+def parse_date(text: str | None, formats: Sequence[str] = DATE_FORMATS) -> date | None:
+    if not text:
+        return None
+    cleaned = _ORDINAL.sub(r"\1", " ".join(text.strip().split()))
+    cleaned = re.sub(r"\bSept\b", "Sep", cleaned, flags=re.IGNORECASE)
+    if len(cleaned) > 64:  # no date is this long
+        return None
+    return _parse_date(cleaned, tuple(formats))
 
 
 def decode_text(data: bytes) -> str:

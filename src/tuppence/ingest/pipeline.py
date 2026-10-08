@@ -29,6 +29,7 @@ from langgraph.types import interrupt
 from tuppence.core.errors import UserFacing, safe_error_text
 from tuppence.core.secrets import SecretError
 from tuppence.ingest.check import balance_verified
+from tuppence.ingest.clock import CheckTimeout, after
 from tuppence.ingest.extract import ExtractLimits, extract_document
 from tuppence.ingest.identify import AccountRef, Evidence, identify, match_account
 from tuppence.ingest.models import AccountKind, CheckLevel, Document, ParsedStatement
@@ -122,6 +123,11 @@ class IngestGraph:
             memory_mb=limits.get("extract_memory_mb", 2048),
         )
 
+    def _local_seconds(self) -> float:
+        """Time for each pass of this device's own over a statement (R-M3-23 (d)): the same as
+        the extraction's."""
+        return float(self._limits().get("extract_timeout_seconds", 180))
+
     def _names(self) -> list[str]:
         return [n for n in self.d.names() if n.strip()]
 
@@ -169,9 +175,16 @@ class IngestGraph:
     def identify(self, state: IngestState) -> dict[str, Any]:
         record = self.d.store.get(state["statement_id"])
         doc = Document.model_validate(state["document"])
-        evidence = identify(
-            doc, pack=self.d.pack, registry=self.d.registry, key=self.d.fingerprint_key()
-        )
+        try:
+            evidence = identify(
+                doc,
+                pack=self.d.pack,
+                registry=self.d.registry,
+                key=self.d.fingerprint_key(),
+                deadline=after(self._local_seconds(), "Reading this statement"),
+            )
+        except CheckTimeout as exc:
+            return {"failure": str(exc)}
         accounts = self._account_refs()
         match = match_account(
             evidence, accounts, self.d.store.remembered_accounts(evidence.layout_fingerprint)
@@ -255,6 +268,7 @@ class IngestGraph:
                 ),
                 names=self._names(),
                 extract_limits=self._extract_limits(),
+                local_seconds=self._local_seconds(),
             )
         except NoModelConfigured:
             return {"failure": NO_MODEL}
@@ -317,14 +331,19 @@ class IngestGraph:
         if learned is not None:  # remembered only if the import itself is kept (M11)
             layout = CsvLayout.model_validate(learned)
             within = partial(_save_layout, self.d.registry, doc, layout)
-        self.d.store.persist(
-            statement_id,
-            state["account_id"],
-            parsed,
-            balance_verified=balance_verified(parsed, errors, level),
-            stats=info,
-            within=within,
-        )
+        try:
+            self.d.store.persist(
+                statement_id,
+                state["account_id"],
+                parsed,
+                balance_verified=balance_verified(parsed, errors, level),
+                stats=info,
+                within=within,
+                deadline=after(self._local_seconds(), "Importing this statement"),
+            )
+        except CheckTimeout as exc:  # nothing was kept: the import is one transaction
+            self.d.store.update(statement_id, status="failed", error=str(exc))
+            return {"outcome": "failed"}
         hand_off(self.d.on_imported, statement_id)
         return {"outcome": "imported"}
 
@@ -339,7 +358,9 @@ class IngestGraph:
         graph.add_node("finish", self.finish)
         graph.add_edge(START, "extract")
         graph.add_conditional_edges("extract", _ok_or_finish("identify"), ["identify", "finish"])
-        graph.add_edge("identify", "choose_account")
+        graph.add_conditional_edges(
+            "identify", _ok_or_finish("choose_account"), ["choose_account", "finish"]
+        )
         graph.add_conditional_edges("choose_account", _ok_or_finish("parse"), ["parse", "finish"])
         graph.add_edge("parse", "finish")
         graph.add_edge("finish", END)

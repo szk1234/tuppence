@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tuppence.core.errors import safe_error_text
 from tuppence.ingest.check import check_rows, drop_unprinted_balances
+from tuppence.ingest.clock import Deadline
 from tuppence.ingest.identify import HeaderFacts
 from tuppence.ingest.models import (
     CheckLevel,
@@ -476,8 +477,13 @@ def read_document(
     max_attempts: int = 3,
     parallel: int = 2,
     prompt: str | None = None,
+    deadline: Deadline | None = None,
 ) -> ReadOutcome:
-    chunks = plan_chunks(doc, rows_per_chunk=rows_per_chunk_for(context_window, rows_per_chunk))
+    chunks = plan_chunks(
+        doc,
+        rows_per_chunk=rows_per_chunk_for(context_window, rows_per_chunk),
+        deadline=deadline,
+    )
     empty = ParsedStatement(importer="ai-read", perspective=perspective)
     if not chunks:
         return ReadOutcome(

@@ -12,6 +12,7 @@ import re
 from datetime import date
 
 from tuppence.core.errors import UserFacing
+from tuppence.ingest.clock import Deadline, ticking
 from tuppence.ingest.models import Document, Line, ParsedRow, ParsedStatement
 from tuppence.ingest.textnum import parse_date, parse_money, to_pence
 
@@ -61,7 +62,7 @@ def _ofx_date(value: str | None) -> date | None:
     return parse_date(digits.group(0), ("%Y%m%d",)) if digits else None
 
 
-def ofx_document(text: str, *, sha256: str) -> Document:
+def ofx_document(text: str, *, sha256: str, deadline: Deadline | None = None) -> Document:
     if "<OFX>" not in text.upper():
         raise OfxError("This doesn't look like an OFX file.")
     account = (_blocks(text, "BANKACCTFROM") or _blocks(text, "CCACCTFROM") or [""])[0]
@@ -76,7 +77,9 @@ def ofx_document(text: str, *, sha256: str) -> Document:
         ),
     ]
     data: list[str] = []
+    tick = ticking(deadline)
     for n, block in enumerate(_blocks(text, "STMTTRN"), start=1):
+        tick(n)
         leaf = _leaves(block)
         parts = [
             leaf.get("DTPOSTED", "")[:8],
@@ -110,7 +113,7 @@ def _only_pounds(currency: str, what: str) -> str:
     return code
 
 
-def parse_ofx(text: str) -> ParsedStatement:
+def parse_ofx(text: str, *, deadline: Deadline | None = None) -> ParsedStatement:
     currency = _only_pounds(_leaves(text).get("CURDEF", "GBP"), "OFX file")
     tranlist = _leaves((_blocks(text, "BANKTRANLIST") or [""])[0].split("<STMTTRN>")[0])
     ledger = _leaves((_blocks(text, "LEDGERBAL") or [""])[0])
@@ -123,7 +126,9 @@ def parse_ofx(text: str) -> ParsedStatement:
         closing_balance_pence=to_pence(closing) if closing is not None else None,
         currency=currency,
     )
+    tick = ticking(deadline)
     for n, block in enumerate(_blocks(text, "STMTTRN"), start=1):
+        tick(n)
         leaf = _leaves(block)
         day = _ofx_date(leaf.get("DTPOSTED"))
         amount = parse_money(leaf.get("TRNAMT"))

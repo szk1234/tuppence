@@ -6,6 +6,7 @@ import re
 from collections.abc import Sequence
 
 from tuppence.core.errors import UserFacing
+from tuppence.ingest.clock import Deadline, ticking
 from tuppence.ingest.models import Document, Line, ParsedRow, ParsedStatement
 from tuppence.ingest.textnum import parse_date, parse_money, to_pence
 
@@ -14,12 +15,16 @@ class QifError(UserFacing, ValueError):
     pass
 
 
-def _records(text: str) -> tuple[str, list[tuple[int, list[str]]]]:
+def _records(
+    text: str, deadline: Deadline | None = None
+) -> tuple[str, list[tuple[int, list[str]]]]:
     kind = ""
     records: list[tuple[int, list[str]]] = []
     current: list[str] = []
     start = 0
+    tick = ticking(deadline)
     for n, raw in enumerate(text.split("\n"), start=1):
+        tick(n)
         line = raw.strip()
         if not line:
             continue
@@ -53,8 +58,8 @@ def _clean_date(raw: str) -> str:
     return raw.replace("'", "/").replace("-", "/").replace(".", "/").replace(" ", "")
 
 
-def qif_document(text: str, *, sha256: str) -> Document:
-    kind, records = _records(text)
+def qif_document(text: str, *, sha256: str, deadline: Deadline | None = None) -> Document:
+    kind, records = _records(text, deadline)
     lines = [Line(ref="H1", text=f"!Type:{kind}")]
     lines += [Line(ref=f"L{start}", text=" | ".join(fields)) for start, fields in records]
     return Document(
@@ -67,12 +72,14 @@ def qif_document(text: str, *, sha256: str) -> Document:
     )
 
 
-def parse_qif(text: str) -> ParsedStatement:
-    _, records = _records(text)
+def parse_qif(text: str, *, deadline: Deadline | None = None) -> ParsedStatement:
+    _, records = _records(text, deadline)
     fields_list = [{f[0]: f[1:].strip() for f in reversed(fields)} for _, fields in records]
     formats = _date_formats([_clean_date(f.get("D", "")) for f in fields_list])
     parsed = ParsedStatement(importer="qif", perspective="household")
-    for (start, _), fields in zip(records, fields_list, strict=True):
+    tick = ticking(deadline)
+    for n, ((start, _), fields) in enumerate(zip(records, fields_list, strict=True)):
+        tick(n)
         day = parse_date(_clean_date(fields.get("D", "")), formats)
         amount_text = fields.get("T") or fields.get("U") or ""
         amount = parse_money(amount_text)

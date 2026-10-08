@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from tuppence.core.errors import UserFacing, safe_error_text
 from tuppence.ingest.check import check_document
+from tuppence.ingest.clock import after
 from tuppence.ingest.importers.csv_layout import ImportResult, LayoutMismatch, parse_with_layout
 from tuppence.ingest.models import AccountKind, Document, ParsedStatement
 from tuppence.ingest.prompts import load_prompt
@@ -469,8 +470,11 @@ def propose_layout(
     names: Sequence[str] = (),
     max_attempts: int = 3,
     prompt: str | None = None,
+    local_seconds: float | None = None,
 ) -> MappingOutcome:
-    """`names` are the household's own names: a heading or cell that is one is hidden."""
+    """`names` are the household's own names: a heading or cell that is one is hidden. Each
+    attempt's own work on the file (reading it with the proposed layout and checking the rows)
+    stops after `local_seconds`."""
     header = header_cells(doc)
     if header is None:
         return MappingOutcome(
@@ -512,11 +516,12 @@ def propose_layout(
             errors, previous = [tidy(safe_error_text(exc))], None
             continue
         previous = tidy(mapping.model_dump_json(), 2000)
+        deadline = after(local_seconds) if local_seconds else None
         try:
             layout = mapping_to_layout(
                 mapping, header, rows, account_kind=account_kind, names=names
             )
-            last = parse_with_layout(doc, layout)
+            last = parse_with_layout(doc, layout, deadline=deadline)
         except MappingError as exc:
             errors = [tidy(safe_error_text(exc))]
             continue
@@ -524,7 +529,7 @@ def propose_layout(
             errors = ["One of the columns in that answer isn't in the file"]
             continue
         errors = _describe(last.problems, layout, header, names) + summarise_checks(
-            check_document(doc, last.parsed)
+            check_document(doc, last.parsed, deadline=deadline)
         )
         for doubt in (
             missing_sign_source(last.parsed, layout, account_kind),
