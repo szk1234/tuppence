@@ -7,6 +7,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from langgraph.checkpoint.base import empty_checkpoint
 
 from ingest.helpers import add_account, cloud_model, drain, threads, upload, use_local_model
 from tuppence.app.services import build_services
@@ -559,7 +560,7 @@ def test_removing_a_statement_waiting_for_an_answer_drops_its_run(ingest_env, fi
     assert IngestService.thread_id(asked) not in threads(services)
 
 
-def test_analysis_jobs_wait_for_the_analysis_workflow(ingest_env, fixtures):
+def test_analysis_runs_after_the_hand_off(ingest_env, fixtures):
     services, _ = ingest_env
     add_account(services, "monzo", "current", "Monzo")
     add_account(services, "starling", "current", "Starling")
@@ -567,17 +568,52 @@ def test_analysis_jobs_wait_for_the_analysis_workflow(ingest_env, fixtures):
     drain(services)
     second = upload(services, fixtures, "csv/starling.csv")
     drain(services)
-    assert ANALYSIS_JOB not in services.worker.handlers  # M4 brings the handler
-    services.queue.clock = _later  # past the 30 s debounce
-    assert not services.worker.run_once()  # ready, but nobody claims it
     queued = [j for j in services.queue.list(status="queued") if j.kind == ANALYSIS_JOB]
-    assert len(queued) == 1
+    assert len(queued) == 1  # one pending analysis for the household, ids merged
     assert queued[0].payload == {"statement_ids": sorted([first.record.id, second.record.id])}
     assert merge_statement_ids({"statement_ids": ["s_2"]}, {"statement_ids": ["s_1"]}) == {
         "statement_ids": ["s_1", "s_2"]
     }
     for record in services.statements.list():
         assert record.analysis_state == "pending"
+    assert ANALYSIS_JOB in services.worker.handlers  # M4's analysis workflow
+    services.queue.clock = _later  # past the 30 s debounce
+    assert services.worker.run_once()
+    assert services.queue.get(queued[0].id).status == "done"
+    for record in services.statements.list():
+        assert record.analysis_state == "done"
+
+
+def test_removing_or_rereading_an_imported_statement_queues_analysis(ingest_env, fixtures):
+    """Its rows go (or may change): transfers and commitments are worked out again."""
+    services, _ = ingest_env
+    add_account(services, "monzo", "current", "Monzo")
+    add_account(services, "starling", "current", "Starling")
+    first = upload(services, fixtures, "csv/monzo.csv")
+    second = upload(services, fixtures, "csv/starling.csv")
+    drain(services)
+    services.queue.clock = _later
+    drain(services)  # the hand-off's run
+    assert [j for j in services.queue.list(status="queued") if j.kind == ANALYSIS_JOB] == []
+    record = services.statements.get(first.record.id)
+    services.ingest.retry(record.id, expected_version=record.version)
+    [job] = [j for j in services.queue.list(status="queued") if j.kind == ANALYSIS_JOB]
+    assert job.payload == {"reasons": ["statement_reread"]}
+    services.ingest.delete(second.record.id)
+    [job] = [j for j in services.queue.list(status="queued") if j.kind == ANALYSIS_JOB]
+    assert job.payload["reasons"] == ["statement_removed", "statement_reread"]
+
+
+def test_the_ingest_sweep_leaves_analysis_checkpoints_alone(ingest_env, fixtures):
+    """An analysis run's checkpoints are the analysis service's to keep or drop: a restart
+    must not lose a run's progress (D8)."""
+    services, _ = ingest_env
+    config = {"configurable": {"thread_id": "analysis:7", "checkpoint_ns": ""}}
+    orphan = {"configurable": {"thread_id": "statement:s_gone:1", "checkpoint_ns": ""}}
+    for cfg in (config, orphan):
+        services.checkpointer.put(cfg, empty_checkpoint(), {}, {})
+    assert services.ingest.sweep()["checkpoints_dropped"] == 1
+    assert threads(services) == {"analysis:7"}
 
 
 def _later():

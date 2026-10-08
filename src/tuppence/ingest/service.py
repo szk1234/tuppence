@@ -35,7 +35,7 @@ from tuppence.ingest import verify
 from tuppence.ingest.check import balance_verified
 from tuppence.ingest.clock import Deadline, after
 from tuppence.ingest.files import StatementFiles
-from tuppence.ingest.handoff import ANALYSIS_JOB
+from tuppence.ingest.handoff import ANALYSIS_JOB, request_analysis
 from tuppence.ingest.models import CheckLevel, Document, ParsedRow, ParsedStatement, SkippedLine
 from tuppence.ingest.parse import LOCAL_SECONDS
 from tuppence.ingest.pipeline import READ_FAILED, IngestGraph, RunContext, hand_off
@@ -177,7 +177,9 @@ class IngestService:
     def sweep(self) -> dict[str, int]:
         """At start-up, after `resume_unfinished`: queue the analysis of imported statements
         that have no analysis job (the app stopped between the import and the hand-off), and
-        drop run checkpoints that no statement needs any more."""
+        drop statement run checkpoints that no statement needs any more. An analysis run's
+        checkpoints (`analysis:<job id>`) are the analysis service's to keep or drop: a run a
+        restart interrupted carries on from them (`AnalysisService.sweep`)."""
         waiting: set[str] = set()
         for status in ("queued", "running"):
             for job in self.queue.list(status=status, limit=1000):
@@ -196,7 +198,7 @@ class IngestService:
             threads = [r[0] for r in cur.execute("SELECT DISTINCT thread_id FROM checkpoints")]
         dropped = 0
         for thread_id in threads:
-            if thread_id not in live:
+            if thread_id.startswith("statement:") and thread_id not in live:
                 self.checkpointer.delete_thread(thread_id)
                 dropped += 1
         if dropped:
@@ -374,6 +376,11 @@ class IngestService:
         )
         self._forget(record)  # the old run's checkpoints, if any are left
         self._enqueue(record.id)
+        if record.status == "imported":
+            # Its rows may change (Wrong account? moves them to another account), so
+            # transfers and commitments are worked out again. The new read's import hands the
+            # statement over too; within the 30 s debounce the two merge into one run.
+            request_analysis(self.queue, "statement_reread")
         return reopened
 
     def save_draft(
@@ -534,3 +541,4 @@ class IngestService:
         record = self.store.delete(statement_id)
         self._forget(record)
         self.files.delete(record.file_sha256, record.file_ext)
+        request_analysis(self.queue, "statement_removed")  # transfers and commitments change
