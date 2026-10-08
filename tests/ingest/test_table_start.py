@@ -215,3 +215,70 @@ def test_a_two_row_page_followed_by_an_address_still_starts_the_table():
     page = ["Example Bank plc", *ROWS, "1 Example Street", "Exampletown EX1 2MP"]
     doc = pages_document([page], sha256="x", kind="pdf")
     assert [doc.by_ref()[r].text for r in doc.data_refs] == ROWS
+
+
+# Coordinator probe after 9f27c16 (p_fallback): an address is withheld wherever it is printed,
+# whatever the table start (rule (b)). A block is two or more short lines with no amount, date or
+# merchant-like token, with a street or building word, a postcode, a holder's or household name,
+# a titled name, or three or more lines of capitalised words.
+ROW_A, ROW_B = "02/10/2026 TESCO 12.50", "03/10/2026 SALARY 2,000.00"
+ROW_C, ROW_D = "04/10/2026 BOOTS 5.00", "05/10/2026 SHELL 40.00"
+ADDRESS_LINES = {
+    "street word": ["Rose Cottage", "Mill Lane", "Exampletown"],
+    "no street word, three lines": ["The Old Rectory", "Church Lodge", "Littlebury"],
+    "one street word": ["The Old Rectory", "Church Road", "Littlebury"],
+    "capitalised lines only": ["The Old Rectory", "Upper Example", "Littlebury"],
+    "postcode": ["Rectory Farmhouse", "Littlebury EX1 2MP"],
+}
+NAMES_ABOVE = {"no name": [], "titled name": ["MRS A EXAMPLE"], "household name": ["Alex Example"]}
+PLACES = {
+    "between rows": lambda block: [ROW_A, ROW_B, *block, ROW_C, ROW_D],
+    "at the end": lambda block: [ROW_A, ROW_B, *block],
+    "at the start": lambda block: ["Example Bank plc", *block, ROW_A, ROW_B],
+}
+
+
+@pytest.mark.parametrize("names", list(NAMES_ABOVE))
+@pytest.mark.parametrize("place", list(PLACES))
+@pytest.mark.parametrize("address", list(ADDRESS_LINES))
+def test_an_address_is_never_sent_wherever_it_is(address, place, names):
+    block = [*NAMES_ABOVE[names], *ADDRESS_LINES[address]]
+    lines = PLACES[place](block)
+    doc = text_document("\n".join(lines), sha256="x", names=["Alex Example"])
+    sent = [doc.by_ref()[r].text for r in doc.data_refs]
+    assert [line for line in block if line in sent] == [], sent
+    rows = [line for line in lines if line[:2].isdigit()]
+    shown = set(doc.data_refs) | set(doc.held_amount_refs)
+    assert all(f"L{lines.index(row) + 1}" in shown for row in rows)  # sent or reported
+
+
+def test_the_coordinators_five_pages():
+    addr = ["Rose Cottage", "Mill Lane", "Exampletown"]
+    pages = [
+        [ROW_A, ROW_B, *addr],
+        [ROW_A, ROW_B, *addr, ROW_C, ROW_D],
+        [ROW_A, ROW_B, "MRS A EXAMPLE", *addr, ROW_C],
+        [ROW_A, ROW_B, "Alex Example", "1 Mill Lane", "Exampletown EX1 1AA", ROW_C],
+        [ROW_A, ROW_B, "The Old Rectory", "Church Road", "Littlebury"],
+    ]
+    for lines in pages:
+        doc = text_document("\n".join(lines), sha256="0" * 64, names=["Alex Example"])
+        sent = [doc.by_ref()[r].text for r in doc.data_refs]
+        assert all(line[:2].isdigit() for line in sent), sent
+
+
+def test_a_wrapped_merchant_description_is_still_sent():
+    lines = [ROW_A, "03/10/2026 AMAZON MARKETPLACE 23.99", "AMAZON MARKETPLACE",
+             "AMZN.CO.UK/PM", ROW_C]  # fmt: skip
+    doc = text_document("\n".join(lines), sha256="x")
+    sent = [doc.by_ref()[r].text for r in doc.data_refs]
+    assert sent == lines
+
+
+def test_a_single_continuation_line_after_a_row_is_sent_unless_it_shows_a_detail():
+    lines = [ROW_A, "03/10/2026 FASTER PAYMENT 25.00", "REF RENT OCTOBER", ROW_C]
+    doc = text_document("\n".join(lines), sha256="x")
+    assert "L3" in doc.data_refs
+    lines[2] = "Sort code 20-11-33"
+    doc = text_document("\n".join(lines), sha256="x")
+    assert "L3" not in doc.data_refs

@@ -14,6 +14,7 @@ from tuppence.ingest.textprep import (
     pages_document,
     plan_chunks,
     render,
+    sent_lines,
     sniff_delimiter,
     split_preamble,
     text_document,
@@ -703,3 +704,45 @@ def test_a_line_that_may_be_a_row_or_a_total_is_held_back_and_reported(line):
     """Can't tell: it is withheld and offered on the fix-up screen, never dropped silently."""
     doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")
     assert "P1L3" in doc.preamble_refs and doc.held_amount_refs == ["P1L3"]
+
+
+# Fail closed (coordinator, after 9f27c16): whatever goes wrong while a line is masked, the line
+# is withheld and reported, never sent as printed.
+_DETAIL_LINE = "03/10/2026 Transfer to A/C 87654321 -250.00"
+
+
+def _broken_masking(how: str):
+    from tuppence.ingest import sensitive
+    from tuppence.ingest.models import MaskedLine
+
+    real = sensitive.prepare_outbound
+
+    def broken(text, names=(), **near):
+        if not sensitive.classify(text, names=names):
+            return real(text, names=names, **near)
+        if how == "raises":
+            raise RuntimeError("masking failed")
+        if how == "returns nothing":
+            return None
+        return MaskedLine(text=sensitive.normalise(text), hidden={})  # a mask that misses
+
+    return broken
+
+
+@pytest.mark.parametrize("kind", ["pdf", "image"])
+@pytest.mark.parametrize("how", ["raises", "returns nothing", "leaves the detail"])
+def test_a_line_whose_masking_fails_is_withheld_and_reported(monkeypatch, how, kind):
+    from tuppence.ingest import sensitive
+
+    monkeypatch.setattr(sensitive, "prepare_outbound", _broken_masking(how))
+    if kind == "pdf":
+        page = [*TABLE_TOP, _DETAIL_LINE, *TABLE_END]
+        ref = f"P1L{len(TABLE_TOP) + 1}"
+    else:
+        page = ["Mon 5 Oct Little Cafe -£3.40", "Transfer to A/C 87654321 -£250.00",
+                "Tue 6 Oct Northline Rail -£12.80"]  # fmt: skip
+        ref = "P1L2"
+    doc = pages_document([page], sha256="x", kind=kind)
+    assert ref not in doc.data_refs and ref in doc.held_amount_refs
+    assert not any("87654321" in line.text for line in sent_lines(doc).values()
+                   if line.ref in doc.data_refs)  # fmt: skip
