@@ -128,3 +128,59 @@ def test_nothing_private_is_sent_in_any_mode(ingest_env, mode):
     assert [s for s in corpus.SECRETS if s in sent] == []
     log = json.dumps([entry.model_dump() for entry in services.privacy_log.list(limit=500)])
     assert [s for s in corpus.SECRETS if s in log] == []
+
+
+@pytest.mark.parametrize("mode", ["local", "local+vision"])
+def test_every_line_a_model_receives_comes_from_prepare_outbound(ingest_env, monkeypatch, mode):
+    """No send path builds outbound text itself: each statement line in a read request is a
+    `sensitive.prepare_outbound` result, and each heading in a layout sketch is one (or
+    hidden), its cells only type tokens."""
+    import re
+
+    from tuppence.ingest import sensitive
+
+    services, scripted = ingest_env
+    for name in corpus.NAMES:
+        services.household.create_person(PersonIn(display_name=name, role="adult"))
+    use_local_model(services)
+    if mode.endswith("vision"):
+        with services.db.transaction() as conn:
+            conn.execute("UPDATE llm_model SET supports_vision = 1")
+        services.settings.set("ingest.vision_for_scans", True, expected_version=0)
+        scripted.handler = vision_handler(scripted)
+    prepared: set[str] = set()
+    real = sensitive.prepare_outbound
+
+    def spy(text, *, names=()):
+        out = real(text, names=names)
+        if out is not None:
+            prepared.add(out.text)
+        return out
+
+    monkeypatch.setattr(sensitive, "prepare_outbound", spy)
+    current = add_account(services, "other", "current", "Probe current", last4="5678")
+    card = add_account(services, "other", "credit_card", "Probe card", last4="4242")
+    for name, data in files().items():
+        out = services.ingest.upload(name, data)
+        drain(services)
+        record = services.statements.get(out.record.id)
+        if record.status == "needs_account":
+            target = card if "card" in name else current
+            services.ingest.answer_account(
+                record.id, account_id=target.id, expected_version=record.version
+            )
+            drain(services)
+    lines = headings = 0
+    for text in user_texts(r for r in scripted.requests if not r.get("vision")):
+        base = text.split("\n\nYour previous answer")[0]
+        if "HEADINGS:" in base:
+            shown = json.loads(base.split("HEADINGS:\n", 1)[1].split("\n", 1)[0])
+            allowed = {sensitive.HIDDEN, ""} | {re.sub(r"\d{4,}", "<NUM>", t) for t in prepared}
+            assert all(h in allowed for h in shown), shown
+            headings += len(shown)
+            for row in base.split("ROWS:\n", 1)[1].splitlines():
+                assert all(re.fullmatch(r"<[A-Z]+(?::[^<>]*)?>", c) for c in json.loads(row))
+        for match in re.finditer(r"^D\d+: (.*)$", base, re.MULTILINE):
+            assert match.group(1) in prepared, match.group(1)
+            lines += 1
+    assert lines > 20 and headings > 5

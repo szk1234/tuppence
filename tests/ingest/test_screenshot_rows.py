@@ -118,7 +118,12 @@ def test_a_screenshot_line_whose_details_cant_be_masked_needs_review(ingest_env,
     from tuppence.ingest import sensitive
 
     services, scripted = ingest_env
-    monkeypatch.setattr(sensitive, "mask_line", lambda text, names=(): None)
+    real = sensitive.prepare_outbound
+    monkeypatch.setattr(
+        sensitive,
+        "prepare_outbound",
+        lambda text, names=(): None if sensitive.classify(text, names=names) else real(text),
+    )
     out = parse_shot(
         services,
         [

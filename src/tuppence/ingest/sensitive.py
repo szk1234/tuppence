@@ -124,9 +124,12 @@ VALUES: dict[str, re.Pattern[str]] = {
 }
 LABEL_CLASSES = frozenset(LABELS)
 
-# A sort code spelled with spaces, dots or a long dash: 12 34 56, 12.34.56, 12–34–56. One that
-# reads as a real day and month (01.10.26) is taken for a date instead.
-_SPELLED_SORT_CODE = re.compile(r"(?<![\d.,:/£$])(\d{2})([ .–—])(\d{2})\2(\d{2})(?![\d,:/]|\.\d)")
+# A sort code spelled with spaces, dots or dashes, the same or mixed: 12 34 56, 12.34.56,
+# 12-34 56. Printed with the same space or dot twice and reading as a real day and month
+# (01.10.26), it is taken for a date instead.
+_SPELLED_SORT_CODE = re.compile(
+    r"(?<![\d.,:/£$])(\d{2})([ .\-–—])(\d{2})([ .\-–—])(\d{2})(?![\d,:/]|\.\d)"
+)
 _TITLE = re.compile(r"^(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+", _I)
 _NAME_LINE = re.compile(r"^(?:[A-Z][A-Za-z'’-]*)(?:\s+[A-Z][A-Za-z'’-]*){1,3}$")
 _DIGIT_RUN = re.compile(r"\d{4,}")
@@ -246,7 +249,8 @@ def _spelled_sort_codes(text: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     for match in _SPELLED_SORT_CODE.finditer(text):
         day, month = int(match.group(1)), int(match.group(3))
-        if not (1 <= day <= 31 and 1 <= month <= 12):
+        same = match.group(2) == match.group(4)
+        if not (same and match.group(2) in " ." and 1 <= day <= 31 and 1 <= month <= 12):
             spans.append(match.span())
     return spans
 
@@ -296,11 +300,12 @@ def holds_details(text: str, *, names: Sequence[str] = ()) -> bool:
 
 
 def mask(text: str, *, names: Sequence[str] = ()) -> str:
-    """`text` as it may be shown to a model (a CSV heading): HIDDEN when it holds any sensitive
-    class, else its `view` with every run of four or more digits replaced by <NUM>."""
-    if is_sensitive(text, names=names):
+    """`text` as it may be shown to a model (a CSV heading), from `prepare_outbound`: HIDDEN
+    when it holds any detail, else with every run of four or more digits replaced by <NUM>."""
+    out = prepare_outbound(text, names=names)
+    if out is None or out.hidden or classify(out.text, names=names):  # a label hides too
         return HIDDEN
-    return _DIGIT_RUN.sub("<NUM>", normalise(text))
+    return _DIGIT_RUN.sub("<NUM>", out.text)
 
 
 # --- masking details inside a transaction line (I2) -------------------------------------------
@@ -435,6 +440,18 @@ def _placeholder(n: int) -> str:
         n, rest = divmod(n - 1, 26)
         letters = chr(ord("a") + rest) + letters
     return f"[hidden-{letters}]"
+
+
+def prepare_outbound(text: str, *, names: Sequence[str] = ()) -> MaskedLine | None:
+    """The one way statement text is made ready for a model: `normalise` it, then mask every
+    detail in that normalised string (`mask_line`). Detection and masking run on the string
+    that is sent, so nothing is mapped back onto the printed text. None: the line can't be sent
+    at all and is withheld.
+
+    Every outbound path uses it: each statement line the AI reader is sent (screenshots and
+    vision transcripts included; retry feedback quotes only these lines) and each CSV heading in
+    a layout sketch (whose cells are type tokens, never values)."""
+    return mask_line(text, names=names)
 
 
 def mask_line(text: str, *, names: Sequence[str] = ()) -> MaskedLine | None:

@@ -113,7 +113,12 @@ def test_a_line_that_cant_be_sent_is_offered_on_the_fix_up_screen(ingest_env, mo
     services, _ = ingest_env
     use_local_model(services)
     account = add_account(services, "other", "current", "Probe")
-    monkeypatch.setattr(sensitive, "mask_line", lambda text, names=(): None)
+    real = sensitive.prepare_outbound
+    monkeypatch.setattr(
+        sensitive,
+        "prepare_outbound",
+        lambda text, names=(): None if sensitive.classify(text, names=names) else real(text),
+    )
     outcome = services.ingest.upload("probe.txt", TEXT_STATEMENT.encode())
     drain(services)
     record = _settle(services, outcome, account)

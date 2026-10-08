@@ -592,7 +592,12 @@ def test_what_happens_to_each_line_past_the_table_start(line, outcome):
 def test_a_line_that_cant_be_masked_is_held_back_and_reported(monkeypatch):
     from tuppence.ingest import sensitive
 
-    monkeypatch.setattr(sensitive, "mask_line", lambda text, names=(): None)
+    real = sensitive.prepare_outbound
+    monkeypatch.setattr(
+        sensitive,
+        "prepare_outbound",
+        lambda text, names=(): None if sensitive.classify(text, names=names) else real(text),
+    )
     line = "03/10/2026 Transfer to A/C 87654321 -250.00"
     doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")
     assert "P1L3" in doc.preamble_refs and doc.held_amount_refs == ["P1L3"]

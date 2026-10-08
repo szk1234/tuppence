@@ -505,7 +505,7 @@ class _Split:
 
 
 class _Masks:
-    """`sensitive.mask_line` once per line."""
+    """`sensitive.prepare_outbound` once per line: what is sent for it, or None (withheld)."""
 
     def __init__(self, texts: Sequence[str], names: Sequence[str]) -> None:
         self.texts, self.names = texts, names
@@ -513,8 +513,19 @@ class _Masks:
 
     def __call__(self, i: int) -> MaskedLine | None:
         if i not in self.done:
-            self.done[i] = sensitive.mask_line(self.texts[i], names=self.names)
+            self.done[i] = sensitive.prepare_outbound(self.texts[i], names=self.names)
         return self.done[i]
+
+
+def _send(out: _Split, line: Line, prepared: MaskedLine | None) -> bool:
+    """Make `line` data, sent as `prepared` (from `sensitive.prepare_outbound`); False when it
+    can't be sent."""
+    if prepared is None:
+        return False
+    out.data.append(line.ref)
+    if prepared.hidden or prepared.text != line.text:
+        out.masked[line.ref] = prepared
+    return True
 
 
 def _split_preamble(
@@ -595,21 +606,19 @@ def _split_preamble(
             if money and (not sensitive_at[i] or masks(i) is not None):
                 unsure.add(i)  # may be a row above the page's first anchor
         elif (
-            i in addresses or furniture or name_repeat or (is_summary(text) and _pure_summary(text))
+            (
+                i in addresses
+                or furniture
+                or name_repeat
+                or (is_summary(text) and _pure_summary(text))
+            )
+            or sensitive_at[i]
+            and not money
         ):
             out.withheld.append(line.ref)
-        elif sensitive_at[i]:
-            masked = masks(i) if money else None
-            if masked is None:  # no amount, so no row is lost; or details that won't mask
-                out.withheld.append(line.ref)
-                if money:
-                    unsure.add(i)
-            else:
-                out.data.append(line.ref)
-                if masked.hidden:
-                    out.masked[line.ref] = masked
-        else:
-            out.data.append(line.ref)
+        elif not _send(out, line, masks(i)):  # details that won't mask
+            out.withheld.append(line.ref)
+            unsure.add(i)
     for block in blocks:
         if first is not None and block[0] > first:  # the summary box above the table never is
             unsure |= _unsure(texts, block, first)
@@ -674,33 +683,27 @@ def _split_screenshot(
     for i, line in enumerate(lines):
         tick(i)
         text = line.text
-        masked: MaskedLine | None = None
+        detail = is_sensitive(text, names=names)
+        if (
+            i >= first
+            and i not in balances
+            and detail
+            and _name_key(text) is None
+            and has_amount(text)
+            and sensitive.is_masked_balance(text, names=names)
+        ):
+            balances.add(i)  # a balance with a detail on it: withheld, not reported
         if (
             i >= first
             and i not in balances
             and _name_key(text) is None
-            and is_sensitive(text, names=names)
-            and has_amount(text)
+            and (not detail or has_amount(text))
+            and _send(out, line, sensitive.prepare_outbound(text, names=names))
         ):
-            if sensitive.is_masked_balance(text, names=names):
-                balances.add(i)  # a balance with a detail on it: withheld, not reported
-            else:
-                masked = sensitive.mask_line(text, names=names)
-        if masked is not None:  # a row with account details: sent with them masked
-            out.data.append(line.ref)
-            if masked.hidden:
-                out.masked[line.ref] = masked
-        elif (
-            i < first
-            or i in balances
-            or is_sensitive(text, names=names)
-            or _name_key(text) is not None
-        ):
-            out.withheld.append(line.ref)
-            if has_amount(text) and (i not in balances or i in unsure):
-                out.held.append(line.ref)
-        else:
-            out.data.append(line.ref)
+            continue  # sent (a row with account details has them masked)
+        out.withheld.append(line.ref)
+        if has_amount(text) and (i not in balances or i in unsure):
+            out.held.append(line.ref)
     return out
 
 

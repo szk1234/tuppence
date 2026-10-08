@@ -775,3 +775,56 @@ def test_classify_mask_and_the_send_path_share_one_normalisation(monkeypatch):
     calls.clear()
     text_document(f"{raw}\n", sha256="x")
     assert calls, "text prep"
+
+
+# --- fuzz: decorated identifiers never leave in prepare_outbound's output ---------------------
+
+_COMBINING = [chr(c) for c in range(0x0300, 0x0370)]
+_DASHES = ["-", "–", "—", "−", " "]
+
+
+def _decorate(text, rnd):
+    """`text` printed the way a hostile or merely odd PDF might: full-width digits and letters,
+    non-breaking, narrow and doubled spaces, zero-width characters, combining marks, mixed case
+    and mixed separators between digit groups."""
+    out = []
+    for i, ch in enumerate(text):
+        before, after = text[:i], text[i + 1 :]
+        between_digit_groups = (
+            len(before) >= 2 and before[-2:].isdigit() and len(after) >= 2 and after[:2].isdigit()
+        )
+        if ch in "-" and between_digit_groups or ch == " " and between_digit_groups:
+            ch = rnd.choice(_DASHES if ch == "-" else [" ", "-"])
+        if ch.isdigit() and rnd.random() < 0.3:
+            ch = chr(ord(ch) + 0xFEE0)
+        elif ch.isalpha():
+            ch = ch.upper() if rnd.random() < 0.5 else ch.lower()
+            if rnd.random() < 0.1:
+                ch = chr(ord(ch) + 0xFEE0) if ch.isascii() else ch
+            if rnd.random() < 0.15:
+                ch += rnd.choice(_COMBINING)
+        elif ch == " ":
+            ch = rnd.choice([" ", " ", "  ", " ", " ​"])
+        if rnd.random() < 0.15:
+            ch += rnd.choice(["​", "‌", "‍", "⁠", "﻿", "­"])
+        out.append(ch)
+    return "".join(out)
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_fuzzed_identifiers_never_come_out_of_prepare_outbound(seed):
+    import random
+
+    from tuppence.ingest.sensitive import normalise, prepare_outbound
+
+    rnd = random.Random(seed)
+    for text in IDENTIFIERS:
+        for _ in range(4):
+            shown = _decorate(text, rnd)
+            template = rnd.choice(list(POSITIONS.values()))
+            line = template.format(shown)
+            out = prepare_outbound(line, names=NAMES)
+            if out is None:  # withheld whole (and reported, as it holds an amount)
+                continue
+            _never_sent(text, normalise(out.text))
+            _never_sent(text, out.text)
