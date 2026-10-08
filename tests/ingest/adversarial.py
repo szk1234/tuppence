@@ -23,7 +23,7 @@ SECRETS = [
     "4242", "Available balance", "Opening balance", "Closing balance", "overdraft limit",
     "Credit limit", "7,777.77", "8,888.88", "6,666.66", "Roll number", "Customer",
     "Sort code", "IBAN", "Account number", "Exampleshire", "Payment due", "minimum payment",
-    "25.00", "2,252.32", "20-11-33", "41234567", "5,555.55",
+    "25.00", "2,252.32", "20-11-33", "41234567", "5,555.55", "87654321", "55554444", "31415926",
 ]  # fmt: skip
 
 
@@ -108,6 +108,9 @@ def current_pdf() -> bytes:
         _row(
             "27 Oct 2026", "FPI J SMITH 20-11-33 41234567 RTN", paid_in="100.00", balance="7,007.87"
         ),  # fmt: skip
+        # an account number after a sort code, joined by a slash or a comma (re-review N3)
+        _row("27 Oct 2026", "TO 20-11-33 / 87654321 RENT", out="10.00", balance="6,997.87"),
+        _row("27 Oct 2026", "FROM 20-11-33, 55554444 REFUND", paid_in="10.00", balance="7,007.87"),
         _row("28 Oct 2026", "Greenbasket Stores", out="241.10", balance="6,766.77"),
         _line("Closing balance £6,766.77"),
         _line("Alex Example"),
@@ -230,6 +233,7 @@ VISION_SCREENSHOT = [
     "Wed 7 Oct   Acme Payroll Ltd   +£250.00",
     # a row whose details a PDF or OCR printed with invisible and non-breaking characters
     "Thu 8 Oct   FPO J SMITH 20\u200b-11-33\u00a04123\u200b4567   -£5.00",
+    "Fri 9 Oct   TO 20-11-33:31415926 RENT   -£2.00",
 ]  # fmt: skip
 VISION_PAGES = [
     [
@@ -253,6 +257,8 @@ VISION_PAGES = [
         "25 Oct 2026   Harbour Pharmacy refund   6.15   7,007.87",
         "26 Oct 2026   FPO J SMITH 20-11-33 41234567   100.00   6,907.87",
         "27 Oct 2026   FPI J SMITH 20-11-33 41234567 RTN   100.00   7,007.87",
+        "27 Oct 2026   TO 20-11-33 / 87654321 RENT   10.00   6,997.87",
+        "27 Oct 2026   FROM 20-11-33, 55554444 REFUND   10.00   7,007.87",
         "28 Oct 2026   Greenbasket Stores   241.10   6,766.77", "Closing balance £6,766.77",
         "Alex Example", "Page 2 of 2",
     ],

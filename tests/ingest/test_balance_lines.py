@@ -134,12 +134,14 @@ def old_textprep() -> types.ModuleType:
 
 def _sent_on_purpose(doc, ref: str) -> bool:
     """New text prep sends a line the old one withheld only on purpose: with its account
-    details masked, or as a single payee row whose only fault was a summary word."""
+    details masked (and nothing of a long number left: no run of six digits from the printed
+    line survives, m4), or as a single payee row whose only fault was a summary word."""
+    from ingest.digit_runs import survivors
     from tuppence.ingest.textprep import _SUMMARY_WORD, _single_transaction, only_summary_vocab
 
-    if ref in doc.masked:
-        return True
     text = doc.by_ref()[ref].text
+    if ref in doc.masked:
+        return not survivors(text, doc.masked[ref].text)
     return (
         bool(_SUMMARY_WORD.search(text))
         and _single_transaction(text, False)
@@ -148,27 +150,52 @@ def _sent_on_purpose(doc, ref: str) -> bool:
 
 
 def _corpus() -> list[str]:
+    from ingest.test_long_numbers import M3, N3
     from ingest.test_sensitive_parity import EVERY, PLAIN, REGRESSION
     from ingest.test_textprep import MIXED_SUMMARIES, OUTCOMES
 
     return list(
         dict.fromkeys(
             [*EVERY, *PLAIN, *REGRESSION, *BALANCES, *UNSURE, *ROWS_STILL_SENT,
-             *MIXED_SUMMARIES, *(line for line, _ in OUTCOMES)]
+             *MIXED_SUMMARIES, *(line for line, _ in OUTCOMES), *N3, *M3]
         )
     )  # fmt: skip
 
 
-def test_nothing_withheld_at_75f4474_is_sent_from_the_parity_corpus(old_textprep):
-    sent_now: list[str] = []
-    for line in _corpus():
-        lines = [*HEAD, ROWS[0], line, ROWS[1]]
-        old = old_textprep.text_document("\n".join(lines), sha256="x")
-        new = text_document("\n".join(lines), sha256="x")
+def _sent_now(old_textprep, lines: list[str]) -> list[str]:
+    out = []
+    for line in lines:
+        rows = [*HEAD, ROWS[0], line, ROWS[1]]
+        old = old_textprep.text_document("\n".join(rows), sha256="x")
+        new = text_document("\n".join(rows), sha256="x")
         ref = f"L{len(HEAD) + 2}"
         if ref in old.preamble_refs and ref in new.data_refs and not _sent_on_purpose(new, ref):
-            sent_now.append(line)
-    assert sent_now == []
+            out.append(line)
+    return out
+
+
+def test_nothing_withheld_at_75f4474_is_sent_from_the_parity_corpus(old_textprep):
+    assert _sent_now(old_textprep, _corpus()) == []
+
+
+def test_the_guard_catches_a_partial_mask(old_textprep, monkeypatch):
+    """m4, the mutation: with long numbers left unmasked (as at 10e530c, re-review N3), the
+    lines 75f4474 withheld go out with an account number in them, and the guard reports them.
+    Before m4 it let every masked line through."""
+    from ingest.test_long_numbers import N3
+    from tuppence.ingest import sensitive
+
+    assert _sent_now(old_textprep, N3) == []
+    monkeypatch.setattr(sensitive, "_long_runs", lambda seen, keep: [])
+    caught = _sent_now(old_textprep, N3)
+    for line in (
+        "03/10/2026 TO 20-11-33 / 87654321 RENT -250.00",
+        "03/10/2026 TO 20-11-33, 87654321 RENT -250.00",
+        "03/10/2026 TO 20-11-33 (87654321) RENT -250.00",
+        "03/10/2026 TO 20-11-33:87654321 RENT -250.00",
+        "03/10/2026 TO 20-11-33 ACCNO87654321 -250.00",
+    ):
+        assert line in caught
 
 
 FIXTURE_DOCS = [

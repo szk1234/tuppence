@@ -93,6 +93,8 @@ VALUES: dict[str, re.Pattern[str]] = {
     "card_number": re.compile(r"\b(?:\d[ -]?){12,18}\d\b|\b\d{4}(?:[ -]{1,3}\d{4}){3}\b", _I),
     "card_ending": re.compile(
         r"\bending\s+(?:in\s+)?\d{3,4}\b|(?<!\*)\*{2,}[\s-]*\d{2,4}|(?<![a-z])x{2,}[\s-]*\d{4}\b"
+        # the short forms (R-M3-23 (a)): "ENDING4242", "*4242", "X4242"
+        r"|\bending(?:\s*in)?\s*\d{4}(?!\d)|(?<![\w*])\*\s?\d{4}(?!\d)|(?<![a-z0-9])x\s?\d{4}(?!\d)"
         r"|\b\d{4}[\s-]*(?:[*•●·∙◦∗]{2,}|[xX]{4})"
         # the last digits behind bullets, dots or an ellipsis: "•••• 4242", "...4242", "…4242"
         # (a mask run is tried from its first character only, so a long run stays fast)
@@ -103,7 +105,9 @@ VALUES: dict[str, re.Pattern[str]] = {
     "swift_code": re.compile(
         r"\b(?i:swift)(?:\s+(?i:code))?\s*(?::\s*)?[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b"
     ),
-    "iban": re.compile(r"\b[A-Z]{2}\d{2}\s?[A-Z0-9]{4}(?:\s?\d{4}){2,}(?:\s?[A-Z0-9]{1,4})?\b", _I),
+    "iban": re.compile(
+        r"(?:\b|(?<=iban))[A-Z]{2}\d{2}\s?[A-Z0-9]{4}(?:\s?\d{4}){2,}(?:\s?[A-Z0-9]{1,4})?\b", _I
+    ),
     "postcode": re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b", _I),
     # a house number and street, or a flat ("Flat 3", "Apartment 12", "Apt 4B")
     "address": re.compile(
@@ -128,7 +132,7 @@ LABEL_CLASSES = frozenset(LABELS)
 # 12-34 56. Printed with the same space or dot twice and reading as a real day and month
 # (01.10.26), it is taken for a date instead.
 _SPELLED_SORT_CODE = re.compile(
-    r"(?<![\d.,:/£$])(\d{2})([ .\-–—])(\d{2})([ .\-–—])(\d{2})(?![\d,:/]|\.\d)"
+    r"(?<![\d.,:/£$])(\d{2})([ .\-–—·_])(\d{2})([ .\-–—·_])(\d{2})(?![\d,:/]|\.\d)"
 )
 _TITLE = re.compile(r"^(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+", _I)
 _NAME_LINE = re.compile(r"^(?:[A-Z][A-Za-z'’-]*)(?:\s+[A-Z][A-Za-z'’-]*){1,3}$")
@@ -141,8 +145,9 @@ HIDDEN = "<HIDDEN>"
 # A statement line is kept, classified, masked and sent as one string: `normalise` of the line
 # as printed. Compatibility forms are folded (NFKC: full-width and styled digits and letters
 # become plain ones, non-breaking and narrow spaces become spaces), invisible format characters
-# (zero-width spaces, soft hyphens) and stray combining marks are dropped, curly apostrophes and
-# Unicode dashes become ' and -, and every run of whitespace is one space. Patterns then read
+# (zero-width spaces, soft hyphens) and stray combining or enclosing marks (a keycap) are
+# dropped, curly apostrophes and Unicode dashes become ' and -, and every run of whitespace is
+# one space. Patterns then read
 # that string with accents folded character by character (é is read as e), which keeps every
 # position, like reading it case-insensitively.
 
@@ -158,7 +163,7 @@ def normalise(text: str) -> str:
     """The line as Tuppence keeps, reads and sends it (see above)."""
     if not text.isascii():
         text = unicodedata.normalize("NFKC", text)
-        text = "".join(ch for ch in text if unicodedata.category(ch) not in ("Cf", "Mn"))
+        text = "".join(ch for ch in text if unicodedata.category(ch) not in ("Cf", "Mn", "Me"))
         text = text.translate(_UNIFY)
     return " ".join(text.split())
 
@@ -233,8 +238,10 @@ def _name_pattern(names: tuple[str, ...]) -> re.Pattern[str] | None:
     forms = sorted(_name_forms(names), key=len, reverse=True)
     if not forms:
         return None
-    alternatives = (r"[\s.,]+".join(re.escape(w) for w in form.split()) for form in forms)
-    return re.compile(r"(?<![\w'])(?:" + "|".join(alternatives) + r")(?![\w'])", _I)
+    # words joined by spaces or punctuation ("ALEX-EXAMPLE", "EXAMPLE/ALEX", "ALEX_EXAMPLE"),
+    # and a name may touch digits ("ALEX EXAMPLE123")
+    alternatives = (r"[\s.,_/\-]+".join(re.escape(w) for w in form.split()) for form in forms)
+    return re.compile(r"(?<![A-Za-z'])(?:" + "|".join(alternatives) + r")(?![A-Za-z'])", _I)
 
 
 def _is_holder(text: str, names: Sequence[str]) -> bool:
@@ -374,6 +381,56 @@ def _tokens_after(text: str, start: int, keep: Sequence[bool], name_words: bool)
     return end
 
 
+# --- long numbers (R-M3-23 (a)) -----------------------------------------------------------------
+#
+# Inside a line that is sent, every run of six or more digits that isn't an amount or a date is
+# masked: an account, card, roll or reference number, or a sort code and account number
+# together, however they are joined (one space, hyphen, slash, middle dot or underscore between
+# groups) and whatever is glued to them ("ACCNO87654321", "J SMITH20-11-33"). A date printed
+# with spaces or dots ("05 10 26", "20.11.33": a real day and month) is a date, so it ends a run.
+
+LONG_RUN = 6
+_RUN_JOINS = frozenset(" -/·_")
+_SPACED_DATE = re.compile(r"(?<![\d.,:/£$])(\d{1,2})([ .])(\d{1,2})\2(\d{4}|\d{2})(?![\d,:/]|\.\d)")
+_PENCE = re.compile(r"(?<=\d\.)\d{2}(?![\d.])")  # "56" of an amount printed "1234.56"
+
+
+def _long_runs(seen: str, keep: Sequence[bool]) -> list[tuple[int, int]]:
+    """Spans of the runs of six or more digits in `seen` (see above). One pass over the line."""
+    size = len(seen)
+    part = [ch.isdigit() and not keep[k] for k, ch in enumerate(seen)]
+    for match in _SPACED_DATE.finditer(seen):
+        if 1 <= int(match.group(1)) <= 31 and 1 <= int(match.group(3)) <= 12:
+            for k in range(match.start(), match.end()):
+                part[k] = False
+    for match in _PENCE.finditer(seen):
+        for k in range(match.start(), match.end()):
+            part[k] = False
+    spans: list[tuple[int, int]] = []
+    k = 0
+    while k < size:
+        if not part[k]:
+            k += 1
+            continue
+        start = end = k
+        while end < size and (
+            part[end] or (seen[end] in _RUN_JOINS and end + 1 < size and part[end + 1])
+        ):
+            end += 1
+        k = end
+        if sum(1 for j in range(start, end) if seen[j].isdigit()) < LONG_RUN:
+            continue
+        if seen[end : end + 1] == "." and _PENCE.match(seen, end + 1):
+            continue  # the pounds of an amount printed without commas ("123456.78")
+        before = start - 1
+        while before >= 0 and seen[before].isspace():
+            before -= 1
+        if before >= 0 and seen[before] in "£$€":
+            continue  # whole pounds after a currency sign
+        spans.append((start, end))
+    return spans
+
+
 class _Unmaskable(Exception):
     """A detail overlaps an amount or a date in a way that can't be split safely."""
 
@@ -410,6 +467,9 @@ def _detail_spans(seen: str, keep: Sequence[bool], names: Sequence[str]) -> list
             continue
         for match in pattern.finditer(seen):
             start, end = match.span()
+            if name == "card_number":  # its pattern may take the year of a date before it
+                while start < end and (keep[start] or seen[start].isspace()):
+                    start += 1
             if name in ("account_number", "card_ending"):  # keep the label ("A/C", "ending")
                 start = next(
                     (k for k in range(start, end) if seen[k].isdigit() or seen[k] in _MASK_CHARS
@@ -489,13 +549,14 @@ def _residue_is_balance(masked: MaskedLine) -> bool:
 def _mask(text: str, names: Sequence[str]) -> MaskedLine | None:
     normal, seen = _seen(text)
     found = _classify_seen(seen, names)
-    if not found:
+    keep = _kept(seen)
+    numbers = _long_runs(seen, keep)
+    if not found and not numbers:
         return MaskedLine(text=normal)
     if "balance_line" in found or _is_holder(normal, names):
         return None
-    keep = _kept(seen)
     try:
-        spans = _detail_spans(seen, keep, names)
+        spans = [*_detail_spans(seen, keep, names), *numbers] if found else numbers
     except _Unmaskable:
         return None
     hide = [False] * len(normal)
@@ -563,6 +624,11 @@ def unmasked_label(text: str) -> bool:
 
 
 def _clean(masked: str, names: Sequence[str]) -> bool:
-    """No detail is left in a masked line: no value class, and no label with a value after it
-    (an amount or a date after a label is fine)."""
-    return not (classify(masked, names=names) - LABEL_CLASSES) and not unmasked_label(masked)
+    """No detail is left in a masked line: no value class, no label with a value after it (an
+    amount or a date after a label is fine), and no run of six or more digits."""
+    seen = _seen(masked)[1]
+    return (
+        not (classify(masked, names=names) - LABEL_CLASSES)
+        and not unmasked_label(masked)
+        and not _long_runs(seen, _kept(seen))
+    )
