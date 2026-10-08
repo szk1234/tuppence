@@ -105,8 +105,9 @@ class RefileStore:
 
     def undo(self, refile_id: str) -> int:
         """Put the moved transactions back and retire the new sub-categories (the person's
-        action). Rows changed since (by the person or a rule) are left alone, and a new
-        sub-category that still holds any of them stays. Returns how many rows moved back."""
+        action). Rows changed since (by the person or a rule) are left alone, rows removed
+        since (with their statement) are skipped, and a new sub-category that still holds any
+        of them stays. Returns how many rows moved back."""
         with self.db.transaction() as conn:
             row = conn.execute("SELECT * FROM category_refile WHERE id = ?", [refile_id]).fetchone()
             if row is None:
@@ -118,8 +119,11 @@ class RefileStore:
                 conn, "category", category_id=refile.parent_id, note="sub-categories undone"
             )
             moved = 0
+            rows = self.understanding.many_in(conn, [m["transaction_id"] for m in refile.moves])
             for move in refile.moves:
-                current = self.understanding.get_in(conn, move["transaction_id"])
+                current = rows.get(move["transaction_id"])
+                if current is None:  # removed since, with its statement
+                    continue
                 if current.category_id != move["to"] or current.decided_by not in (
                     "llm",
                     "review",

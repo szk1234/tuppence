@@ -5,6 +5,7 @@ import pytest
 from agents.helpers import crowd
 from tuppence.core.errors import InputError
 from tuppence.core.records import NotFound
+from tuppence.ingest.store import StatementStore
 
 SPLIT = {
     "subcategories": [
@@ -74,3 +75,18 @@ def test_a_split_that_came_to_nothing_is_remembered_but_not_listed(aenv):
     assert aenv.refiles.list(include_undone=True) == []
     with aenv.db.connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM category_refile").fetchone()[0] == 1
+
+
+def test_undo_skips_rows_removed_since(aenv):
+    """A moved row's statement was removed (or read again) after the split: the undo puts back
+    the rest instead of failing every time."""
+    ids = _split(aenv)
+    with aenv.db.connection() as conn:
+        statement = conn.execute(
+            "SELECT statement_id FROM statement_transaction WHERE transaction_id = ?", [ids[0]]
+        ).fetchone()[0]
+    StatementStore(aenv.db).delete(statement)
+    (refile,) = aenv.refiles.list()
+    assert aenv.refiles.undo(refile.id) == 11
+    assert {aenv.understanding.get(i).category_id for i in ids[1:]} == {"food.groceries"}
+    assert aenv.refiles.list() == []
