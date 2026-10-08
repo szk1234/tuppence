@@ -10,3 +10,7 @@ max_tool_calls_per_turn = 4
 max_llm_calls = 5
 [agents.reader.limits]
 parallel_chunks = 1
+
+[agents.categoriser.limits]
+max_rows_per_batch = 15
+memory_min_rows = 2

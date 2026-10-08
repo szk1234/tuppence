@@ -9,3 +9,10 @@ max_gbp = 0.50
 max_seconds = 900
 [thresholds]
 review_below = 0.8
+memory_min_confidence = 0.8
+[limits]
+max_rows_per_batch = 40
+max_rows_per_run = 2000
+memory_min_rows = 3
+crowded_category_rows = 40
+max_refiles_per_run = 1

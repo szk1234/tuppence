@@ -15,6 +15,18 @@ from typing import Any
 
 READ_MARKER = "TUPPENCE-READ-V1"
 MAPPING_MARKER = "TUPPENCE-CSV-MAPPING-V1"
+CATEGORISE_MARKER = "TUPPENCE-CATEGORISE-V1"
+REVIEW_MARKER = "TUPPENCE-REVIEW-V1"
+REFILE_MARKER = "TUPPENCE-REFILE-V1"
+LABELS_MARKER = "TUPPENCE-COMMITMENT-LABELS-V1"
+MARKERS = (
+    READ_MARKER,
+    MAPPING_MARKER,
+    CATEGORISE_MARKER,
+    REVIEW_MARKER,
+    REFILE_MARKER,
+    LABELS_MARKER,
+)
 _MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
 _DATE = re.compile(
     rf"\b(\d{{1,2}}/\d{{1,2}}/\d{{4}}|\d{{4}}-\d{{2}}-\d{{2}}"
@@ -48,7 +60,21 @@ def reply(messages: list[dict[str, Any]]) -> str:
         return json.dumps(mapping(next((c for c in reversed(sketches) if "HEADINGS:" in c), user)))
     if READ_MARKER in text:
         return json.dumps(read(user))
+    if CATEGORISE_MARKER in text:
+        return json.dumps(categorise(_last_with(messages, "TRANSACTIONS:", user)))
+    if REVIEW_MARKER in text:
+        return json.dumps(categorise(_last_with(messages, "TRANSACTIONS:", user), review=True))
+    if REFILE_MARKER in text:
+        return json.dumps({"subcategories": []})  # the oracle never splits a category
+    if LABELS_MARKER in text:
+        return json.dumps(labels(_last_with(messages, "PAYMENTS:", user)))
     return json.dumps({"note": "oracle has no answer for this prompt"})
+
+
+def _last_with(messages: list[dict[str, Any]], heading: str, default: str) -> str:
+    """The last user message holding the section (a JSON-repair turn adds a bare nudge after it)."""
+    found = [str(m.get("content", "")) for m in messages if m.get("role") == "user"]
+    return next((c for c in reversed(found) if heading in c), default)
 
 
 def _section(user: str, name: str) -> list[str]:
@@ -220,3 +246,115 @@ class OracleLLM:
             run.start_call()
             run.record(len(text) // 4, 0.0)
         return schema.model_validate_json(text)
+
+
+# --- understanding (M4) -----------------------------------------------------------------
+# Words in the synthetic corpus's merchant names, and the category each one means. The
+# oracle exists to run the pipeline without a model; its accuracy says nothing about a
+# real model's.
+KEYWORDS: list[tuple[str, str]] = [
+    ("payroll", "income.salary"),
+    ("child benefit", "income.benefits"),
+    ("lettings", "housing.rent"),
+    ("council tax", "housing.council-tax"),
+    ("water", "housing.water"),
+    ("energy", "housing.energy"),
+    ("broadband", "housing.broadband"),
+    ("tv licensing", "housing.tv-licence"),
+    ("home cover", "housing.insurance"),
+    ("window cleaning", "housing.repairs"),
+    ("fuel", "transport.car.fuel"),
+    ("dvla", "transport.car.road-tax"),
+    ("car insurance", "transport.car.insurance"),
+    ("roadstar finance", "transport.car.finance"),
+    ("roadside", "transport.car.breakdown"),
+    ("rail", "transport.public"),
+    ("greenbasket", "food.groceries"),
+    ("valuemart", "food.groceries"),
+    ("cafe", "food.eating-out"),
+    ("pizza", "food.takeaway"),
+    ("nursery", "children.childcare"),
+    ("swim club", "children.activities"),
+    ("pharmacy", "health.pharmacy"),
+    ("gym", "health.fitness"),
+    ("streamly", "subscriptions.tv-streaming"),
+    ("tunewave", "subscriptions.music"),
+    ("melodia", "subscriptions.music"),
+    ("cloudbox", "subscriptions.software"),
+    ("news digital", "subscriptions.news"),
+    ("mobile", "subscriptions.mobile"),
+    ("pet insurance", "pets.insurance"),
+    ("lifeshield", "financial.protection"),
+    ("books", "entertainment.hobbies"),
+    ("cinema", "entertainment.going-out"),
+    ("flights", "holidays.travel"),
+    ("payment received", "transfers.card-repayment"),
+    ("example card", "transfers.card-repayment"),
+    ("savings", "transfers.between-accounts"),
+    ("cash machine", "transfers.cash"),
+]
+LABELS: list[tuple[str, str]] = [
+    ("subscriptions.", "subscription"),
+    ("health.fitness", "subscription"),
+    ("children.activities", "subscription"),
+    ("transport.car.finance", "instalment"),
+    ("financial.loan-repayments", "instalment"),
+    ("housing.", "bill"),
+    ("transport.car.", "bill"),
+    ("children.childcare", "bill"),
+    ("pets.insurance", "bill"),
+    ("financial.protection", "bill"),
+]
+
+
+def _known(category: str, allowed: set[str]) -> str | None:
+    """The category, or its deepest ancestor the prompt's (possibly shallow) tree lists."""
+    parts = category.split(".")
+    for n in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:n])
+        if candidate in allowed:
+            return candidate
+    return None
+
+
+def categorise(user: str, *, review: bool = False) -> dict[str, Any]:
+    allowed = {ln.strip().split(" — ")[0] for ln in _section(user, "CATEGORIES")}
+    memory: dict[str, str] = {}
+    for ln in _section(user, "MEMORY"):
+        match = re.match(r"^- (.+): ([a-z0-9.-]+) \(seen", ln)
+        if match:
+            memory[match.group(1).casefold()] = match.group(2)
+    answers = []
+    for ln in _section(user, "TRANSACTIONS"):
+        row = json.loads(ln)
+        text = f"{row.get('merchant') or ''} {row.get('description') or ''}".casefold()
+        found = memory.get((row.get("merchant") or "").casefold())
+        if found is None:
+            found = next((cat for word, cat in KEYWORDS if word in text), None)
+        category = _known(found, allowed) if found else None
+        confidence = 0.95 if category else 0.4
+        if category is None:
+            money_in = not str(row.get("amount", "")).startswith("-")
+            fallback = "income.other" if money_in else "other"
+            category = row.get("given_category_id") or _known(fallback, allowed) or fallback
+            confidence = 0.5 if review else 0.4
+        answers.append(
+            {
+                "ref": row["ref"],
+                "category_id": category,
+                "who": "household",
+                "confidence": confidence,
+                "reason": "oracle keyword table",
+            }
+        )
+    return {"transactions": answers}
+
+
+def labels(user: str) -> dict[str, Any]:
+    out = []
+    for ln in _section(user, "PAYMENTS"):
+        row = json.loads(ln)
+        category = str(row.get("category_id") or "")
+        kind = next((k for prefix, k in LABELS if category.startswith(prefix)), "none")
+        out.append({"ref": row["ref"], "kind": kind})
+    return {"payments": out}

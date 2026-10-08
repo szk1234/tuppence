@@ -25,16 +25,25 @@ from evals import oracle  # noqa: E402
 
 STRUCTURED = json.dumps({"category": "test", "confidence": 1})
 SCRIPT: list[str] = []
-CALLS = {"count": 0}
+CALLS = {"count": 0, "understanding": 0}
+_UNDERSTANDING = (
+    oracle.CATEGORISE_MARKER,
+    oracle.REVIEW_MARKER,
+    oracle.REFILE_MARKER,
+    oracle.LABELS_MARKER,
+)
 
 
 def canned_reply(messages: list[dict[str, Any]]) -> str | None:
-    """Scripted replies first, then the oracle for Tuppence's own read and CSV-mapping prompts.
-    None means: answer as before ("Echo: ...")."""
+    """Scripted replies first, then the oracle for Tuppence's own prompts. None means: answer
+    as before ("Echo: …"). Understanding calls are counted apart and never scripted."""
+    text = json.dumps(messages)
+    if any(marker in text for marker in _UNDERSTANDING):
+        CALLS["understanding"] += 1
+        return oracle.reply(messages)
     CALLS["count"] += 1
     if SCRIPT:
         return SCRIPT.pop(0)
-    text = json.dumps(messages)
     if oracle.READ_MARKER in text or oracle.MAPPING_MARKER in text:
         return oracle.reply(messages)
     return None
@@ -71,6 +80,7 @@ def create_fake_app() -> FastAPI:
         last.clear()
         SCRIPT.clear()
         CALLS["count"] = 0
+        CALLS["understanding"] = 0
         return {"ok": True}
 
     @app.post("/_script")
@@ -80,7 +90,7 @@ def create_fake_app() -> FastAPI:
 
     @app.get("/_calls")
     async def calls() -> dict[str, int]:
-        return {"count": CALLS["count"]}
+        return {"count": CALLS["count"], "understanding": CALLS["understanding"]}
 
     @app.get("/v1/models")
     def models(request: Request) -> dict[str, Any]:

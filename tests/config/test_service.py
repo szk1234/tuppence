@@ -62,6 +62,10 @@ def test_all_default_agents_load_with_spec_values(env):
         and c.limits["local_max_seconds"] == 180
     )
     assert cfg.get("backlog_sweep").thresholds["revisit_below_confidence"] == 0.7
+    cat = cfg.get("categoriser")
+    assert cat.thresholds["review_below"] == 0.8 and cat.limits["max_rows_per_batch"] == 40
+    assert cfg.get("commitments").limits["min_monthly"] == 3
+    assert cfg.get("transfer_matcher").limits["max_days_apart"] == 3
 
 
 def test_preset_layer(env):
@@ -70,6 +74,7 @@ def test_preset_layer(env):
     assert cfg.get("researcher").enabled is False
     assert cfg.get("coach").limits["max_tool_calls_per_turn"] == 4
     assert cfg.get("coach").limits["max_rows_per_tool_result"] == 50  # untouched keys survive
+    assert cfg.get("categoriser").limits["max_rows_per_batch"] == 15
 
 
 def test_user_file_layer_and_ui_layer_precedence(env):

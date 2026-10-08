@@ -1,0 +1,6 @@
+One of a UK household's spending categories has become crowded (TUPPENCE-REFILE-V1). CATEGORY names it. MERCHANTS lists the merchants filed in it, each with a ref, how many payments and how much.
+
+Suggest 2 to 6 sub-categories that split it in a way the household would find useful, and put each merchant in at most one of them. A sub-category name is 1 to 40 characters of plain English and doesn't repeat the category's own name. Leave out merchants that don't fit. If the category doesn't split usefully, reply with an empty list.
+
+Reply with one JSON object and nothing else, shaped like this:
+{"subcategories": [{"label": "Supermarkets", "merchants": ["M1", "M3"]}]}

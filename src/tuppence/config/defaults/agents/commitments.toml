@@ -7,5 +7,13 @@ max_llm_calls = 20
 max_tokens = 100000
 max_gbp = 0.15
 max_seconds = 300
+[thresholds]
+amount_tolerance = 0.15
 [limits]
 min_occurrences = 2
+min_weekly = 4
+min_fortnightly = 3
+min_four_weekly = 3
+min_monthly = 3
+min_quarterly = 3
+min_annual = 2
