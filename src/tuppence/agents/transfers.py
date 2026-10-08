@@ -45,6 +45,16 @@ TRANSFER_WORDS = (
 )
 ONE_SIDED = "transfer_one_sided"  # evidence.kind of a transfer whose other half is missing
 AGAINST_WORDS = ("REFUND", "REVERSAL", "CASHBACK")  # money back from a shop isn't a transfer
+# A pair at or above this is "inferred" (Sorted); below it, a guess the person can see as one.
+# The Categoriser's own review threshold (`review_below`) by default.
+SURE = 0.8
+# Equal amounts with no word saying "transfer" (and not naming the other account) are often a
+# coincidence: a payment to a friend and a shop refund on a card that doesn't print REFUND,
+# or two unrelated payments on the same day. Real repayments and transfers almost always say
+# so ("PAYMENT RECEIVED", "THANK YOU", the provider or the account's name), so these stay
+# guesses.
+NO_WORDS = 0.75
+NO_WORDS_DAYS_APART = 0.7
 
 
 @dataclass(frozen=True)
@@ -72,9 +82,9 @@ class Pair:
             return 0.6
         if self.words:
             return 0.99
-        if self.card_repayment:
-            return 0.9
-        return 0.85 if self.days_apart == 0 else 0.7
+        if self.card_repayment or self.days_apart == 0:
+            return NO_WORDS
+        return NO_WORDS_DAYS_APART
 
 
 def _words(text: str, extra: Sequence[str]) -> list[str]:
@@ -237,7 +247,7 @@ class TransferMatcher:
                     decision = Decision(
                         decided_by="rule",
                         authority=CODE_RULE,
-                        status="inferred" if confidence >= 0.8 else "guessed",
+                        status="inferred" if confidence >= SURE else "guessed",
                         confidence=confidence,
                         category_id=category,
                         who=HOUSEHOLD,

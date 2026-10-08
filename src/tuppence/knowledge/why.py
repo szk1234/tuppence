@@ -112,11 +112,17 @@ def explain(
             [u.transfer_pair_id],
         ).fetchone()
         if other is not None:
-            steps.append(
+            matched = (
                 f"Matched with £{format_pounds(abs(other['amount_pence']))} on"
-                f" {other['nickname']} on {_uk(other['date'])}: money moving between"
-                " your accounts."
+                f" {other['nickname']} on {_uk(other['date'])}"
             )
+            if ev.get("words"):
+                steps.append(f"{matched}: money moving between your accounts.")
+            else:  # equal amounts alone: as likely a coincidence (a refund, a friend)
+                steps.append(
+                    f"{matched}: the same amount, but neither description says it's a"
+                    " transfer, so this is only a guess. If it isn't one, choose what it is."
+                )
     if ev.get("kind") == "transfer_one_sided":
         steps.append(
             "The description names another of your accounts, whose statement for"

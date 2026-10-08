@@ -3,6 +3,7 @@ from datetime import date
 from agents.helpers import manifest
 from tuppence.agents.transfers import Movement, TransferMatcher, pair_transfers
 from tuppence.ingest.store import StatementStore
+from tuppence.knowledge.why import explain
 
 
 def mv(i, account, day, pence, text="", kind="current"):
@@ -41,7 +42,39 @@ def test_at_least_one_side_must_be_in_scope():
     moves = [mv("o1", "cur", 5, -100, ""), mv("i1", "sav", 5, 100, "")]
     assert pair_transfers(moves, scope=set()) == []
     only = pair_transfers(moves, scope={"o1"})
-    assert len(only) == 1 and only[0].confidence == 0.85
+    assert len(only) == 1 and only[0].days_apart == 0
+
+
+def test_without_transfer_words_a_pair_is_only_a_guess():
+    """Equal amounts with nothing in either description that says "transfer" (or names the
+    other account) are as likely a coincidence: a payment to a friend and a shop refund on a
+    card, two payments on the same day. They pair, below the review threshold (0.8)."""
+    card = pair_transfers(
+        [
+            mv("o1", "cur", 3, -5000, "J SMITH"),
+            mv("i1", "card", 5, 5000, "GREENBASKET STORES", kind="credit_card"),
+        ],
+        scope={"o1", "i1"},
+    )
+    same_day = pair_transfers(
+        [mv("o2", "cur", 9, -2500, "PAT EXAMPLE"), mv("i2", "sav", 9, 2500, "PAT EXAMPLE")],
+        scope={"o2", "i2"},
+    )
+    later = pair_transfers(
+        [mv("o3", "cur", 9, -700, "PAT EXAMPLE"), mv("i3", "sav", 11, 700, "PAT EXAMPLE")],
+        scope={"o3", "i3"},
+    )
+    assert card[0].card_repayment and not card[0].words and card[0].confidence < 0.8
+    assert same_day[0].days_apart == 0 and same_day[0].confidence < 0.8
+    assert later[0].confidence < same_day[0].confidence
+    named = pair_transfers(
+        [
+            mv("o4", "cur", 3, -5000, "EXAMPLE CARD CO"),
+            mv("i4", "card", 5, 5000, "PAYMENT RECEIVED", kind="credit_card"),
+        ],
+        scope={"o4", "i4"},
+    )
+    assert named[0].confidence == 0.99  # a repayment says so: it is sorted, not a guess
 
 
 def test_matcher_marks_both_sides_and_never_the_persons_rows(aenv):
@@ -123,6 +156,19 @@ def _matcher(aenv):
     return TransferMatcher(
         aenv.db, aenv.understanding, aenv.versions, lambda: manifest("transfer_matcher")
     )
+
+
+def test_a_card_credit_without_transfer_words_is_paired_only_as_a_guess(aenv):
+    """The final review's probe: £50 to J SMITH from the current account and a £50 shop refund
+    on the card two days later, printed without the word REFUND. A guess, never "Sorted"."""
+    aenv.add_account("a_card", "credit_card", owners=["p_alex"], nickname="Amex", provider="amex")
+    friend = aenv.add_txn(date(2026, 10, 3), -5000, "J SMITH")
+    credit = aenv.add_txn(date(2026, 10, 5), 5000, "GREENBASKET STORES", account_id="a_card")
+    assert _matcher(aenv).run([friend, credit], run_id="r1")["pairs"] == 1
+    for t in (friend, credit):
+        row = aenv.understanding.get(t)
+        assert row.is_transfer and row.category_id == "transfers.card-repayment"
+        assert (row.status, row.confidence) == ("guessed", 0.75)
 
 
 def test_a_one_sided_transfer_is_paired_when_the_other_statement_arrives(aenv):
@@ -225,3 +271,29 @@ def test_a_confirmed_partner_is_left_alone_and_the_release_says_so(aenv):
         assert aenv.understanding.release(conn, out, actor="test", reason="basis gone")
     assert aenv.understanding.get(arrive) == kept
     assert aenv.understanding.get(out).evidence["partner_confirmed"] == arrive
+
+
+def _why(aenv, t):
+    with aenv.db.connection() as conn:
+        return explain(
+            conn,
+            aenv.categories.tree(),
+            aenv.understanding.get(t),
+            aenv.understanding.history(t),
+            aenv.versions.current(),
+        )
+
+
+def test_why_says_a_pair_without_transfer_words_is_only_a_guess(aenv):
+    aenv.add_account("a_card", "credit_card", owners=["p_alex"], nickname="Amex", provider="amex")
+    friend = aenv.add_txn(date(2026, 10, 3), -5000, "J SMITH")
+    credit = aenv.add_txn(date(2026, 10, 5), 5000, "GREENBASKET STORES", account_id="a_card")
+    out, arrive, _ = _paired(aenv)
+    _matcher(aenv).run([friend, credit], run_id="r2")
+    guess = _why(aenv, friend)
+    assert guess.status_label == "Best guess"
+    assert guess.steps[-1] == (
+        "Matched with £50.00 on Amex on 05/10/2026: the same amount, but neither description"
+        " says it's a transfer, so this is only a guess. If it isn't one, choose what it is."
+    )
+    assert _why(aenv, out).steps[-1].endswith(": money moving between your accounts.")
