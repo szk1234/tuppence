@@ -65,6 +65,41 @@ M3 = [
     "03/10/2026 TO 20_11_33 87654321 -250.00",
     "03/10/2026 TO 20.11.33 87654321 -250.00",
 ]
+# Coordinator probe after b8ea4d0: dotted groups, and characters a scan reads for digits.
+DOTTED = [
+    "03/10/2026 TO 20.11.33 87.65.43.21 250.00",
+    "TO 20.11.33 87.65.43.21 250.00",
+    "03/10/2026 TO 87.65.43.21 RENT -250.00",
+    "03/10/2026 PAID 20.11.33 -1.00",
+    "03/10/2026 SORT CODE 20.11.33 -1.00",
+    "03/10/2026 REF 12.34.56.78 -1.00",
+    "03/10/2026 TO 20 11 33 8765 4321 -250.00",
+    "03/10/2026 TO 2 0 1 1 3 3 8 7 6 5 4 3 2 1 10.00",
+]
+OCR = [
+    "TO 2O-11-33 876S4321 10.00",
+    "03/10/2026 TO 2O-11-33 876S4321 10.00",
+    "03/10/2026 FPO J SMITH2O-l1-33 4l234S67 -75.00",
+    "03/10/2026 ACC 8765432I -250.00",
+    "03/10/2026 TO 20-11-33 B7654321 -250.00",
+    "03/10/2026 CARD 4929 I234 S678 9O12 -12.00",
+    "03/10/2026 REF 12345|7890 -12.00",
+    "03/10/2026 TO 2Z-11-33 87654321 -250.00",
+]
+# The rest of the coordinator's probe: each masks already, and stays masked.
+PROBE = [
+    "FPO TO 20-11-33 / 87654321 RENT 250.00", "TO 201133 87654321 250.00",
+    "TO 20 11 33 8765 4321 250.00", "CARD 4242 4242 4242 4242 12.50", "REF 1234567890 BILL 20.00",
+    "IBAN GB29NWBK60161331926819 50.00", "GB29 NWBK 6016 1331 9268 19 50.00",
+    "acct no. 8765-4321 10.00", "a/c 87654321/201133 10.00", "ROLL NO 12345678A 10.00",
+    "MANDATE 00123456 DD 10.00", "ORDER 12345678 AMAZON 1,234,567.89",
+    "PHONE 07700 900123 10.00", "NI QQ123456C 10.00", "TO ２０１１３３ ８７６５４３２１ 10.00",
+]  # fmt: skip
+WORDS = [
+    "02/10/2026 BOOTS 12.50", "02/10/2026 ZARA SO 5.00", "02/10/2026 SOLO BIZ ZOO 3.20",
+    "02/10/2026 O2 MOBILE 15.00", "02/10/2026 BOSS LOOKS 7.00 1,000.00", "05.10.26 SHOP 4.00",
+    "05 10 26 HOMEWARE DIRECT 43.27", "Mon 5 Oct Little Cafe -£3.40", "02/10/2026 SHOP 1234.56",
+]  # fmt: skip
 M3_SECRETS = {
     M3[0]: ["4242"], M3[1]: ["4242"], M3[2]: ["4242"], M3[3]: ["60161331926819", "GB29"],
     M3[4]: ["ALEX"], M3[5]: ["ALEX"], M3[6]: ["ALEX"], M3[7]: ["ALEX"], M3[8]: ["201133"],
@@ -113,14 +148,15 @@ def test_amounts_and_dates_are_never_masked():
         assert out is not None and all(k in out.text for k in kept), out
 
 
-def test_a_group_that_reads_as_a_date_ends_a_run():
-    """ "05 10 26" and "20.11.33" read as dates (a real day and month), so they are left as
-    printed; an account number after one is masked on its own."""
-    plain = sensitive.prepare_outbound("05 10 26 HOMEWARE DIRECT 43.27")
-    assert plain is not None and plain.text == "05 10 26 HOMEWARE DIRECT 43.27"
+def test_a_spaced_or_dotted_date_is_left_alone_only_as_the_lines_own_date():
+    """ "05 10 26" and "05.10.26" at the start of a row are its date. Anywhere else such a group
+    may be a sort code, so it is masked (with any number joined to it)."""
+    for line in ("05 10 26 HOMEWARE DIRECT 43.27", "05.10.26 SHOP 4.00", "05 10 26 400 12.30"):
+        out = sensitive.prepare_outbound(line)
+        assert out is not None and out.text == line
     for line in ("03/10/2026 TO 20.11.33 87654321 -1.00", "03/10/2026 TO 20 11 33 87654321 -1.00"):
         out = sensitive.prepare_outbound(line)
-        assert out is not None and "8765" not in out.text and "[hidden-a]" in out.text
+        assert out is not None and out.text == "03/10/2026 TO [hidden-a] -1.00"
 
 
 def _corpus() -> list[str]:
@@ -128,24 +164,50 @@ def _corpus() -> list[str]:
     from ingest.test_sensitive_parity import EVERY, PLAIN, REGRESSION, WITH_DETAILS
 
     return list(dict.fromkeys([*EVERY, *PLAIN, *REGRESSION, *WITH_DETAILS, *BALANCES, *UNSURE,
-                               *ROWS_STILL_SENT, *N3, *M3]))  # fmt: skip
+                               *ROWS_STILL_SENT, *N3, *M3, *DOTTED, *OCR, *PROBE]))  # fmt: skip
 
 
 def _fuzz(seed: int, count: int = 400) -> list[str]:
     """Rows with a random number joined to a random sort code, glued to random words, in any
     position: the guard holds for each."""
     rnd = random.Random(seed)
-    joins = [" ", " / ", "/", ", ", " - ", "-", ":", "(", "", " REF ", " ACC", "·", "_"]
+    joins = [" ", " / ", "/", ", ", " - ", "-", ":", "(", "", " REF ", " ACC", "·", "_", "."]
     words = ["TO", "FPO", "BGC", "RENT", "J SMITH", "SO", "TFR", "PAYMENT"]
     out = []
     for _ in range(count):
-        sort = rnd.choice(["20-11-33", "201133", "20 11 33", "20.11.33", ""])
+        sort = rnd.choice(["20-11-33", "201133", "20 11 33", "20.11.33", "2O-11-33", ""])
         number = "".join(rnd.choice("0123456789") for _ in range(rnd.randint(6, 16)))
+        if rnd.random() < 0.15:  # a scan's misreads
+            number = number[:2] + number[2:].translate(str.maketrans("051282", "OSlBZI"))
+        elif rnd.random() < 0.15:  # dots between pairs
+            number = ".".join(number[i : i + 2] for i in range(0, len(number), 2))
         parts = [rnd.choice(words), sort, rnd.choice(joins) + number, rnd.choice(words)]
         rnd.shuffle(parts)
         amount = rnd.choice(["-250.00", "1,250.00", "£5", "12.30 1,000.00"])
         out.append(f"0{rnd.randint(1, 9)}/10/2026 {''.join(parts)} {amount}")
     return out
+
+
+@pytest.mark.parametrize("line", DOTTED + OCR + PROBE)
+def test_dotted_and_scanned_numbers_are_masked(line):
+    """Gap 1: a dotted group is left alone only as the line's own date or a well-formed amount.
+    Gap 2: inside a mostly-digit token, O, S, l, I, |, B and Z are read as digits, so a scan's
+    misreading can't split a number into short pieces that go out."""
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is not None, line  # masked, not withheld
+    assert survivors(line, out.text) == [], out.text
+    assert "[hidden-" in out.text
+
+
+def test_ocr_misreads_are_masked_whole():
+    out = sensitive.prepare_outbound("TO 2O-11-33 876S4321 10.00")
+    assert out is not None and out.text == "TO [hidden-a] 10.00"
+
+
+@pytest.mark.parametrize("line", WORDS)
+def test_words_dates_and_amounts_are_left_as_printed(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is not None and out.text == line
 
 
 @pytest.mark.parametrize("source", ["corpus", "fuzz"])

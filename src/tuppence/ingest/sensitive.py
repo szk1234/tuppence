@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Sequence
+from datetime import date
 from functools import lru_cache
 
 from tuppence.ingest.models import MaskedLine
@@ -266,6 +267,7 @@ def _classify_seen(seen: str, names: Sequence[str]) -> set[str]:
     found = {name for name, pattern in (*LABELS.items(), *VALUES.items()) if pattern.search(seen)}
     if _spelled_sort_codes(seen):
         found.add("sort_code")
+    found |= {name for name, _, _ in _number_matches(seen)}
     if names and (pattern := _name_pattern(tuple(names))) is not None and pattern.search(seen):
         found.add("holder_name")
     return found
@@ -347,15 +349,21 @@ def _value_token(token: str) -> bool:
     )
 
 
+def _plausible(day: date | None) -> bool:
+    """A date a statement may print: not "24.04.3320", which is digits that happen to parse."""
+    return day is not None and 1950 <= day.year <= 2099
+
+
 def _kept(text: str) -> list[bool]:
     keep = [False] * len(text)
     for match in _KEEP_MONEY.finditer(text):
         keep[match.start() : match.end()] = [True] * (match.end() - match.start())
     for match in _KEEP_DATE.finditer(text):
         value = match.group(0)
-        # dd-mm-yy or dd.mm.yy may be a sort code: only a date that reads as one is kept
-        numeric = "/" not in value and not re.search(r"[A-Za-z]", value)
-        if numeric and parse_date(value) is None:
+        # dd-mm-yy or dd.mm.yy may be a sort code, and "11-33/66" is no date: only a numeric
+        # date that reads as one is kept
+        numeric = not re.search(r"[A-Za-z]", value)
+        if numeric and not _plausible(parse_date(value)):
             continue
         keep[match.start() : match.end()] = [True] * (match.end() - match.start())
     return keep
@@ -385,27 +393,86 @@ def _tokens_after(text: str, start: int, keep: Sequence[bool], name_words: bool)
 #
 # Inside a line that is sent, every run of six or more digits that isn't an amount or a date is
 # masked: an account, card, roll or reference number, or a sort code and account number
-# together, however they are joined (one space, hyphen, slash, middle dot or underscore between
-# groups) and whatever is glued to them ("ACCNO87654321", "J SMITH20-11-33"). A date printed
-# with spaces or dots ("05 10 26", "20.11.33": a real day and month) is a date, so it ends a run.
+# together, however they are joined (one space, hyphen, slash, dot, middle dot or underscore
+# between groups) and whatever is glued to them ("ACCNO87654321", "J SMITH20-11-33").
+#
+# Left alone: a well-formed amount (one point, two decimals, comma grouping only: 12.30,
+# 1234.56, 1,234.56; or whole pounds after £), a date a pattern reads (02/10/2026, 05.10.2026),
+# and a date printed with spaces or dots ("05 10 26", "05.10.26") only where it is the line's
+# own date, at its start, with no number of four or more digits joined after it. Anywhere else
+# such a group may be a sort code ("TO 20.11.33 87.65.43.21").
+#
+# A scan may read a digit as a letter (0 as O, 5 as S, 1 as l, I or |, 8 as B, 2 as Z). Inside a
+# token that is at least half digits those letters are read as digits for finding numbers, so
+# "2O-11-33 876S4321" is masked whole; a word ("BOOTS", "SO", "ZARA") is never read so.
 
 LONG_RUN = 6
-_RUN_JOINS = frozenset(" -/·_")
-_SPACED_DATE = re.compile(r"(?<![\d.,:/£$])(\d{1,2})([ .])(\d{1,2})\2(\d{4}|\d{2})(?![\d,:/]|\.\d)")
-_PENCE = re.compile(r"(?<=\d\.)\d{2}(?![\d.])")  # "56" of an amount printed "1234.56"
+_RUN_JOINS = frozenset(" -/.·_")
+_DAY_NAME = r"(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+"
+_LEADING_DATE = re.compile(
+    rf"^\s*(?:{_DAY_NAME})?(\d{{1,2}})([ .])(\d{{1,2}})\2(\d{{4}}|\d{{2}})(?![\d,:/]|\.\d)",
+    re.IGNORECASE,
+)
+_WELL_FORMED = re.compile(r"(?<![\d,])(?<!\d\.)(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d|[.,]\d)")
+_LOOKALIKES = frozenset("OoSslI|BZz")
+_AS_DIGITS = str.maketrans("OoSslI|BZz", "0055111822")
+_TOKEN = re.compile(r"[A-Za-z0-9|]+")
+_LETTERS = re.compile(r"[A-Za-z|]+")
 
 
-def _long_runs(seen: str, keep: Sequence[bool]) -> list[tuple[int, int]]:
-    """Spans of the runs of six or more digits in `seen` (see above). One pass over the line."""
-    size = len(seen)
-    part = [ch.isdigit() and not keep[k] for k, ch in enumerate(seen)]
-    for match in _SPACED_DATE.finditer(seen):
-        if 1 <= int(match.group(1)) <= 31 and 1 <= int(match.group(3)) <= 12:
-            for k in range(match.start(), match.end()):
-                part[k] = False
-    for match in _PENCE.finditer(seen):
+def _read_token(token: str) -> str:
+    if not any(ch.isdigit() for ch in token):
+        return token  # a word stays a word
+    out = list(token)
+    words = [
+        m.span()
+        for m in _LETTERS.finditer(token)
+        if len(m.group(0)) >= 2 and any(ch not in _LOOKALIKES for ch in m.group(0))
+    ]
+    at = 0
+    for start, end in [*words, (len(token), len(token))]:
+        piece = token[at:start]
+        if piece and 2 * sum(ch.isdigit() for ch in piece) >= len(piece):
+            out[at:start] = piece.translate(_AS_DIGITS)
+        at = end
+    return "".join(out)
+
+
+# A look-alike next to a digit: without one, no reading changes anything.
+_NEXT_TO_DIGIT = re.compile(r"\d[OoSslI|BZz]|[OoSslI|BZz]\d")
+
+
+@lru_cache(maxsize=16)
+def _digits_read(seen: str) -> str:
+    """`seen` with the letters a scan reads for digits read as digits, inside mostly-digit
+    pieces of a token only (see above). Every position is kept."""
+    if _NEXT_TO_DIGIT.search(seen) is None:
+        return seen
+    return _TOKEN.sub(lambda m: _read_token(m.group(0)), seen)
+
+
+def _long_runs(seen: str) -> list[tuple[int, int]]:
+    """Spans of the runs of six or more digits in `seen` (see above), read with look-alikes as
+    digits. One pass over the line."""
+    view = _digits_read(seen)
+    keep = _kept(view)
+    size = len(view)
+    part = [ch.isdigit() and not keep[k] for k, ch in enumerate(view)]
+    for match in _WELL_FORMED.finditer(view):
         for k in range(match.start(), match.end()):
             part[k] = False
+    lead = _LEADING_DATE.match(view)
+    if lead and 1 <= int(lead.group(1)) <= 31 and 1 <= int(lead.group(3)) <= 12:
+        after = lead.end()
+        k, digits_after = after, 0
+        while k + 1 < size and view[k] in _RUN_JOINS and part[k + 1]:  # a number joined after
+            k += 1
+            while k < size and part[k]:
+                digits_after += 1
+                k += 1
+        if digits_after < 4:  # the line's own date, not a sort code before an account number
+            for k in range(lead.start(1), after):
+                part[k] = False
     spans: list[tuple[int, int]] = []
     k = 0
     while k < size:
@@ -414,21 +481,35 @@ def _long_runs(seen: str, keep: Sequence[bool]) -> list[tuple[int, int]]:
             continue
         start = end = k
         while end < size and (
-            part[end] or (seen[end] in _RUN_JOINS and end + 1 < size and part[end + 1])
+            part[end] or (view[end] in _RUN_JOINS and end + 1 < size and part[end + 1])
         ):
             end += 1
         k = end
-        if sum(1 for j in range(start, end) if seen[j].isdigit()) < LONG_RUN:
+        if sum(1 for j in range(start, end) if part[j]) < LONG_RUN:
             continue
-        if seen[end : end + 1] == "." and _PENCE.match(seen, end + 1):
-            continue  # the pounds of an amount printed without commas ("123456.78")
         before = start - 1
-        while before >= 0 and seen[before].isspace():
+        while before >= 0 and view[before].isspace():
             before -= 1
-        if before >= 0 and seen[before] in "£$€":
+        if before >= 0 and view[before] in "£$€":
             continue  # whole pounds after a currency sign
         spans.append((start, end))
     return spans
+
+
+_NUMBER_CLASSES = ("account_number", "sort_code", "card_number", "card_ending")
+
+
+def _number_matches(seen: str) -> list[tuple[str, int, int]]:
+    """The number classes found once look-alikes are read as digits (when that changes the
+    line): a sort code or card number a scan misread is still one."""
+    view = _digits_read(seen)
+    if view == seen:
+        return []
+    found = [
+        (name, m.start(), m.end()) for name in _NUMBER_CLASSES for m in VALUES[name].finditer(view)
+    ]
+    found += [("sort_code", start, end) for start, end in _spelled_sort_codes(view)]
+    return found
 
 
 class _Unmaskable(Exception):
@@ -480,6 +561,13 @@ def _detail_spans(seen: str, keep: Sequence[bool], names: Sequence[str]) -> list
                 end = _tokens_after(seen, match.start(), keep, name_words=True)
             add(start, end)
     for start, end in _spelled_sort_codes(seen):
+        add(start, end)
+    for name, start, end in _number_matches(seen):  # a scan's misread digits
+        while start < end and (keep[start] or seen[start].isspace()):
+            start += 1
+        if name in ("account_number", "card_ending"):  # keep the label ("A/C", "ending")
+            start = next((k for k in range(start, end) if seen[k] in _LOOKALIKES
+                          or seen[k].isdigit() or seen[k] in _MASK_CHARS), start)  # fmt: skip
         add(start, end)
     if names and (pattern := _name_pattern(tuple(names))) is not None:
         for match in pattern.finditer(seen):
@@ -550,7 +638,7 @@ def _mask(text: str, names: Sequence[str]) -> MaskedLine | None:
     normal, seen = _seen(text)
     found = _classify_seen(seen, names)
     keep = _kept(seen)
-    numbers = _long_runs(seen, keep)
+    numbers = _long_runs(seen)
     if not found and not numbers:
         return MaskedLine(text=normal)
     if "balance_line" in found or _is_holder(normal, names):
@@ -630,5 +718,5 @@ def _clean(masked: str, names: Sequence[str]) -> bool:
     return (
         not (classify(masked, names=names) - LABEL_CLASSES)
         and not unmasked_label(masked)
-        and not _long_runs(seen, _kept(seen))
+        and not _long_runs(seen)
     )

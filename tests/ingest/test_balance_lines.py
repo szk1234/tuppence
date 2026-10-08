@@ -186,7 +186,7 @@ def test_the_guard_catches_a_partial_mask(old_textprep, monkeypatch):
     from tuppence.ingest import sensitive
 
     assert _sent_now(old_textprep, N3) == []
-    monkeypatch.setattr(sensitive, "_long_runs", lambda seen, keep: [])
+    monkeypatch.setattr(sensitive, "_long_runs", lambda seen: [])
     caught = _sent_now(old_textprep, N3)
     for line in (
         "03/10/2026 TO 20-11-33 / 87654321 RENT -250.00",
