@@ -109,16 +109,27 @@ def plan_dedupe(
         else:
             pending.append(i)
     lo, hi = window
-    candidates = [e for e in existing if lo <= e.date <= hi]
+    # Stored rows inside the window by amount, then by day: each new row looks only at rows of
+    # its own amount a few days either side (M10: this runs inside the import's write lock).
+    by_amount: dict[int, dict[date, list[tuple[int, Existing]]]] = {}
+    for order, e in enumerate(existing):
+        if lo <= e.date <= hi:
+            by_amount.setdefault(e.amount_pence, {}).setdefault(e.date, []).append((order, e))
     for max_gap in (0, SOFT_DAYS):
         for i in list(pending):
             row = rows[i]
             if not lo <= row.date <= hi:
                 continue
-            for e in sorted(candidates, key=lambda e: abs((e.date - row.date).days)):
-                if e.id in used or e.amount_pence != row.amount_pence:
-                    continue
-                if abs(e.date - row.date) > timedelta(days=max_gap):
+            days = by_amount.get(row.amount_pence)
+            if not days:
+                continue
+            near = [
+                (abs(gap), order, e)
+                for gap in range(-max_gap, max_gap + 1)
+                for order, e in days.get(row.date + timedelta(days=gap), ())
+            ]
+            for _, _, e in sorted(near, key=lambda item: (item[0], item[1])):
+                if e.id in used:
                     continue
                 if similar_descriptions(e.raw_description, row.raw_description):
                     plan.similar[i] = e.id

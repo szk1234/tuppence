@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from tuppence.ingest.dedupe import (
     Existing,
     assign_fingerprints,
@@ -103,3 +105,110 @@ def test_each_stored_row_matches_at_most_one_new_row():
         window=(date(2026, 10, 1), date(2026, 10, 31)),
     )
     assert plan.similar == {0: "t_0"} and plan.insert == [1]
+
+
+def _reference_plan(rows, fingerprints, existing, *, window):
+    """The earlier, slow plan_dedupe: the results must not change."""
+    from datetime import timedelta
+
+    from tuppence.ingest.dedupe import SOFT_DAYS, DedupePlan, similar_descriptions
+
+    plan = DedupePlan()
+    stored = {e.fingerprint: e for e in existing}
+    used, pending = set(), []
+    for i, fp in enumerate(fingerprints):
+        if fp in stored:
+            plan.exact.append(i)
+            used.add(stored[fp].id)
+        else:
+            pending.append(i)
+    lo, hi = window
+    candidates = [e for e in existing if lo <= e.date <= hi]
+    for max_gap in (0, SOFT_DAYS):
+        for i in list(pending):
+            row = rows[i]
+            if not lo <= row.date <= hi:
+                continue
+            for e in sorted(candidates, key=lambda e: abs((e.date - row.date).days)):
+                if e.id in used or e.amount_pence != row.amount_pence:
+                    continue
+                if abs(e.date - row.date) > timedelta(days=max_gap):
+                    continue
+                if similar_descriptions(e.raw_description, row.raw_description):
+                    plan.similar[i] = e.id
+                    used.add(e.id)
+                    pending.remove(i)
+                    break
+    plan.insert = pending
+    return plan
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_the_fast_plan_matches_the_simple_one(seed):
+    import random
+    from datetime import date, timedelta
+
+    from tuppence.ingest.dedupe import Existing, assign_fingerprints, plan_dedupe
+    from tuppence.ingest.models import ParsedRow
+
+    rnd = random.Random(seed)
+    start = date(2026, 10, 1)
+    words = ["SHOP", "CAFE", "RAIL", "WATER", "PAYROLL"]
+    rows = [
+        ParsedRow(
+            ref=f"L{i}",
+            date=start + timedelta(days=rnd.randrange(30)),
+            amount_pence=-rnd.choice([100, 250, 500]),
+            amount_text="1",
+            raw_description=f"{rnd.choice(words)} {rnd.choice(words)}",
+        )
+        for i in range(40)
+    ]
+    existing = [
+        Existing(
+            f"t{i}",
+            start + timedelta(days=rnd.randrange(-3, 33)),
+            -rnd.choice([100, 250, 500]),
+            f"{rnd.choice(words)} LTD",
+            f"fp{i}",
+        )
+        for i in range(40)
+    ]
+    fps = [fp for fp, _ in assign_fingerprints(rows, "a")]
+    window = (start, start + timedelta(days=30))
+    assert plan_dedupe(rows, fps, existing, window=window) == _reference_plan(
+        rows, fps, existing, window=window
+    )
+
+
+def test_planning_thousands_of_overlapping_rows_is_quick():
+    """M10: it runs inside the import's write lock."""
+    import time
+    from datetime import date, timedelta
+
+    from tuppence.ingest.dedupe import Existing, assign_fingerprints, plan_dedupe
+    from tuppence.ingest.models import ParsedRow
+
+    n = 4000
+    start = date(2026, 1, 1)
+    rows = [
+        ParsedRow(
+            ref=f"L{i}",
+            date=start + timedelta(days=i * 365 // n),
+            amount_pence=-(100 + i),
+            amount_text="1",
+            raw_description=f"SHOP {i}",
+        )
+        for i in range(n)
+    ]
+    existing = [
+        Existing(
+            f"t{i}", start + timedelta(days=i * 365 // n), -(100 + i), f"SHOP {i} LONDON", f"fp{i}"
+        )
+        for i in range(n)
+    ]
+    fps = [fp for fp, _ in assign_fingerprints(rows, "a")]
+    began = time.perf_counter()
+    plan = plan_dedupe(rows, fps, existing, window=(start, start + timedelta(days=365)))
+    assert time.perf_counter() - began < 1.0
+    assert len(plan.similar) == n
