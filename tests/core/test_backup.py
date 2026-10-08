@@ -130,3 +130,31 @@ def test_a_failed_copy_leaves_no_temporary_file(tmp_path, monkeypatch):
     with pytest.raises(sqlite3.OperationalError):
         backup._copy(db.path, dest / "daily-2026-10-08.db")
     assert list(dest.iterdir()) == []
+
+
+def test_temporary_files_left_by_a_stopped_backup_are_removed(tmp_path):
+    """A backup cut short by a hard stop leaves its temporary file; the next backup removes
+    such files once they are old (a fresh one may be another backup still copying), and
+    nothing else."""
+    import os
+    import time
+
+    db = make_db(tmp_path)
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    old = time.time() - 3600
+    stale = [
+        dest / "daily-2026-10-07.db.0123456789ab.tmp",
+        dest / "tuppence-pre-0010_knowledge-20261007T101010Z.db.ba9876543210.tmp",
+        dest / "daily-2026-10-06.tmp",  # the fixed name earlier versions used
+    ]
+    fresh = dest / "daily-2026-10-08.db.00112233aabb.tmp"
+    other = [dest / "notes.tmp", dest / "daily-2026-10-01.db"]
+    for path in [*stale, fresh, *other]:
+        path.write_text("x")
+    for path in [*stale, *other]:
+        os.utime(path, (old, old))
+    daily_backup(db.path, dest, date(2026, 10, 8))
+    left = {p.name for p in dest.iterdir()}
+    assert not any(p.name in left for p in stale)
+    assert {fresh.name, "notes.tmp", "daily-2026-10-01.db", "daily-2026-10-08.db"} == left
