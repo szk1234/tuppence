@@ -403,7 +403,12 @@ def test_the_reviewers_signed_statements_import_every_row(ingest_env, middle, de
 
 BANKS = ["Example Bank plc", "Northwind Building Society", "Example Card Services"]
 TITLES = ["Current account statement", "Card statement Page 1 of 2", "Statement of account"]
-HOLDERS = ["MR ALEX EXAMPLE", "Alex Example", "MRS P EXAMPLE", "MR ALEX EXAMPLE & MRS PAT EXAMPLE"]
+# The holders' lines, each with the printed forms of the names on it that rows may carry.
+ALEX = ["Alex", "ALEX", "ALEXEXAMPLE", "A EXAMPLE", "EXAMPLE A"]
+PAT = ["PAT EXAMPLE", "P EXAMPLE", "EXAMPLE P"]
+HOLDERS = {"MR ALEX EXAMPLE": ALEX, "Alex Example": ALEX, "MRS P EXAMPLE": PAT,
+           "MR ALEX EXAMPLE & MRS PAT EXAMPLE": [*ALEX, *PAT]}  # fmt: skip
+HOUSEHOLDS = {(): [], ("Alex Example",): ALEX, ("Alex",): []}  # a first name alone masks nothing
 ADDRESSES = [
     ["1 Example Road", "Exampletown", "EX1 2MP"],
     ["Flat 3", "Example House", "Exampletown"],
@@ -434,6 +439,9 @@ DESCRIPTIONS = [
     "BALANCE TRANSFER FEE", "INTEREST", "STATEMENT CREDIT", "DD CITY WATER", "VIS TESCO HIGH ST",
     "CR SALARY ACME", "CASH PAID IN AT BRANCH", "CREDIT", "PAYPAL *EBAY 12345", "7-ELEVEN",
     "3 MOBILE", "TFL TRAVEL NOTTING HILL", "ST ALBANS CATHEDRAL SHOP", "MILL LANE GARAGE",
+    # a holder's own name in a row (re-review 4 I1)
+    "FASTER PAYMENT FROM ALEX EXAMPLE", "TFR TO EXAMPLE A", "STANDING ORDER A EXAMPLE",
+    "PAYPAL *ALEXEXAMPLE", "STANDING ORDER P EXAMPLE",
 ]  # fmt: skip
 CONTINUATIONS = ["MR J SMITH", "NOTTING HILL GATE", "ST ALBANS", "Alex Example",
                  "REF RENT OCTOBER", "LONDON", "CARD PURCHASE", "Rose Court", "FINSBURY PARK",
@@ -443,7 +451,6 @@ BALANCE_ROWS = ["BALANCE BROUGHT FORWARD {b}", "{date} BALANCE B/F {b}",
 SECRETS = ["12345678", "87654321", "20-11-33", "07-12-34", "4242", "GB29", "EX1 2MP", "EX1 1AA",
            "Example Road", "Example House", "Rose Cottage", "Mill Lane", "Exampletown",
            "Littlebury", "Old Rectory", "Flat 3", "Apt 2B", "PAT EXAMPLE"]  # fmt: skip
-NAME_SECRETS = ["Alex", "ALEX"]  # the household's name, when the app knows it
 
 
 def _shows(secret: str, text: str) -> bool:
@@ -464,14 +471,27 @@ def _date(rnd: random.Random, day: int) -> str:
 
 
 def _statement(rnd: random.Random) -> tuple[list[str], tuple[str, ...]]:
-    names: tuple[str, ...] = rnd.choice([(), ("Alex Example",)])
+    lines, names, _ = _statement_and_names(rnd)
+    return lines, names
+
+
+def _statement_and_names(rnd: random.Random) -> tuple[list[str], tuple[str, ...], list[str]]:
+    """A statement, the household's names, and the printed forms of every name it shows (the
+    household's own, and the holders it prints, wherever it prints them)."""
+    names: tuple[str, ...] = rnd.choice(list(HOUSEHOLDS))
+    secrets = list(HOUSEHOLDS[names])
     header = [rnd.choice(BANKS)]
     if rnd.random() < 0.6:
         header.append(rnd.choice(TITLES))
+    holder: list[str] = []
     if rnd.random() < 0.7:
-        header.append(rnd.choice(HOLDERS))
-    if rnd.random() < 0.7:
-        header += rnd.choice(ADDRESSES)
+        holder.append(rnd.choice(list(HOLDERS)))
+        secrets += HOLDERS[holder[0]]
+    if rnd.random() < 0.7 or holder:
+        holder += rnd.choice(ADDRESSES)
+    after_rows = rnd.random() < 0.3  # the holder and address after the first rows (I1)
+    if not after_rows:
+        header += holder
     if rnd.random() < 0.6:
         header.append(rnd.choice(ACCOUNTS))
     header.append(rnd.choice(PERIODS))
@@ -504,10 +524,12 @@ def _statement(rnd: random.Random) -> tuple[list[str], tuple[str, ...]]:
             rows.append(rnd.choice(BALANCE_ROWS).format(date=_date(rnd, day), b="1,000.00"))
         if rnd.random() < 0.04:
             rows += rnd.choice(ADDRESSES)
+    if after_rows:
+        rows[2:2] = holder
     footers = ["Closing balance £2,252.32", "Nationwide Building Society. Synthetic.",
                "SYNTHETIC TEST STATEMENT - NOT A REAL DOCUMENT"]  # fmt: skip
     footer = rnd.sample(footers, rnd.randint(0, 2))
-    return [*header, *rows, *footer], names
+    return [*header, *rows, *footer], names, secrets
 
 
 SHOT_ROWS = ["Little Cafe", "Greenbasket Stores", "New Balance London", "Northline Rail",
@@ -541,7 +563,7 @@ def _check(seed: int, count: int) -> list[tuple[str, str]]:
     rnd = random.Random(seed)
     found: list[tuple[str, str]] = []
     for _ in range(count):
-        lines, names = _statement(rnd)
+        lines, names, named = _statement_and_names(rnd)
         cut = rnd.randint(len(lines) // 2, len(lines))
         docs = {
             "text": text_document("\n".join(lines), sha256="x", names=names),
@@ -552,7 +574,7 @@ def _check(seed: int, count: int) -> list[tuple[str, str]]:
             found += [(path, v) for v in violations(doc)]
             if path != "image":
                 sent = " ".join(sent_lines(doc)[r].text for r in doc.data_refs)
-                secrets = [*SECRETS, *(NAME_SECRETS if names else [])]
+                secrets = [*SECRETS, *named]  # a printed name, with no names set too (I1)
                 found += [(path, f"sent: {s}") for s in secrets if _shows(s, sent)]
     return found
 
@@ -597,3 +619,12 @@ def test_the_guard_can_fail(rule, monkeypatch):
     monkeypatch.setattr(textprep, name, rogue)
     monkeypatch.setattr(textprep, "_accounted", lambda split, *args, **kwargs: split)
     assert [v for v in _check(100, 25) if not v[1].startswith("sent:")]
+
+
+def test_the_name_check_runs_with_no_household_names(monkeypatch):
+    """Re-review 4 I1, the control: with the holders' names read only above the table start
+    again (a11567f), statements that print the holder after their first rows send the name,
+    and the property test sees it although no household names are set."""
+    monkeypatch.setattr(textprep, "_printed_holder_lines", lambda texts, addresses: set())
+    sent = [v for v in _check(0, 60) if v[1].startswith("sent:")]
+    assert any(name in v[1] for v in sent for name in ("ALEX", "A EXAMPLE", "EXAMPLE A"))

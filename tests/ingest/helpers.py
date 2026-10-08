@@ -139,3 +139,41 @@ def history_missing(base: str) -> None:
     if os.environ.get("CI") == "true":
         pytest.fail(f"{message}: CI must check out with fetch-depth 0 to run this guard")
     pytest.skip(message)
+
+
+def old_text_prep(base: str):
+    """`textprep` and the `sensitive` it imports as they were at commit `base`, read with `git
+    show` (a differential guard's other side). Fails in CI and skips elsewhere when the history
+    is missing (`history_missing`)."""
+    import importlib.util
+    import subprocess
+    import sys
+    import types
+
+    root = Path(__file__).resolve().parents[2]
+
+    def source(path: str) -> str | None:
+        try:
+            out = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root, capture_output=True,
+                                 text=True, timeout=60, check=True)  # fmt: skip
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return out.stdout
+
+    sensitive_source = source("src/tuppence/ingest/sensitive.py")
+    textprep_source = source("src/tuppence/ingest/textprep.py")
+    if sensitive_source is None or textprep_source is None:
+        history_missing(base)
+    assert sensitive_source is not None and textprep_source is not None
+    old_sensitive = types.ModuleType(f"sensitive_{base}")
+    exec(compile(sensitive_source, f"sensitive_{base}.py", "exec"), old_sensitive.__dict__)  # noqa: S102 - the repo's own earlier code
+    sys.modules[f"sensitive_{base}"] = old_sensitive
+    code = textprep_source.replace(
+        "from tuppence.ingest import sensitive", f"import sensitive_{base} as sensitive"
+    )
+    spec = importlib.util.spec_from_loader(f"textprep_{base}", loader=None)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[f"textprep_{base}"] = module  # its dataclasses look their module up
+    exec(compile(code, f"textprep_{base}.py", "exec"), module.__dict__)  # noqa: S102 - as above
+    return module

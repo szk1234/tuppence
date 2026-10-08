@@ -700,6 +700,28 @@ def header_names(texts: Sequence[str], rows: Sequence[int]) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def _printed_holder_lines(texts: Sequence[str], addresses: set[int]) -> set[int]:
+    """Lines a holder's printed name may be on, wherever they are (R-M3-26): a titled name or a
+    "Statement for" line, and the lines of an address block that is an address beyond doubt (a
+    postcode, a house number and street, or three lines or more) with no street or building
+    word on them. A merchant or a place printed on its own line ("COSTA COFFEE" over "NOTTING
+    HILL") is never read as a name."""
+    holder = sensitive.VALUES["holder_name"]
+    postcode, address = sensitive.VALUES["postcode"], sensitive.VALUES["address"]
+    found = {i for i, text in enumerate(texts) if holder.search(text)}
+    block: list[int] = []
+    for i in [*sorted(addresses), -2]:
+        if block and i != block[-1] + 1:
+            sure = len(block) >= 3 or any(
+                postcode.search(texts[k]) or address.search(texts[k]) for k in block
+            )
+            if sure:
+                found.update(k for k in block if not _ADDRESS_WORD.search(texts[k]))
+            block = []
+        block.append(i)
+    return found
+
+
 def _plain_short(text: str) -> bool:
     """A short line with no amount, no date and no column headings: an address line may be."""
     return (
@@ -1075,8 +1097,12 @@ def _split_preamble(
     for line in lines[: first if first is not None else 0]:
         if key := _name_key(line.text):
             known_names.add(key)
-    # The holders printed above the table are masked in its rows like the household's names.
-    printed = header_names(texts, [i for i in range(first or 0) if i in addresses or i < 12])
+    # The holders printed on the statement are masked in its rows like the household's names:
+    # read above the table and, wherever they are printed, from a holder's line and an address
+    # block (R-M3-26: a page without a heading row may start its table above them).
+    above = {i for i in range(first or 0) if i in addresses or i < 12}
+    printed = header_names(texts, sorted(above | _printed_holder_lines(texts, addresses)))
+    known_names |= {k for n in printed if (k := _name_key(n))}
     if printed:
         names = [*names, *printed]
         sensitive_at = [is_sensitive(t, names=names) for t in texts]
@@ -1193,6 +1219,11 @@ def _split_screenshot(
     names = [*names, *header_names(texts, range(min(first, len(texts))))]
     holders = ["holder_name" in sensitive.classify(t, names=names) for t in texts]
     addresses = _address_blocks(texts, holders, single=False)  # wherever they are (rule (b))
+    printed = header_names(texts, sorted(_printed_holder_lines(texts, addresses)))
+    if extra := [n for n in printed if n not in names]:  # printed below the first row (R-M3-26)
+        names = [*names, *extra]
+        holders = ["holder_name" in sensitive.classify(t, names=names) for t in texts]
+        addresses = _address_blocks(texts, holders, single=False)
     out = _Split()
     for i, line in enumerate(lines):
         tick(i)
