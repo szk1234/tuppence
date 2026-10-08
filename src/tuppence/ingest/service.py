@@ -34,7 +34,7 @@ from tuppence.ingest.check import balance_verified, check_rows, check_statement
 from tuppence.ingest.files import StatementFiles
 from tuppence.ingest.handoff import ANALYSIS_JOB
 from tuppence.ingest.models import CheckLevel, Document, ParsedRow, ParsedStatement, SkippedLine
-from tuppence.ingest.parse import held_back_message
+from tuppence.ingest.parse import held_back_message, too_long_message
 from tuppence.ingest.pipeline import READ_FAILED, IngestGraph, RunContext, hand_off
 from tuppence.ingest.registry import CsvLayout
 from tuppence.ingest.sniff import UploadRejected, check_zip, sniff
@@ -80,6 +80,7 @@ def recheck(doc: Document, parsed: ParsedStatement, level: CheckLevel) -> list[s
     reported, as the parse step did."""
     used = {r.ref for r in parsed.rows} | {s.ref for s in parsed.skipped}
     decided = [r for r in doc.held_amount_refs if r in used]
+    long = set(doc.too_long_refs)
     errors = check_rows(
         doc.lines,
         all_lines=doc.lines,
@@ -89,8 +90,11 @@ def recheck(doc: Document, parsed: ParsedStatement, level: CheckLevel) -> list[s
         level=level,
     )
     errors += check_statement(parsed, level=level, dates=True)
-    if held := held_back_message(doc, len(doc.held_amount_refs) - len(decided)):
+    held_left = [r for r in doc.held_amount_refs if r not in used and r not in long]
+    if held := held_back_message(doc, len(held_left)):
         errors.append(held)
+    if too_long := too_long_message(doc, sum(1 for r in long if r not in used)):
+        errors.append(too_long)
     return list(dict.fromkeys(errors))
 
 

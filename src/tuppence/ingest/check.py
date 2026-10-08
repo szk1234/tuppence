@@ -31,8 +31,9 @@ MAX_PERIOD_DAYS = 400
 DATE_SLACK = timedelta(days=3)
 _PAGE = re.compile(r"P(\d+)L\d+")
 _LINE_REF = re.compile(r"L(\d+)")
-_CREDIT_MARKER = re.compile(r"[\s,;|]*CR\b", re.IGNORECASE)
-_DEBIT_MARKER = re.compile(r"[\s,;|]*DR\b", re.IGNORECASE)
+# Matched right after a figure; a run of separators is tried from its start only.
+_CREDIT_MARKER = re.compile(r"(?<![\s,;|])[\s,;|]*CR\b", re.IGNORECASE)
+_DEBIT_MARKER = re.compile(r"(?<![\s,;|])[\s,;|]*DR\b", re.IGNORECASE)
 
 
 def base_ref(ref: str) -> str:

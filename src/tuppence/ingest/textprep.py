@@ -29,6 +29,27 @@ class UnreadableFile(UserFacing, ValueError):
     """A statement file we can't turn into lines."""
 
 
+# A statement line is never this long. A longer one isn't read (no pattern runs over it): it is
+# kept cut short, left out of what is sent, and reported so the person can say what it is.
+MAX_LINE_CHARS = 10_000
+Deadline = Callable[[], object]  # raises once the extraction's time is up
+
+
+def _no_deadline() -> None:
+    return None
+
+
+def _ticking(deadline: Deadline | None, every: int = 256) -> Callable[[int], None]:
+    """A per-line hook that calls `deadline` every `every` lines."""
+    check = deadline or _no_deadline
+
+    def tick(i: int) -> None:
+        if i % every == 0:
+            check()
+
+    return tick
+
+
 _DELIMITERS = (",", ";", "\t", "|")
 _HEADING_WORDS = (
     "date",
@@ -60,7 +81,12 @@ _MONTH = (
 )
 _NUMERIC_DATE = re.compile(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b")
 _NAMED_DATE = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{_MONTH}\b\.?", re.IGNORECASE)
-_MONEY_TOKEN = re.compile(r"(?<![\w.])[-−]?[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d)")
+# A figure with pence. It never starts inside a run of thousands groups ("1,000,000"): a start
+# right after "digit," is allowed only when it isn't itself a 3-digit group followed by another
+# comma, so each run is tried once and a long run of groups stays fast.
+_MONEY_TOKEN = re.compile(
+    r"(?<![\w.])(?:(?<!\d,)|(?!\d{3},))[-−]?[£$]?\d{1,3}(?:,\d{3})*\.\d{2}(?!\d)"
+)
 # "Opening balance 1,000.00", "Money in 1,200.00 Money out 800.00": figures, not rows.
 _SUMMARY = re.compile(
     r"\b(?:opening|closing|start|end)\s+balance\b|\bmoney\s+(?:in|out)\b"
@@ -92,7 +118,7 @@ def sniff_delimiter(text: str) -> str:
     return best
 
 
-def csv_records(text: str) -> list[tuple[int, str, list[str]]]:
+def csv_records(text: str, *, deadline: Deadline | None = None) -> list[tuple[int, str, list[str]]]:
     """(first physical line number, raw text, cells) per CSV record.
 
     A quoted field may contain a line break; the record keeps the number of its
@@ -103,8 +129,10 @@ def csv_records(text: str) -> list[tuple[int, str, list[str]]]:
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     out: list[tuple[int, str, list[str]]] = []
     start = 1
+    tick = _ticking(deadline)
     try:
         for cells in reader:
+            tick(len(out))
             end = reader.line_num
             raw = " ".join(physical[start - 1 : end])
             out.append((start, raw, [c.strip() for c in cells]))
@@ -173,9 +201,14 @@ def table_document(
 
 
 def csv_document(
-    data: bytes, *, sha256: str, known: Callable[[Sequence[str]], bool] | None = None
+    data: bytes,
+    *,
+    sha256: str,
+    known: Callable[[Sequence[str]], bool] | None = None,
+    deadline: Deadline | None = None,
 ) -> Document:
-    return table_document(csv_records(decode_text(data)), sha256=sha256, kind="csv", known=known)
+    records = csv_records(decode_text(data), deadline=deadline)
+    return table_document(records, sha256=sha256, kind="csv", known=known)
 
 
 def _has_date(text: str) -> bool:
@@ -346,13 +379,24 @@ def split_preamble(
 
 
 def _split_preamble(
-    lines: Sequence[Line], *, names: Sequence[str] = ()
+    lines: Sequence[Line],
+    *,
+    names: Sequence[str] = (),
+    too_long: frozenset[str] = frozenset(),
+    deadline: Deadline | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """`split_preamble`, plus the held-back figures past the first anchor that may be a
     row's amount: in a balance block (see `_unsure`), or a line with an amount in a later
-    page's header, which may be a row printed above the page's first anchor."""
+    page's header, which may be a row printed above the page's first anchor. Lines in
+    `too_long` are withheld and reported without being read."""
+    if too_long:  # read as if empty; added back, withheld and reported, at the end
+        kept = [line for line in lines if line.ref not in too_long]
+        withheld, data, reported = _split_preamble(kept, names=names, deadline=deadline)
+        return [*withheld, *too_long], data, [*reported, *too_long]
+    tick = _ticking(deadline)
     counts: dict[str, int] = {}
-    for line in lines:
+    for i, line in enumerate(lines):
+        tick(i)
         counts[_normal(line.text)] = counts.get(_normal(line.text), 0) + 1
     first = next((i for i, ln in enumerate(lines) if is_anchor(ln.text)), None)
     edge = _page_edge_repeats(lines)
@@ -368,6 +412,7 @@ def _split_preamble(
     data: list[str] = []
     unsure: set[int] = set()
     for i, line in enumerate(lines):
+        tick(i)
         text = line.text
         key = _normal(text)
         plain = not _MONEY_TOKEN.search(text) and not _has_date(text)
@@ -420,10 +465,20 @@ def split_screenshot(
 
 
 def _split_screenshot(
-    lines: Sequence[Line], *, names: Sequence[str] = ()
+    lines: Sequence[Line],
+    *,
+    names: Sequence[str] = (),
+    too_long: frozenset[str] = frozenset(),
+    deadline: Deadline | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """`split_screenshot`, plus the withheld lines with an amount that may be a transaction:
-    every one but a plain balance. The parse step reports them rather than lose them."""
+    every one but a plain balance. The parse step reports them rather than lose them. Lines in
+    `too_long` are withheld and reported without being read."""
+    if too_long:
+        kept = [line for line in lines if line.ref not in too_long]
+        withheld, data, held = _split_screenshot(kept, names=names, deadline=deadline)
+        return [*withheld, *too_long], data, [*held, *too_long]
+    tick = _ticking(deadline)
     texts = [line.text for line in lines]
     blocks = _balance_blocks(texts)
     balances = {k for block in blocks for k in block}
@@ -443,6 +498,7 @@ def _split_screenshot(
     data: list[str] = []
     held: list[str] = []
     for i, line in enumerate(lines):
+        tick(i)
         if (
             i < first
             or i in balances
@@ -457,20 +513,40 @@ def _split_screenshot(
     return withheld, data, held
 
 
-def text_document(text: str, *, sha256: str, names: Sequence[str] = ()) -> Document:
-    lines = [
-        Line(ref=f"L{n}", text=t.rstrip())
-        for n, t in enumerate(text.split("\n"), start=1)
-        if t.strip()
-    ]
-    preamble, data, held = _split_preamble(lines, names=names)
+def _capped(ref: str, text: str, too_long: list[str]) -> Line:
+    """A line, cut short (and listed in `too_long`) when it is over the cap."""
+    if len(text) > MAX_LINE_CHARS:
+        too_long.append(ref)
+        return Line(ref=ref, text=text[:MAX_LINE_CHARS] + "…")
+    return Line(ref=ref, text=text)
+
+
+def _in_file_order(refs: Sequence[str], lines: Sequence[Line]) -> list[str]:
+    wanted = set(refs)
+    return [line.ref for line in lines if line.ref in wanted]
+
+
+def text_document(
+    text: str, *, sha256: str, names: Sequence[str] = (), deadline: Deadline | None = None
+) -> Document:
+    tick = _ticking(deadline)
+    too_long: list[str] = []
+    lines: list[Line] = []
+    for n, raw in enumerate(text.split("\n"), start=1):
+        tick(n)
+        if raw.strip():
+            lines.append(_capped(f"L{n}", raw.rstrip(), too_long))
+    preamble, data, held = _split_preamble(
+        lines, names=names, too_long=frozenset(too_long), deadline=deadline
+    )
     return Document(
         kind="text",
         sha256=sha256,
         lines=lines,
-        preamble_refs=preamble,
+        preamble_refs=_in_file_order(preamble, lines),
         data_refs=data,
-        held_amount_refs=held,
+        held_amount_refs=_in_file_order(held, lines),
+        too_long_refs=too_long,
     )
 
 
@@ -481,28 +557,35 @@ def pages_document(
     kind: FileKind,
     preamble: bool = True,
     names: Sequence[str] = (),
+    deadline: Deadline | None = None,
 ) -> Document:
+    tick = _ticking(deadline)
+    too_long: list[str] = []
     lines: list[Line] = []
     for p, rows in enumerate(pages, start=1):
         n = 0
         for row in rows:
+            tick(len(lines) + 1)
             if row.strip():
                 n += 1
-                lines.append(Line(ref=f"P{p}L{n}", text=row.rstrip()))
+                lines.append(_capped(f"P{p}L{n}", row.rstrip(), too_long))
     held: list[str] = []
+    long = frozenset(too_long)
     if not preamble:
-        pre, data = [], [ln.ref for ln in lines]
+        pre, data = list(too_long), [ln.ref for ln in lines if ln.ref not in long]
+        held = list(too_long)
     elif kind == "image":
-        pre, data, held = _split_screenshot(lines, names=names)
+        pre, data, held = _split_screenshot(lines, names=names, too_long=long, deadline=deadline)
     else:
-        pre, data, held = _split_preamble(lines, names=names)
+        pre, data, held = _split_preamble(lines, names=names, too_long=long, deadline=deadline)
     return Document(
         kind=kind,
         sha256=sha256,
         lines=lines,
-        preamble_refs=pre,
+        preamble_refs=_in_file_order(pre, lines),
         data_refs=data,
-        held_amount_refs=held,
+        held_amount_refs=_in_file_order(held, lines),
+        too_long_refs=too_long,
         pages=len(pages),
     )
 

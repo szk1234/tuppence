@@ -31,6 +31,7 @@ router = APIRouter(prefix="/api/statements", tags=["statements"])
 MAX_FILES = 20
 MAX_REQUEST_MB = 100
 READ_CHUNK = 1024 * 1024
+HELD_TEXT_CHARS = 300  # a held-back line as shown on the fix-up screen
 
 
 class Counts(BaseModel):
@@ -227,7 +228,7 @@ def _detail(services: Services, record: StatementRecord) -> StatementDetail:
         decided = {r.ref for r in parsed.rows} | {x.ref for x in parsed.skipped}
         lines = document.by_ref()
         held = [
-            HeldLine(ref=ref, text=lines[ref].text)
+            HeldLine(ref=ref, text=lines[ref].text[:HELD_TEXT_CHARS])
             for ref in document.held_amount_refs
             if ref not in decided and ref in lines
         ]

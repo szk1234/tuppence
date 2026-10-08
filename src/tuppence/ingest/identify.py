@@ -58,12 +58,14 @@ _NUMBER_TOKEN = (
     r"|\d{2}-\d{2}-\d{2}[ \-]\d{6,8}(?!\d)"
     r"|\d{4,}(?!\d))"
 )
+# Each optional piece takes the spaces after it, so a long gap can't make matching slow.
 _LABELLED_NUMBER = re.compile(
-    r"(?:account\s*(?:number|no\.?)|card\s*(?:number|no\.?)|ending(?:\s+in)?)"
-    rf"\s*[:#]?\s*({_NUMBER_TOKEN})",
+    r"(?:account\s*(?:number|no\.?)|card\s*(?:number|no\.?)|ending(?:\s+in\b)?)"
+    rf"\s*(?:[:#]\s*)?({_NUMBER_TOKEN})",
     re.IGNORECASE,
 )
-_MASKED = re.compile(rf"{_MASK}{{2,}}[ \-]?(\d{{4,}})(?!\d)")
+# A mask run is tried from its first character only, so a long run stays fast.
+_MASKED = re.compile(rf"(?<!{_MASK}){_MASK}{{2,}}[ \-]?(\d{{4,}})(?!\d)")
 # Wording only a credit card statement prints. "Card ending 1234" is not among it: a current
 # account statement prints its debit card's ending too.
 _CARD_WORDS = re.compile(
@@ -190,9 +192,15 @@ def _sort_code_provider(pack: BankPack, bankid: str) -> str | None:
     )
 
 
+# Header facts are read from lines no longer than this (a longer line is cut short first).
+MAX_LINE_CHARS = 10_000
+
+
 def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry, key: bytes) -> Evidence:
     by_ref = doc.by_ref()
-    preamble_text = "\n".join(by_ref[r].text for r in doc.preamble_refs if r in by_ref)
+    preamble_text = "\n".join(
+        by_ref[r].text[:MAX_LINE_CHARS] for r in doc.preamble_refs if r in by_ref
+    )
     if doc.kind in ("csv", "xlsx"):
         return _identify_table(doc, registry, header_facts(preamble_text))
     if doc.kind == "ofx":
@@ -232,7 +240,7 @@ def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry, key: by
     if doc.kind == "image":
         return Evidence(layout_fingerprint="image", label="screenshot")
     # PDF or plain text: a bank's legal name is printed somewhere on the statement.
-    first_lines = "\n".join(line.text for line in doc.lines[:60])
+    first_lines = "\n".join(line.text[:MAX_LINE_CHARS] for line in doc.lines[:60])
     # The bank's name and the account facts are in the header, not in payee names further down.
     top = f"{preamble_text}\n{first_lines}".casefold()
     facts = header_facts(preamble_text or first_lines)

@@ -37,6 +37,9 @@ class Document(BaseModel):
     data_refs: list[str] = Field(default_factory=list)  # every one must become a row or a skip
     # withheld lines with an amount that may be a transaction: reported, never lost silently
     held_amount_refs: list[str] = Field(default_factory=list)
+    # lines too long to read safely (their text is cut short): left out, reported, and listed
+    # in held_amount_refs too, so the person can say what each one is
+    too_long_refs: list[str] = Field(default_factory=list)
     table: list[list[str]] | None = None  # CSV/XLSX cells for each line in `lines`, same order
     meta: dict[str, str] = Field(default_factory=dict)  # e.g. OFX BANKID/ACCTID, CAMT IBAN/BIC
     pages: int = 0

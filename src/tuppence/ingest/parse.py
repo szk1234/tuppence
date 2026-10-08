@@ -124,8 +124,11 @@ def sign_doubt(
 def held_back_message(doc: Document, count: int | None = None) -> str | None:
     """Withheld lines with an amount that may be transactions (text prep lists them): say so,
     without quoting them, instead of losing them silently. `count` is how many are still
-    undecided (all of them by default)."""
-    count = len(doc.held_amount_refs) if count is None else count
+    undecided (all of them by default). Lines left out for being too long have their own
+    message (`too_long_message`)."""
+    if count is None:
+        long = set(doc.too_long_refs)
+        count = sum(1 for ref in doc.held_amount_refs if ref not in long)
     what = "screenshot" if doc.kind == "image" else "statement"
     if count == 0:
         return None
@@ -138,6 +141,19 @@ def held_back_message(doc: Document, count: int | None = None) -> str | None:
         f"{count} lines of this {what} with an amount on them were held back from the AI because "
         "they may show account details or a balance. They may be transactions, so please check "
         "them."
+    )
+
+
+def too_long_message(doc: Document, count: int | None = None) -> str | None:
+    """Lines too long to read safely were left out: say so (`count` still undecided)."""
+    count = len(doc.too_long_refs) if count is None else count
+    if count == 0:
+        return None
+    these = "A line" if count == 1 else f"{count} lines"
+    them = "it" if count == 1 else "them"
+    return (
+        f"{these} of this file {'was' if count == 1 else 'were'} too long to read, so "
+        f"{'it was' if count == 1 else 'they were'} left out. Please check {them}."
     )
 
 
@@ -278,6 +294,8 @@ def parse_document(
     ]
     if held := held_back_message(doc):
         errors.append(held)
+    if long := too_long_message(doc):
+        errors.append(long)
     if not parsed.rows:
         errors.append("No transactions were read from this file, so it needs a look.")
     elif not read.ok and not errors:

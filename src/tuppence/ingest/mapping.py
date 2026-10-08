@@ -96,10 +96,12 @@ class MappingOutcome(BaseModel):
 # --- the sketch -----------------------------------------------------------------------------
 
 _SIGN = "+\\-−–"
+# Each optional piece takes the spaces next to it, so a long gap can't make matching slow.
 _AMOUNT = re.compile(
-    rf"^(?P<open>\()?\s*(?P<lead>[{_SIGN}])?\s*(?P<cur>£|\$|€|GBP\s*)?\s*(?P<lead2>[{_SIGN}])?\s*"
-    r"(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{1,2}\s*(?P<close>\))?\s*(?P<trail>[\-−])?\s*"
-    r"(?P<marker>CR|DR)?\.?$",
+    rf"^\s*(?:(?P<open>\()\s*)?(?:(?P<lead>[{_SIGN}])\s*)?(?:(?P<cur>£|\$|€|GBP)\s*)?"
+    rf"(?:(?P<lead2>[{_SIGN}])\s*)?"
+    r"(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{1,2}(?:\s*(?P<close>\)))?(?:\s*(?P<trail>[\-−]))?"
+    r"(?:\s*(?P<marker>CR|DR))?\.?\s*$",
     re.IGNORECASE,
 )
 _NUMBERISH = re.compile(rf"^[{_SIGN}'\s]*\d[\d\s.,/'{_SIGN}]*$")

@@ -72,10 +72,15 @@ def extract_document(
     household's own names: a line that is only one of them is withheld from the AI."""
     path = path.resolve()  # the sandbox works in its own folder
     clock = _Deadline(limits)
+    # Text is prepared in this process; it stops at the same deadline as the sandbox calls.
     if kind == "csv":
-        return csv_document(path.read_bytes(), sha256=sha256, known=known_header)
+        return csv_document(
+            path.read_bytes(), sha256=sha256, known=known_header, deadline=clock.remaining
+        )
     if kind == "text":
-        return text_document(decode_text(path.read_bytes()), sha256=sha256, names=names)
+        return text_document(
+            decode_text(path.read_bytes()), sha256=sha256, names=names, deadline=clock.remaining
+        )
     if kind == "ofx":
         return ofx_document(decode_text(path.read_bytes()), sha256=sha256)
     if kind == "qif":
@@ -146,7 +151,7 @@ def _pdf(
                 ocr_pages.append(number)
         if result.scanned_pages:
             warnings.append("Scanned pages were read by your AI vision model.")
-    doc = pages_document(pages, sha256=sha256, kind="pdf", names=names)
+    doc = pages_document(pages, sha256=sha256, kind="pdf", names=names, deadline=clock.remaining)
     doc.pages, doc.ocr_pages, doc.ocr_confidence = (
         result.page_count,
         sorted(ocr_pages),
@@ -180,7 +185,7 @@ def _image(
         result = clock.run(parse_image_rows, image_rows, str(path))
         rows, confidence = result.rows, result.ocr_confidence
     # Screenshot withholding (textprep.split_screenshot, with the shared classifier).
-    doc = pages_document([rows], sha256=sha256, kind="image", names=names)
+    doc = pages_document([rows], sha256=sha256, kind="image", names=names, deadline=clock.remaining)
     doc.pages, doc.ocr_pages, doc.ocr_confidence = 1, [1], confidence
     if confidence is not None and confidence < LOW_OCR_CONFIDENCE:
         doc.warnings.append(
