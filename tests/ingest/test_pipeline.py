@@ -161,6 +161,7 @@ def test_an_answer_given_before_the_run_had_asked_is_used(ingest_env, fixtures, 
     outcome = upload(services, fixtures, "qif/bank.qif")
     with pytest.raises(Crash):
         services.ingest.handle_job(services.queue.claim())
+    services.queue.recover_running()  # what the next start does with the dead process's job
     asked = services.statements.get(outcome.record.id)
     assert asked.status == "needs_account" and asked.question is not None
     services.ingest.answer_account(asked.id, account_id=savings.id, expected_version=asked.version)

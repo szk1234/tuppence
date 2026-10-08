@@ -31,10 +31,12 @@ _DATE = re.compile(
     r"|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b",
     re.IGNORECASE,
 )
-_OPENING = r"(?:opening|previous|starting|start)\s+balance|balance\s+brought\s+forward"
-_CLOSING = r"(?:closing|new|ending|end)\s+balance|balance\s+carried\s+forward"
+_OPENING = r"(?:opening|previous|starting|start)\s+balance"
+_CLOSING = r"(?:closing|new|ending|end)\s+balance"
 _LABEL = re.compile(
-    rf"\b(?P<opening>{_OPENING})\b|\b(?P<closing>{_CLOSING})\b|\bbrought\s+forward\b",
+    rf"\b(?P<opening>{_OPENING})\b|\b(?P<closing>{_CLOSING})\b"
+    r"|\b(?P<brought>(?:balance\s+)?brought\s+forward)\b"
+    r"|\b(?P<carried>(?:balance\s+)?carried\s+forward)\b",
     re.IGNORECASE,
 )
 # A printed figure: pence required, thousands separator optional, a GBP code before or after.
@@ -132,12 +134,23 @@ def _below(doc: Document, ref: str, withheld: set[str]) -> str | None:
 
 
 def local_balances(doc: Document, *, perspective: Perspective) -> LocalBalances:
-    """Opening and closing balance from the withheld lines (the summary box). A figure that
-    appears twice with different values, or that isn't plainly labelled, is left out. A label
-    with nothing after it but a date takes the figure-only line below it."""
+    """Opening and closing balance from the withheld lines (the summary box, and the balance
+    lines withheld from the table). A figure that appears twice with different values, or that
+    isn't plainly labelled, is left out. A label with nothing after it but a date takes the
+    figure-only line below it.
+
+    "Balance brought forward" and "carried forward" are the balance at a point in the table.
+    Above every row (in the summary box, or atop the table) brought forward is the opening
+    balance and carried forward the closing one; below every row, carried forward is the closing
+    balance. They count only when the statement prints no opening or closing balance of its own;
+    the ones between pages are neither (sign repair reads those)."""
     by_ref = doc.by_ref()
     withheld = set(doc.preamble_refs)
+    order = {line.ref: i for i, line in enumerate(doc.lines)}
+    rows = [order[r] for r in doc.data_refs if r in order]
+    first_row, last_row = (min(rows), max(rows)) if rows else (None, None)
     found: dict[str, set[int]] = {"opening": set(), "closing": set()}
+    forward: dict[str, set[int]] = {"opening": set(), "closing": set()}
     unclear: set[str] = set()
     for ref in doc.preamble_refs:
         line = by_ref.get(ref)
@@ -145,21 +158,32 @@ def local_balances(doc: Document, *, perspective: Perspective) -> LocalBalances:
             continue
         labels = list(_LABEL.finditer(line.text))
         for i, label in enumerate(labels):
-            side = "closing" if label.group("closing") else "opening"
-            if label.group("opening") is None and label.group("closing") is None:
-                continue  # a bare "brought forward" is not a summary label
             end = labels[i + 1].start() if i + 1 < len(labels) else len(line.text)
             tail = line.text[label.end() : end]
             if end == len(line.text) and _FILLER.match(_DATE.sub(" ", tail)):
                 tail = f"{tail} {_below(doc, ref, withheld) or ''}"
             pence = _figure(tail, perspective)
+            if label.group("brought") or label.group("carried"):
+                at = order.get(ref, 0)
+                above = first_row is None or at < first_row  # the summary box, or atop the table
+                below = last_row is not None and at > last_row
+                if label.group("brought") and above:
+                    side = "opening"
+                elif label.group("carried") and (above or below):
+                    side = "closing"
+                else:
+                    continue  # between rows: the balance at a page break, not an end
+                if pence is not None:
+                    forward[side].add(pence)
+                continue
+            side = "closing" if label.group("closing") else "opening"
             if pence is None:
                 unclear.add(side)
             else:
                 found[side].add(pence)
     return LocalBalances(
-        opening=_only(found["opening"], "opening" in unclear),
-        closing=_only(found["closing"], "closing" in unclear),
+        opening=_only(found["opening"] or forward["opening"], "opening" in unclear),
+        closing=_only(found["closing"] or forward["closing"], "closing" in unclear),
     )
 
 
@@ -247,9 +271,24 @@ def repair_signs(
     by_base: dict[str, list[ParsedRow]] = {}
     for row in parsed.rows:
         by_base.setdefault(row.ref.split("#", 1)[0], []).append(row)
+    # The rows in file order, with the balance lines withheld from among them (brought or
+    # carried forward, a dated opening balance): each is a printed balance between rows.
+    data = set(doc.data_refs)
+    lines = [ln.ref for ln in doc.lines]
+    first = next((i for i, ref in enumerate(lines) if ref in data), len(lines))
+    withheld = set(doc.preamble_refs)
+    between = {ref for ref in lines[first:] if ref in withheld}
     start = opening
     group: list[ParsedRow] = []
-    for ref in doc.data_refs:
+    for ref in lines[first:]:
+        if ref in between:
+            if (figure := _carried(doc, ref)) is not None:
+                if group:
+                    _settle(doc, group, start, figure, result)
+                start, group = figure, []
+            continue
+        if ref not in data:
+            continue
         if ref in skipped and (figure := _carried(doc, ref)) is not None:
             if group:
                 _settle(doc, group, start, figure, result)

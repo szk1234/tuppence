@@ -387,13 +387,14 @@ def test_rows_above_a_later_pages_first_anchor_are_reported_not_lost():
     assert doc.held_amount_refs == ["P2L2"]
 
 
-def test_a_balance_brought_forward_above_a_later_pages_rows_stays_data():
+def test_a_balance_brought_forward_above_a_later_pages_rows_is_withheld_not_reported():
+    """A balance figure is read on this device and never sent; it isn't a row either."""
     pages = [
         ["Date Description Amount Balance", "02 Oct 2026 Shop 4.00 996.00"],
         ["Page 2", "Balance brought forward 996.00", "03 Oct 2026 Shop 4.00 992.00"],
     ]
     doc = pages_document(pages, sha256="x", kind="pdf")
-    assert "Balance brought forward 996.00" in _page_data(doc)
+    assert "Balance brought forward 996.00" not in _page_data(doc)
     assert doc.held_amount_refs == []
 
 
@@ -645,3 +646,58 @@ def test_chunks_carry_the_masked_text():
     doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")
     sent = "\n".join(render(c.lines) for c in plan_chunks(doc, rows_per_chunk=2))
     assert "87654321" not in sent and "-250.00" in sent and "Transfer to A/C" in sent
+
+
+# --- balance and summary figures are never sent (scan follow-up) -------------------------------
+
+MIXED_SUMMARIES = [
+    "Closing balance 31/03 £1,234.56 Total money in £2,000.00",
+    "Closing balance £1,234.56 Page 2",
+    "Opening balance on 01/10/2026 £5,555.55 (see overleaf)",
+    "Total money in £2,000.00 this period",
+    "Total paid out 438.78 Total paid in 1,650.00",
+    "Payments total £190.00",
+    "Money in £1,650.00 Money out £438.78 Statement 3",
+    "Balance carried forward 825.07",
+    "01 Oct 2026 Balance brought forward 5,555.55",
+    "Brought forward 1,000.00 CR",
+    "Total 1,234.56",
+    "Summary of your account £1,234.56",
+]
+
+
+@pytest.mark.parametrize("line", MIXED_SUMMARIES)
+def test_a_line_with_a_balance_or_summary_phrase_and_a_figure_is_withheld(line):
+    doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")
+    assert "P1L3" in doc.preamble_refs and "P1L3" not in doc.data_refs
+    assert doc.held_amount_refs == []  # a balance or a total: read here, not a row
+
+
+PAYEE_ROWS = [
+    ("02/10/2026 BALANCE TRANSFER FEE 5.00", False),
+    ("02/10/2026 TOTAL FITNESS GYM 30.00 970.00", False),
+    ("TOTAL ENERGIES 45.00", False),
+    ("02 Oct 2026 SUMMARY PRINTING LTD 12.00", False),
+    ("02/10/2026 TOTAL FITNESS GYM A/C 12345678 30.00", True),
+    ("02/10/2026 BALANCE TRANSFER TO 20-11-33 41234567 50.00", True),
+]
+
+
+@pytest.mark.parametrize(("line", "masked"), PAYEE_ROWS, ids=[p[0] for p in PAYEE_ROWS])
+def test_a_payee_row_that_only_contains_a_summary_word_is_sent(line, masked):
+    doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")
+    assert "P1L3" in doc.data_refs and doc.held_amount_refs == []
+    assert ("P1L3" in doc.masked) == masked
+    if masked:
+        assert "12345678" not in doc.masked["P1L3"].text
+        assert "41234567" not in doc.masked["P1L3"].text
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["02/10/2026 CASH PAID IN AT BRANCH 50.00", "Balance adjustment 12.00 3.00 9.00"],
+)
+def test_a_line_that_may_be_a_row_or_a_total_is_held_back_and_reported(line):
+    """Can't tell: it is withheld and offered on the fix-up screen, never dropped silently."""
+    doc = pages_document([[*TABLE_TOP, line, *TABLE_END]], sha256="x", kind="pdf")
+    assert "P1L3" in doc.preamble_refs and doc.held_amount_refs == ["P1L3"]

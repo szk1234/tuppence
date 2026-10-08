@@ -14,8 +14,8 @@ from reportlab.pdfgen import canvas
 
 WATERMARK = "SYNTHETIC TEST STATEMENT - NOT A REAL DOCUMENT"
 NAMES = ["Alex Example", "Pat Example"]
-# Never in any request, in any mode. (The opening balance is also printed on the table's own
-# "Balance brought forward" row, which is a row like any other, so it isn't listed.)
+# Never in any request, in any mode: identity details, address lines, balances and limits (the
+# table's own "Balance brought forward" row included).
 SECRETS = [
     "Alex", "ALEX", "Pat Example", "PAT EXAMPLE", "A EXAMPLE", "Example Road", "Example House",
     "Flat 3", "Exampletown", "EX1 2MP", "EX1", "12345678", "1234 5678", "07-12-34", "07 12 34",
@@ -23,7 +23,7 @@ SECRETS = [
     "4242", "Available balance", "Opening balance", "Closing balance", "overdraft limit",
     "Credit limit", "7,777.77", "8,888.88", "6,666.66", "Roll number", "Customer",
     "Sort code", "IBAN", "Account number", "Exampleshire", "Payment due", "minimum payment",
-    "25.00", "2,252.32", "20-11-33", "41234567",
+    "25.00", "2,252.32", "20-11-33", "41234567", "5,555.55",
 ]  # fmt: skip
 
 

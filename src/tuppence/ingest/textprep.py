@@ -235,19 +235,37 @@ def is_summary(text: str) -> bool:
     )
 
 
-_SUMMARY_WORDS = re.compile(
-    r"\b(?:opening|closing|start|end|balance|money|paid|payments?|in|out|totals?|summary|of|on"
-    r"|at|as|for|the|this|period|month|statement|gbp)\b",
+# Balance and summary figures are read on this device and never sent. A line with a figure
+# and one of these phrases is withheld wherever it is:
+# - a balance (never a row, so never reported): opening, closing, start, end, previous or new
+#   balance; balance brought or carried forward;
+_BALANCE_PHRASE = re.compile(
+    r"\b(?:opening|closing|start(?:ing)?|end(?:ing)?|previous|new)\s+balance\b"
+    r"|\b(?:brought|carried)\s+forward\b",
     re.IGNORECASE,
+)
+# - a total: total, money or paid in and out; payments in and out; a total of payments,
+#   credits, debits and the like; a summary. A dated line with one may be a row ("CASH PAID IN
+#   AT BRANCH"), so it is reported for the person to decide.
+_TOTAL_PHRASE = re.compile(
+    r"\b(?:total|money|paid)\s+(?:in|out)\b|\bpayments\s+(?:in|out)\b"
+    r"|\btotals?\b(?=\s*(?:$|[:£$€(+\-\u2212\d]|(?:money|paid|payments?|credits?|debits?|spent"
+    r"|spending|charges|fees|interest|purchases|withdrawals|deposits|in|out|for|this)\b))"
+    r"|\b(?:payments?|credits?|debits?|withdrawals|deposits|purchases|fees|charges|interest)"
+    r"\s+totals?\b|\b(?:account|statement|balance)\s+summary\b"
+    r"|\bsummary\b(?=\s*(?:$|[:£$€\d]|(?:of|for)\b))",
+    re.IGNORECASE,
+)
+# - only a word from those phrases ("BALANCE TRANSFER FEE", "TOTAL FITNESS GYM"): a payee's row
+#   is sent like any other when it is a single transaction; anything else is reported.
+_SUMMARY_WORD = re.compile(
+    r"\b(?:balance|totals?|summary|paid|money|payments?|forward)\b", re.IGNORECASE
 )
 
 
-def _pure_summary(text: str) -> bool:
-    """A totals line with nothing else on it ("Money in £1,650.00 Money out £438.78", "Total
-    1,234.56"). "TOTAL ENERGIES 45.00" has a payee's name, so it may be a row."""
-    rest = _SUMMARY_WORDS.sub(" ", _MONEY_TOKEN.sub(" ", _CURRENCY_FIGURE.sub(" ", text)))
-    rest = _NAMED_DATE.sub(" ", _NUMERIC_DATE.sub(" ", rest))
-    return re.search(r"[A-Za-z]", rest) is None
+def _single_transaction(text: str, row: bool) -> bool:
+    """A row of the table: dated, or a description with its amount (and at most a balance)."""
+    return row or (not _has_date(text) and len(_MONEY_TOKEN.findall(text)) <= 2)
 
 
 def is_heading(text: str) -> bool:
@@ -560,6 +578,7 @@ def _split_preamble(
         _has_date(t)
         and _MONEY_TOKEN.search(t) is not None
         and not is_summary(t)
+        and not _BALANCE_PHRASE.search(t)
         and (not sensitive_at[i] or masks(i) is not None)
         for i, t in enumerate(texts)
     ]
@@ -599,26 +618,27 @@ def _split_preamble(
             out.withheld.append(line.ref)
             if rows[i]:  # a dated amount above the table start: it may be a row, so report it
                 unsure.add(i)
-        elif i in balances or (sensitive_at[i] and sensitive.is_masked_balance(text, names=names)):
+        elif (
+            i in balances
+            or (sensitive_at[i] and sensitive.is_masked_balance(text, names=names))
+            or (money and _BALANCE_PHRASE.search(text))
+        ):
             out.withheld.append(line.ref)  # a balance: read on this device, never a row
         elif i in page_headers:
             out.withheld.append(line.ref)
             if money and (not sensitive_at[i] or masks(i) is not None):
                 unsure.add(i)  # may be a row above the page's first anchor
+        elif i in addresses or furniture or name_repeat or (sensitive_at[i] and not money):
+            out.withheld.append(line.ref)  # no amount on it, so no row is lost
+        elif money and _TOTAL_PHRASE.search(text):
+            out.withheld.append(line.ref)  # a total, read here; dated, it may be a row
+            if _has_date(text):
+                unsure.add(i)
         elif (
-            (
-                i in addresses
-                or furniture
-                or name_repeat
-                or (is_summary(text) and _pure_summary(text))
-            )
-            or sensitive_at[i]
-            and not money
-        ):
-            out.withheld.append(line.ref)
-        elif not _send(out, line, masks(i)):  # details that won't mask
-            out.withheld.append(line.ref)
-            unsure.add(i)
+            money and _SUMMARY_WORD.search(text) and not _single_transaction(text, rows[i])
+        ) or not _send(out, line, masks(i)):
+            out.withheld.append(line.ref)  # a total or a row? or details that won't mask:
+            unsure.add(i)  # the person decides
     for block in blocks:
         if first is not None and block[0] > first:  # the summary box above the table never is
             unsure |= _unsure(texts, block, first)
@@ -667,6 +687,12 @@ def _split_screenshot(
     blocks = _balance_blocks(texts)
     balances = {k for block in blocks for k in block}
     balances |= {i for i, text in enumerate(texts) if sensitive.is_balance_line(text)}
+    summaries = {
+        i
+        for i, text in enumerate(texts)
+        if has_amount(text) and (_BALANCE_PHRASE.search(text) or _TOTAL_PHRASE.search(text))
+    }  # balance and summary figures: never sent; a dated total may be a row and is reported
+    balances |= {i for i in summaries if not _has_date(texts[i])}
     first = next(
         (
             i
@@ -696,6 +722,7 @@ def _split_screenshot(
         if (
             i >= first
             and i not in balances
+            and i not in summaries
             and _name_key(text) is None
             and (not detail or has_amount(text))
             and _send(out, line, sensitive.prepare_outbound(text, names=names))
