@@ -7,7 +7,7 @@ import secrets
 import sqlite3
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,8 @@ _COLUMNS = {
     "stats",
     "error",
     "run",
+    "account_answer_id",
+    "account_answer_version",
     "analysis_state",
 }
 
@@ -73,6 +75,8 @@ class StatementRecord(BaseModel):
     stats: dict[str, Any]
     error: str | None
     run: int
+    account_answer_id: str | None  # the person's answer to "Which account is this?"
+    account_answer_version: int | None  # the statement version the answer was written at
     analysis_state: str
     version: int
     created_at: str
@@ -80,6 +84,10 @@ class StatementRecord(BaseModel):
 
 
 class TransactionRecord(BaseModel):
+    """A row as one statement sees it: `source_ref` is its line on that statement, `match` says
+    whether that statement stored it ("new") or found it already imported ("exact" or
+    "similar"). `statement_id` is the statement it was first imported from."""
+
     id: str
     account_id: str
     statement_id: str
@@ -91,6 +99,7 @@ class TransactionRecord(BaseModel):
     bank_type: str | None
     balance_after_pence: int | None
     source_ref: str
+    match: Literal["new", "exact", "similar"]
 
 
 class PersistResult(BaseModel):
@@ -246,13 +255,15 @@ class StatementStore:
         balance_verified: bool,
         stats: dict[str, Any],
         expected_version: int | None = None,
+        within: Callable[[sqlite3.Connection], object] | None = None,
     ) -> PersistResult:
-        """Import a statement in one transaction: every new row, the closing balance, the
-        account answer for its layout fingerprint, and the statement's result. Nothing is kept
-        if any part fails.
+        """Import a statement in one transaction: every new row, a link from the statement to
+        every row it covers, the closing balance, the account answer for its layout
+        fingerprint, anything `within` writes (a learned layout the person confirmed), and the
+        statement's result. Nothing is kept if any part fails.
 
-        Rows already stored for the account from another statement are not stored again: the
-        same fingerprint, or the same transaction seen in another format (`plan_dedupe`).
+        A row already stored for the account (the same fingerprint, or the same transaction
+        seen in another format: `plan_dedupe`) is linked, not stored again.
         `expected_version` is given when the person imports from the fix-up screen.
         Safe to call twice: an already-imported statement returns its stored result.
         """
@@ -285,11 +296,9 @@ class StatementStore:
                     )
                     for r in conn.execute(
                         "SELECT id, date, amount_pence, raw_description, fingerprint"
-                        ' FROM "transaction"'
-                        " WHERE account_id = ? AND statement_id != ? AND date BETWEEN ? AND ?",
+                        ' FROM "transaction" WHERE account_id = ? AND date BETWEEN ? AND ?',
                         [
                             account_id,
-                            statement_id,
                             (lo - timedelta(days=3)).isoformat(),
                             (hi + timedelta(days=3)).isoformat(),
                         ],
@@ -302,9 +311,15 @@ class StatementStore:
                 existing,
                 window=(lo or date.min, hi or date.max),
             )
+            stored = {e.fingerprint: e.id for e in existing}
+            links: list[tuple[str, str, str]] = [  # (transaction id, line on this statement, match)
+                (stored[fingerprints[i][0]], parsed.rows[i].ref, "exact") for i in plan.exact
+            ]
+            links += [(tid, parsed.rows[i].ref, "similar") for i, tid in plan.similar.items()]
             inserted = 0
             for i in plan.insert:
                 row, (fp, occurrence) = parsed.rows[i], fingerprints[i]
+                transaction_id = "t_" + secrets.token_hex(8)
                 cur = conn.execute(
                     'INSERT INTO "transaction" (id, account_id, statement_id, date, amount_pence,'
                     " currency, raw_description, merchant_text, bank_category, bank_type,"
@@ -312,7 +327,7 @@ class StatementStore:
                     " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     " ON CONFLICT(account_id, fingerprint) DO NOTHING",
                     [
-                        "t_" + secrets.token_hex(8),
+                        transaction_id,
                         account_id,
                         statement_id,
                         row.date.isoformat(),
@@ -329,7 +344,21 @@ class StatementStore:
                         now,
                     ],
                 )
-                inserted += cur.rowcount
+                if cur.rowcount:
+                    inserted += 1
+                    links.append((transaction_id, row.ref, "new"))
+                    continue
+                # Stored already, outside the dates looked at: the same row, so link it.
+                found = conn.execute(
+                    'SELECT id FROM "transaction" WHERE account_id = ? AND fingerprint = ?',
+                    [account_id, fp],
+                ).fetchone()
+                links.append((found["id"], row.ref, "exact"))
+            conn.executemany(
+                "INSERT INTO statement_transaction (statement_id, transaction_id, source_ref,"
+                " match) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                [(statement_id, tid, ref, match) for tid, ref, match in links],
+            )
             if parsed.closing_balance_pence is not None and hi is not None:
                 household = (
                     -parsed.closing_balance_pence
@@ -345,6 +374,8 @@ class StatementStore:
                 )
             if current["layout_fingerprint"]:
                 self._remember(conn, current["layout_fingerprint"], account_id)
+            if within is not None:
+                within(conn)
             result = PersistResult(
                 rows=len(parsed.rows),
                 inserted=inserted,
@@ -377,15 +408,57 @@ class StatementStore:
         return result
 
     def transactions(self, statement_id: str, *, limit: int = 500) -> list[TransactionRecord]:
+        """Every row the statement covers, whether it stored it or found it already imported."""
         with self.db.connection() as conn:
             rows = conn.execute(
-                "SELECT id, account_id, statement_id, date, amount_pence, raw_description,"
-                " merchant_text, bank_category, bank_type, balance_after_pence, source_ref"
-                ' FROM "transaction" WHERE statement_id = ?'
-                " ORDER BY date, rowid LIMIT ?",
+                "SELECT t.id, t.account_id, t.statement_id, t.date, t.amount_pence,"
+                " t.raw_description, t.merchant_text, t.bank_category, t.bank_type,"
+                " t.balance_after_pence, l.source_ref, l.match"
+                ' FROM statement_transaction l JOIN "transaction" t ON t.id = l.transaction_id'
+                " WHERE l.statement_id = ? ORDER BY t.date, t.rowid LIMIT ?",
                 [statement_id, limit],
             ).fetchall()
         return [TransactionRecord.model_validate(dict(r)) for r in rows]
+
+    def _unimport(self, conn: sqlite3.Connection, statement_id: str) -> None:
+        """Take a statement's import back: its links and balances go; a row it was first
+        imported from moves to the earliest other statement that still covers it, and a row
+        no statement covers any more is deleted. Transaction ids never change."""
+        conn.execute("DELETE FROM account_balance WHERE statement_id = ?", [statement_id])
+        conn.execute("DELETE FROM statement_transaction WHERE statement_id = ?", [statement_id])
+        conn.execute(
+            'UPDATE "transaction" SET (statement_id, source_ref) = ('
+            " SELECT l.statement_id, l.source_ref FROM statement_transaction l"
+            " JOIN statement s ON s.id = l.statement_id"
+            ' WHERE l.transaction_id = "transaction".id ORDER BY s.created_at, s.id LIMIT 1)'
+            " WHERE statement_id = ? AND EXISTS (SELECT 1 FROM statement_transaction l"
+            ' WHERE l.transaction_id = "transaction".id)',
+            [statement_id],
+        )
+        conn.execute('DELETE FROM "transaction" WHERE statement_id = ?', [statement_id])
+
+    def reopen(self, statement_id: str, expected_version: int, **fields: Any) -> StatementRecord:
+        """Start a statement again (Try again, Wrong account?): an imported one is un-imported
+        first. One transaction, on behalf of the person (VersionConflict when stale)."""
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT status FROM statement WHERE id = ?", [statement_id]
+            ).fetchone()
+            if row is None:
+                raise NotFound("statement", statement_id)
+            if row["status"] == "imported":
+                self._unimport(conn, statement_id)
+            self._write(conn, statement_id, {"analysis_state": "none", **fields}, expected_version)
+        return self.get(statement_id)
+
+    def pending_analysis(self) -> list[str]:
+        """Imported statements whose analysis hasn't run yet."""
+        with self.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT id FROM statement WHERE status = 'imported'"
+                " AND analysis_state = 'pending' ORDER BY created_at, id"
+            ).fetchall()
+        return [r["id"] for r in rows]
 
     # --- balances ------------------------------------------------------------------------------
 
@@ -418,8 +491,10 @@ class StatementStore:
         return [(date.fromisoformat(day), pence) for day, pence in by_day.items()]
 
     def delete(self, statement_id: str) -> StatementRecord:
-        """Remove a statement with its transactions and balances (the table's cascades)."""
+        """Remove a statement, its balances and the rows only it covers. Rows another statement
+        still covers stay (`_unimport`)."""
         record = self.get(statement_id)
         with self.db.transaction() as conn:
+            self._unimport(conn, statement_id)
             conn.execute("DELETE FROM statement WHERE id = ?", [statement_id])
         return record

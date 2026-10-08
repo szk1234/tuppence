@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections.abc import Callable, Sequence
 from importlib import resources
 from importlib.resources.abc import Traversable
@@ -146,16 +147,25 @@ class LearnedLayouts:
             ).fetchall()
         return [(r["header_key"], CsvLayout.model_validate_json(r["layout"])) for r in rows]
 
-    def put(self, key: str, layout: CsvLayout) -> None:
+    def put(self, key: str, layout: CsvLayout, *, conn: sqlite3.Connection | None = None) -> None:
+        """Save a layout. With `conn`, inside that open transaction (so it is kept only if the
+        rest of that write is)."""
         if self.db is None:
             self._memory[key] = layout
             return
-        with self.db.transaction() as conn:
-            conn.execute(
-                "INSERT INTO csv_layout (id, header_key, layout, created_at) VALUES (?, ?, ?, ?)"
-                " ON CONFLICT(header_key) DO UPDATE SET layout = excluded.layout",
-                [layout.id, key, layout.model_dump_json(), to_iso(utcnow())],
-            )
+        if conn is not None:
+            self._put(conn, key, layout)
+            return
+        with self.db.transaction() as own:
+            self._put(own, key, layout)
+
+    @staticmethod
+    def _put(conn: sqlite3.Connection, key: str, layout: CsvLayout) -> None:
+        conn.execute(
+            "INSERT INTO csv_layout (id, header_key, layout, created_at) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(header_key) DO UPDATE SET layout = excluded.layout",
+            [layout.id, key, layout.model_dump_json(), to_iso(utcnow())],
+        )
 
 
 class LayoutRegistry:
@@ -242,14 +252,16 @@ class LayoutRegistry:
                 return layout
         return None
 
-    def save_learned(self, doc: Document, layout: CsvLayout) -> CsvLayout:
+    def save_learned(
+        self, doc: Document, layout: CsvLayout, *, conn: sqlite3.Connection | None = None
+    ) -> CsvLayout:
         header = header_cells(doc)
         if header is None:
             raise ValueError("only files with a heading row can be learned")
         learned = layout.model_copy(
             update={"source": "learned", "signature": [c for c in header if c.strip()]}
         )
-        self.learned.put(header_key(header), learned)
+        self.learned.put(header_key(header), learned, conn=conn)
         return learned
 
 

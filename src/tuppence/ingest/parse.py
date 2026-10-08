@@ -121,10 +121,11 @@ def sign_doubt(
     return None
 
 
-def _held_back_amounts(doc: Document) -> str | None:
+def held_back_message(doc: Document, count: int | None = None) -> str | None:
     """Withheld lines with an amount that may be transactions (text prep lists them): say so,
-    without quoting them, instead of losing them silently."""
-    count = len(doc.held_amount_refs)
+    without quoting them, instead of losing them silently. `count` is how many are still
+    undecided (all of them by default)."""
+    count = len(doc.held_amount_refs) if count is None else count
     what = "screenshot" if doc.kind == "image" else "statement"
     if count == 0:
         return None
@@ -275,7 +276,7 @@ def parse_document(
         *check_statement(parsed, level=level, dates=True),
         *repair.errors,
     ]
-    if held := _held_back_amounts(doc):
+    if held := held_back_message(doc):
         errors.append(held)
     if not parsed.rows:
         errors.append("No transactions were read from this file, so it needs a look.")

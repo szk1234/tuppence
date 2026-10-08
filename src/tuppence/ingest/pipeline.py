@@ -164,19 +164,24 @@ class IngestGraph:
         return {"document": doc.model_dump(mode="json")}
 
     def identify(self, state: IngestState) -> dict[str, Any]:
+        record = self.d.store.get(state["statement_id"])
         doc = Document.model_validate(state["document"])
         evidence = identify(
             doc, pack=self.d.pack, registry=self.d.registry, key=self.d.fingerprint_key()
         )
+        accounts = self._account_refs()
         match = match_account(
-            evidence,
-            self._account_refs(),
-            self.d.store.remembered_accounts(evidence.layout_fingerprint),
+            evidence, accounts, self.d.store.remembered_accounts(evidence.layout_fingerprint)
         )
         fields: dict[str, Any] = {
             "layout_fingerprint": evidence.layout_fingerprint,
             "provider": evidence.providers[0] if evidence.providers else evidence.provider_hint,
         }
+        answered = record.account_answer_id
+        if answered and any(a.id == answered and a.status == "active" for a in accounts):
+            # The person already said which account this is ("Wrong account?", or an answer
+            # kept from an earlier run): that wins over any guess.
+            match = match.model_copy(update={"account_id": answered})
         question: dict[str, Any] | None = None
         if match.account_id is None:
             question = {
@@ -188,7 +193,14 @@ class IngestGraph:
                 "candidates": match.candidates,
                 "prefill": {**match.prefill, "nickname": evidence.label},
             }
-            fields.update(status="needs_account", question=question)
+            # An answer kept from before is for an account that has gone: forget it, so only
+            # the answer to this question resumes the run.
+            fields.update(
+                status="needs_account",
+                question=question,
+                account_answer_id=None,
+                account_answer_version=None,
+            )
         self.d.store.update(state["statement_id"], **fields)
         return {
             "evidence": evidence.model_dump(mode="json"),

@@ -93,6 +93,7 @@ class Services:
     def start(self) -> None:
         self.queue.recover_running()
         self.ingest.resume_unfinished()  # statements left part-way carry on from a checkpoint
+        self.ingest.sweep()  # analysis hand-offs a stop interrupted; checkpoints nobody needs
         self.worker.start()
         self.periodic = [
             Periodic(self.queue, "maintenance.daily_backup", scope_key="daily", interval_s=3600),
@@ -186,6 +187,8 @@ def build_services(runtime: RuntimeSettings) -> Services:
     statement_files = StatementFiles(paths.files / "statements")
     checkpoint_conn = sqlite3.connect(paths.checkpoints_db, check_same_thread=False)
     checkpoint_conn.execute("PRAGMA journal_mode=WAL")
+    # Run state holds statement text: deleted runs are overwritten, not just unlinked.
+    checkpoint_conn.execute("PRAGMA secure_delete=ON")
     checkpointer = SqliteSaver(checkpoint_conn)
     ingest = IngestService(
         store=statements,

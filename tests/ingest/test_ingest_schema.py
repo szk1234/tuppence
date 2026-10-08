@@ -35,7 +35,14 @@ def add_txn(c, tid, *, fp="fp1", amount=-4218, day="2026-10-01"):
 
 def test_tables_exist(conn):
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"statement", "transaction", "account_balance", "csv_layout", "layout_memory"} <= names
+    assert {
+        "statement",
+        "transaction",
+        "statement_transaction",
+        "account_balance",
+        "csv_layout",
+        "layout_memory",
+    } <= names
 
 
 def test_fingerprint_is_unique_per_account(conn):
@@ -44,10 +51,31 @@ def test_fingerprint_is_unique_per_account(conn):
         add_txn(conn, "t_2")
 
 
-def test_transactions_never_change(conn):
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("amount_pence", 1),
+        ("date", "2026-10-02"),
+        ("raw_description", "Other"),
+        ("account_id", "a_1"),
+        ("fingerprint", "fp9"),
+    ],
+)
+def test_transactions_never_change(conn, column, value):
     add_txn(conn, "t_1")
     with pytest.raises(sqlite3.IntegrityError, match="never change"):
-        conn.execute('UPDATE "transaction" SET amount_pence = 1 WHERE id = ?', ["t_1"])
+        conn.execute(f'UPDATE "transaction" SET {column} = ? WHERE id = ?', [value, "t_1"])
+
+
+def test_a_row_can_move_to_another_statement_that_covers_it(conn):
+    add_txn(conn, "t_1")
+    conn.execute(INSERT_STATEMENT.replace("'abc'", "'def'"), ["s_2"])
+    conn.execute(
+        'UPDATE "transaction" SET statement_id = ?, source_ref = ? WHERE id = ?',
+        ["s_2", "P1L4", "t_1"],
+    )
+    row = conn.execute('SELECT statement_id, source_ref FROM "transaction"').fetchone()
+    assert tuple(row) == ("s_2", "P1L4")
 
 
 def test_zero_amounts_and_bad_dates_are_refused(conn):
@@ -57,12 +85,19 @@ def test_zero_amounts_and_bad_dates_are_refused(conn):
         add_txn(conn, "t_2", fp="fp2", day="01/10/2026")
 
 
-def test_imported_needs_an_account_and_removing_a_statement_removes_its_rows(conn):
+def test_imported_needs_an_account_and_a_statement_with_rows_is_not_removed_blindly(conn):
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("UPDATE statement SET status = 'imported' WHERE id = 's_1'")
     add_txn(conn, "t_1")
+    conn.execute(
+        "INSERT INTO statement_transaction (statement_id, transaction_id, source_ref, match)"
+        " VALUES ('s_1', 't_1', 'L2', 'new')"
+    )
+    with pytest.raises(sqlite3.IntegrityError):  # its rows first go to another statement or go
+        conn.execute("DELETE FROM statement WHERE id = 's_1'")
+    conn.execute('DELETE FROM "transaction" WHERE id = ?', ["t_1"])
+    assert conn.execute("SELECT count(*) FROM statement_transaction").fetchone()[0] == 0
     conn.execute("DELETE FROM statement WHERE id = 's_1'")
-    assert conn.execute('SELECT count(*) FROM "transaction"').fetchone()[0] == 0
 
 
 def test_one_statement_per_file(conn):

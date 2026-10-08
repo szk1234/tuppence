@@ -165,7 +165,99 @@ def test_rows_seen_in_another_statement_are_not_stored_twice(store):
         stats={},
     )
     assert (result.inserted, result.duplicates_exact, result.duplicates_similar) == (1, 1, 1)
-    assert [t.raw_description for t in store.transactions(second.id)] == ["Northline Rail"]
+    assert stored(store) == 3
+    # the second statement lists every row it covers, as its own lines
+    assert [(t.source_ref, t.raw_description, t.match) for t in store.transactions(second.id)] == [
+        ("P1L4", "Greenbasket Stores", "exact"),
+        ("P1L5", "Little Cafe", "similar"),
+        ("P1L6", "Northline Rail", "new"),
+    ]
+
+
+def stored(store, account_id="a_1"):
+    with store.db.connection() as conn:
+        return conn.execute(
+            'SELECT count(*) FROM "transaction" WHERE account_id = ?', [account_id]
+        ).fetchone()[0]
+
+
+def overlap(store):
+    """Statement A covers rows 1-3; B covers 2-3 again (one reworded) and adds row 4."""
+    a, b = new(store, "a"), new(store, "b")
+    store.persist(
+        a.id,
+        "a_1",
+        october(
+            row("L2", 1, -4218, "Greenbasket Stores"),
+            row("L3", 5, -340, "Little Cafe"),
+            row("L4", 9, -2890, "Northline Rail"),
+            opening=100000,
+            closing=92552,
+        ),
+        balance_verified=True,
+        stats={},
+    )
+    store.persist(
+        b.id,
+        "a_1",
+        october(
+            row("P1L1", 5, -340, "LITTLE CAFE LONDON"),
+            row("P1L2", 9, -2890, "Northline Rail"),
+            row("P1L3", 12, -3115, "City Water"),
+            opening=95782,
+            closing=89437,
+        ),
+        balance_verified=True,
+        stats={},
+    )
+    return a, b
+
+
+def descriptions(store, statement_id):
+    return [t.raw_description for t in store.transactions(statement_id)]
+
+
+def test_removing_a_statement_keeps_the_rows_another_statement_covers(store):
+    a, b = overlap(store)
+    assert stored(store) == 4
+    store.delete(a.id)
+    assert stored(store) == 3  # Greenbasket was only on A
+    assert descriptions(store, b.id) == ["Little Cafe", "Northline Rail", "City Water"]
+    with store.db.connection() as conn:
+        owners = {r[0] for r in conn.execute('SELECT statement_id FROM "transaction"')}
+    assert owners == {b.id}  # the rows A first stored now count as B's
+    assert store.balance_history("a_1") == [(date(2026, 10, 31), 89437)]
+    store.delete(b.id)
+    assert stored(store) == 0 and store.balance_history("a_1") == []
+
+
+def test_removing_the_later_statement_keeps_the_earlier_ones_rows(store):
+    a, b = overlap(store)
+    ids_before = {t.id for t in store.transactions(a.id)}
+    store.delete(b.id)
+    assert stored(store) == 3
+    assert {t.id for t in store.transactions(a.id)} == ids_before  # ids never change
+    assert store.balance_history("a_1") == [(date(2026, 10, 31), 92552)]
+
+
+def test_a_balance_two_statements_report_survives_either_going(store):
+    a, b = new(store, "a"), new(store, "b")
+    parsed = october(row("L2", 1, -4218, "Shop"), opening=0, closing=-4218)
+    store.persist(a.id, "a_1", parsed, balance_verified=True, stats={})
+    store.persist(b.id, "a_1", parsed, balance_verified=True, stats={})
+    store.delete(a.id)
+    assert store.balance_history("a_1") == [(date(2026, 10, 31), -4218)]
+    assert descriptions(store, b.id) == ["Shop"] and stored(store) == 1
+
+
+def test_reopening_an_imported_statement_takes_its_import_back(store):
+    a, b = overlap(store)
+    reopened = store.reopen(b.id, store.get(b.id).version, status="received", run=2)
+    assert reopened.status == "received" and reopened.analysis_state == "none"
+    assert store.transactions(b.id) == [] and stored(store) == 3  # City Water was only on B
+    assert descriptions(store, a.id) == ["Greenbasket Stores", "Little Cafe", "Northline Rail"]
+    with pytest.raises(VersionConflict):
+        store.reopen(a.id, 99, status="received")
 
 
 def test_one_balance_per_day_however_many_statements_or_manual_entries(store):

@@ -15,6 +15,9 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # Deleted rows (a removed statement's transactions and draft) are overwritten with zeros,
+    # not left in free pages. Deletes write a little more; nothing else changes.
+    conn.execute("PRAGMA secure_delete=ON")
     return conn
 
 

@@ -45,6 +45,39 @@ def drain(services) -> None:
         pass
 
 
+def upload(services, fixtures: Path, relative: str, data: bytes | None = None):
+    path = fixtures / relative
+    return services.ingest.upload(path.name, data if data is not None else path.read_bytes())
+
+
+def threads(services) -> set[str]:
+    """Thread ids that still have checkpoints in checkpoints.db."""
+    return {c.config["configurable"]["thread_id"] for c in services.checkpointer.list(None)}
+
+
+def cloud_model(services, *, acknowledge: bool) -> str:
+    """A cloud connection (answered by the scripted fake) as the model for everything."""
+    conn = services.connections.create(
+        "openai", api_key="sk-x", base_url="http://127.0.0.1:9100/v1"
+    )
+    services.connections.test(conn.id)
+    if acknowledge:
+        services.connections.acknowledge_notice(
+            conn.id, expected_version=services.connections.get(conn.id).version
+        )
+    services.settings.set(
+        "llm.simple_model", {"connection_id": conn.id, "model_id": "m-small"}, expected_version=0
+    )
+    return conn.id
+
+
+def stored_rows(services, account_id: str) -> int:
+    with services.db.connection() as conn:
+        return conn.execute(
+            'SELECT count(*) FROM "transaction" WHERE account_id = ?', [account_id]
+        ).fetchone()[0]
+
+
 def budget(calls: int = 50) -> RunBudget:
     return RunBudget(max_calls=calls, max_tokens=2_000_000, max_gbp=1.0, max_seconds=600)
 

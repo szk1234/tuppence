@@ -21,6 +21,10 @@ CREATE TABLE statement (
   stats TEXT NOT NULL DEFAULT '{}',
   error TEXT,
   run INTEGER NOT NULL DEFAULT 1,
+  -- The person's answer to "Which account is this?" (or "Wrong account?"), kept on the row so
+  -- a restart or a re-queued job never loses it, with the statement version it was given at.
+  account_answer_id TEXT REFERENCES account(id),
+  account_answer_version INTEGER,
   analysis_state TEXT NOT NULL DEFAULT 'none' CHECK (analysis_state IN ('none', 'pending', 'done')),
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
@@ -31,10 +35,13 @@ CREATE TABLE statement (
 CREATE INDEX ix_statement_status ON statement (status);
 CREATE INDEX ix_statement_account ON statement (account_id, period_end);
 
+-- statement_id: the statement the row was first imported from. Every statement that covers the
+-- row (that one, and any later one that found it already imported) is linked to it in
+-- statement_transaction; a row goes only when no statement covers it any more.
 CREATE TABLE "transaction" (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES account(id),
-  statement_id TEXT NOT NULL REFERENCES statement(id) ON DELETE CASCADE,
+  statement_id TEXT NOT NULL REFERENCES statement(id),
   date TEXT NOT NULL CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   amount_pence INTEGER NOT NULL CHECK (amount_pence != 0),
   currency TEXT NOT NULL DEFAULT 'GBP',
@@ -51,10 +58,23 @@ CREATE TABLE "transaction" (
 );
 CREATE INDEX ix_transaction_account_date ON "transaction" (account_id, date);
 CREATE INDEX ix_transaction_statement ON "transaction" (statement_id);
-CREATE TRIGGER transaction_is_immutable BEFORE UPDATE ON "transaction"
+-- The facts never change. Only which statement the row is counted as coming from may move,
+-- when that statement is removed and another one still covers the row.
+CREATE TRIGGER transaction_is_immutable BEFORE UPDATE OF id, account_id, date, amount_pence,
+  currency, raw_description, merchant_text, bank_category, bank_type, balance_after_pence,
+  fingerprint, occurrence, created_at ON "transaction"
 BEGIN
   SELECT RAISE(ABORT, 'transactions never change once imported');
 END;
+
+CREATE TABLE statement_transaction (
+  statement_id TEXT NOT NULL REFERENCES statement(id) ON DELETE CASCADE,
+  transaction_id TEXT NOT NULL REFERENCES "transaction"(id) ON DELETE CASCADE,
+  source_ref TEXT NOT NULL,
+  match TEXT NOT NULL CHECK (match IN ('new', 'exact', 'similar')),
+  PRIMARY KEY (statement_id, transaction_id)
+);
+CREATE INDEX ix_statement_transaction_txn ON statement_transaction (transaction_id);
 
 CREATE TABLE account_balance (
   id INTEGER PRIMARY KEY,

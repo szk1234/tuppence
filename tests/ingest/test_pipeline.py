@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from ingest.helpers import add_account, drain, use_local_model
+from ingest.helpers import add_account, cloud_model, drain, threads, upload, use_local_model
 from tuppence.app.services import build_services
 from tuppence.core.errors import InputError
 from tuppence.core.household import PersonIn
@@ -18,16 +18,6 @@ from tuppence.ingest.handoff import ANALYSIS_JOB, merge_statement_ids
 from tuppence.ingest.models import SkippedLine
 from tuppence.ingest.service import IngestService, RowEdit, clean_filename
 from tuppence.settings import RuntimeSettings
-
-
-def upload(services, fixtures, relative, data=None):
-    path = fixtures / relative
-    return services.ingest.upload(path.name, data if data is not None else path.read_bytes())
-
-
-def threads(services) -> set[str]:
-    """Thread ids that still have checkpoints in checkpoints.db."""
-    return {c.config["configurable"]["thread_id"] for c in services.checkpointer.list(None)}
 
 
 def test_monzo_csv_is_identified_and_imported_without_ai(ingest_env, fixtures):
@@ -475,20 +465,6 @@ def test_no_ai_model_fails_clearly_and_try_again_works(ingest_env, fixtures):
     assert done.status == "imported" and done.run == 2 and done.balance_verified
 
 
-def cloud_model(services, *, acknowledge: bool):
-    conn = services.connections.create(
-        "openai", api_key="sk-x", base_url="http://127.0.0.1:9100/v1"
-    )
-    services.connections.test(conn.id)
-    if acknowledge:
-        services.connections.acknowledge_notice(
-            conn.id, expected_version=services.connections.get(conn.id).version
-        )
-    services.settings.set(
-        "llm.simple_model", {"connection_id": conn.id, "model_id": "m-small"}, expected_version=0
-    )
-
-
 def test_local_only_gives_the_persons_message(ingest_env, fixtures):
     services, scripted = ingest_env
     add_account(services, "nationwide", "current", "Nationwide", last4="5678")
@@ -662,14 +638,21 @@ def test_no_identity_detail_or_balance_line_reaches_the_model(ingest_env, fixtur
         assert secret not in sent, secret
 
 
-def test_langsmith_tracing_never_runs(ingest_env, fixtures, monkeypatch):
+def connect_attempts_while_importing(services, fixtures, monkeypatch, *, flush=True):
+    """Import a Monzo CSV with LangSmith tracing switched on in the environment, and count
+    every network connection attempted (`flush`: wait for every tracer to finish; else stop
+    at the first attempt)."""
+    import time
+
     import langsmith.utils
     from langchain_core.tracers.langchain import wait_for_all_tracers
 
-    services, _ = ingest_env
     add_account(services, "monzo", "current", "Monzo")
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
     monkeypatch.setenv("LANGSMITH_API_KEY", "x")
+    # Should anything get past the blocked socket (a tracer thread outliving the test), it can
+    # only reach a closed port on this machine, never the real service.
+    monkeypatch.setenv("LANGSMITH_ENDPOINT", "http://127.0.0.1:9")
     langsmith.utils.get_env_var.cache_clear()
     attempts = []
 
@@ -681,12 +664,36 @@ def test_langsmith_tracing_never_runs(ingest_env, fixtures, monkeypatch):
     try:
         outcome = upload(services, fixtures, "csv/monzo.csv")
         drain(services)
-        wait_for_all_tracers()
+        if flush:
+            wait_for_all_tracers()
+        else:
+            deadline = time.monotonic() + 30
+            while not attempts and time.monotonic() < deadline:
+                time.sleep(0.05)
         assert services.statements.get(outcome.record.id).status == "imported"
     finally:
         monkeypatch.undo()
         langsmith.utils.get_env_var.cache_clear()
-    assert attempts == []
+    return attempts
+
+
+def test_langsmith_tracing_never_runs(ingest_env, fixtures, monkeypatch):
+    services, _ = ingest_env
+    assert connect_attempts_while_importing(services, fixtures, monkeypatch) == []
+
+
+def test_without_the_guard_a_run_would_reach_langsmith(ingest_env, fixtures, monkeypatch):
+    """The control for the test above: with the guard taken out, the same import tries to send
+    its run to LangSmith, so that test can fail."""
+    import contextlib
+
+    from tuppence.ingest import service as service_module
+
+    services, _ = ingest_env
+    monkeypatch.setattr(
+        service_module, "tracing_context", lambda **kwargs: contextlib.nullcontext()
+    )
+    assert connect_attempts_while_importing(services, fixtures, monkeypatch, flush=False)
 
 
 def test_checkpoints_only_ever_hold_plain_values(ingest_env, fixtures):
