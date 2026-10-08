@@ -36,6 +36,8 @@ dependencies = [
   # rapidocr depends on the full opencv-python, which drags in GUI libraries (Qt, FFmpeg);
   # the headless build has the same cv2 module without them (see tool.uv overrides).
   "opencv-python-headless>=4.11",
+  "langgraph>=1.2.14",
+  "langgraph-checkpoint-sqlite>=3.1.1",
 ]
 
 [project.optional-dependencies]

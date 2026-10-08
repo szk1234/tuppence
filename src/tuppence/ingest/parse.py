@@ -158,15 +158,17 @@ def parse_document(
     limits: ReaderLimits,
     prompts_dir: Path | None = None,
     names: Sequence[str] = (),
+    extract_limits: ExtractLimits | None = None,
 ) -> ParseOutcome:
     """`context_window` is the read model's, or None when no model is set up (an AI step then
     raises NoModelConfigured through `llm`). `names` are the household's own names, hidden
-    from layout learning like any account detail."""
+    from layout learning like any account detail. `extract_limits` bound the sandbox that
+    reads a CAMT.053 file's XML."""
     level = level_for(doc)
     if doc.kind in ("ofx", "qif", "camt053"):
         try:
             if doc.kind == "camt053":  # the XML is parsed in the sandbox, never in the app
-                parsed = parsed_from_facts(read_camt(path, ExtractLimits()))
+                parsed = parsed_from_facts(read_camt(path, extract_limits or ExtractLimits()))
             else:
                 text = decode_text(path.read_bytes())
                 parsed = parse_ofx(text) if doc.kind == "ofx" else parse_qif(text)
