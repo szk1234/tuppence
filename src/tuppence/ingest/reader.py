@@ -392,6 +392,7 @@ def _read_chunk(
             parsed, conversion = to_parsed(_with_real_refs(out, real), perspective=perspective)
             # A running balance counts only if it is printed on the row's own (sent) line.
             drop_unprinted_balances(parsed, chunk.lines)
+            _describe_empty_rows(parsed, chunk.lines)
             checked = conversion + check_rows(
                 chunk.lines,
                 all_lines=chunk.lines,
@@ -412,6 +413,16 @@ def _read_chunk(
         if isinstance(run, LockedBudget):
             run.release()
     return _ChunkOutcome(ok=False, parsed=last, errors=errors, attempts=done)
+
+
+def _describe_empty_rows(parsed: ParsedStatement, lines: Sequence[Line]) -> None:
+    """M2: a row the reader left without a description takes its line's text (as sent, so any
+    masked detail is put back later with the rest), so the fix-up screen never shows a row it
+    can't save."""
+    by_ref = {line.ref: line for line in lines}
+    for row in parsed.rows:
+        if not row.raw_description.strip() and (line := by_ref.get(row.ref)) is not None:
+            row.raw_description = tidy(line.text)
 
 
 def _with_real_refs(out: ReadOut, real: dict[str, str]) -> ReadOut:

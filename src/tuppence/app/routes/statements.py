@@ -32,6 +32,7 @@ MAX_FILES = 20
 MAX_REQUEST_MB = 100
 READ_CHUNK = 1024 * 1024
 HELD_TEXT_CHARS = 300  # a held-back line as shown on the fix-up screen
+MAX_SHOWN = 5_000  # transactions listed on a statement's page (a year's export fits)
 
 
 class Counts(BaseModel):
@@ -102,7 +103,8 @@ class StatementDetail(StatementView):
     draft_rows: list[DraftRowView]
     draft_skipped: list[SkippedLine]
     held_lines: list[HeldLine]  # held back from the AI; still to be decided
-    transactions: list[TransactionView]
+    transactions: list[TransactionView]  # the first MAX_SHOWN
+    transactions_total: int  # how many it covers: more than shown when it is a long statement
 
 
 class Rejected(BaseModel):
@@ -121,21 +123,28 @@ class AccountAnswer(BaseModel):
     expected_version: int
 
 
+MAX_DRAFT_LINES = 5_000  # rows or skipped lines in one save: more than any statement has
+Ref = Annotated[str, Field(min_length=1, max_length=40)]
+NO_DESCRIPTION = "(no description)"
+NO_REASON = "Not a transaction"
+
+
 class DraftRowIn(BaseModel):
-    ref: str
+    ref: Ref
     date: dt.date
-    amount: str  # pounds, e.g. "-42.18"
-    description: str = Field(min_length=1, max_length=300)
+    amount: str = Field(max_length=40)  # pounds, e.g. "-42.18"
+    # The reader may have left it empty: the screen sends it back as it got it.
+    description: str = Field(default="", max_length=300)
 
 
 class DraftSkipIn(BaseModel):
-    ref: str
-    reason: str = Field(min_length=1, max_length=200)
+    ref: Ref
+    reason: str = Field(default="", max_length=200)
 
 
 class DraftIn(BaseModel):
-    rows: list[DraftRowIn]
-    skipped: list[DraftSkipIn]
+    rows: list[DraftRowIn] = Field(max_length=MAX_DRAFT_LINES)
+    skipped: list[DraftSkipIn] = Field(max_length=MAX_DRAFT_LINES)
     expected_version: int
 
 
@@ -240,7 +249,7 @@ def _detail(services: Services, record: StatementRecord) -> StatementDetail:
             description=t.raw_description,
             balance_after=_money(t.balance_after_pence),
         )
-        for t in services.statements.transactions(record.id)
+        for t in services.statements.transactions(record.id, limit=MAX_SHOWN)
     ]
     return StatementDetail(
         **_view(services, record).model_dump(),
@@ -250,6 +259,7 @@ def _detail(services: Services, record: StatementRecord) -> StatementDetail:
         draft_skipped=skipped,
         held_lines=held,
         transactions=transactions,
+        transactions_total=services.statements.count_transactions(record.id),
     )
 
 
@@ -386,11 +396,11 @@ def save_draft(statement_id: str, body: DraftIn, services: Svc) -> StatementDeta
             ref=r.ref,
             date=r.date,
             amount_pence=parse_pounds(r.amount, allow_negative=True),
-            description=r.description,
+            description=r.description.strip() or NO_DESCRIPTION,
         )
         for r in body.rows
     ]
-    skipped = [SkippedLine(ref=s.ref, reason=s.reason) for s in body.skipped]
+    skipped = [SkippedLine(ref=s.ref, reason=s.reason.strip() or NO_REASON) for s in body.skipped]
     record = services.ingest.save_draft(
         statement_id, rows=rows, skipped=skipped, expected_version=body.expected_version
     )

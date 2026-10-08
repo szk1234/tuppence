@@ -372,3 +372,93 @@ def test_members_work_on_statements_but_not_on_vision_settings(client):
     up = m.post("/api/statements", files=files("csv/monzo.csv"))
     assert up.status_code == 201
     assert len(m.get("/api/statements").json()["statements"]) == 1
+
+
+def _needs_review(client) -> dict:
+    owner = person(client)
+    account(client, owner, "starling", "current", "Starling")
+    typo = (FIXTURES / "csv" / "starling.csv").read_text().replace("-48.20,909.62", "-48.02,909.62")
+    client.post("/api/statements", files=[("files", ("starling.csv", typo.encode(), "text/csv"))])
+    drain(client)
+    sid = by_name(client)["starling.csv"]["id"]
+    return client.get(f"/api/statements/{sid}").json()
+
+
+@pytest.mark.parametrize("ref", ["", "x" * 41])
+def test_a_bad_draft_ref_is_a_plain_422_not_a_500(client, ref):
+    """M1."""
+    detail = _needs_review(client)
+    for body in (
+        {"rows": [{"ref": ref, "date": "2026-10-01", "amount": "1.00", "description": "x"}],
+         "skipped": [], "expected_version": detail["version"]},
+        {"rows": [], "skipped": [{"ref": ref, "reason": "x"}],
+         "expected_version": detail["version"]},
+    ):  # fmt: skip
+        r = client.put(f"/api/statements/{detail['id']}/draft", json=body)
+        assert r.status_code == 422 and "ref" in r.text, r.text
+
+
+def test_draft_lists_are_capped(client):
+    detail = _needs_review(client)
+    row = {"ref": "L2", "date": "2026-10-01", "amount": "1.00", "description": "x"}
+    body = {"rows": [row] * 5001, "skipped": [], "expected_version": detail["version"]}
+    assert client.put(f"/api/statements/{detail['id']}/draft", json=body).status_code == 422
+    body = {
+        "rows": [],
+        "skipped": [{"ref": "L2", "reason": "x"}] * 5001,
+        "expected_version": detail["version"],
+    }
+    assert client.put(f"/api/statements/{detail['id']}/draft", json=body).status_code == 422
+
+
+def test_empty_descriptions_and_skip_reasons_from_the_reader_can_be_saved(client):
+    """M2: the reader left a description and a skip reason empty. The fix-up screen sends the
+    draft back as it got it, and that saves."""
+    from tuppence.ingest.models import ParsedStatement, SkippedLine
+
+    detail = _needs_review(client)
+    services = client.app.state.services
+    record = services.statements.get(detail["id"])
+    parsed = ParsedStatement.model_validate(record.draft["parsed"])
+    skipped = parsed.rows.pop()  # the reader skipped a line and gave no reason
+    parsed.skipped.append(SkippedLine(ref=skipped.ref, reason=""))
+    services.statements.update(
+        record.id, draft={**record.draft, "parsed": parsed.model_dump(mode="json")}
+    )
+    detail = client.get(f"/api/statements/{detail['id']}").json()
+    rows = [
+        {"ref": r["ref"], "date": r["date"], "amount": r["amount"],
+         "description": "" if r["ref"] == "L2" else r["description"]}
+        for r in detail["draft_rows"]
+    ]  # fmt: skip
+    r = client.put(
+        f"/api/statements/{detail['id']}/draft",
+        json={
+            "rows": rows,
+            "skipped": detail["draft_skipped"],
+            "expected_version": detail["version"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    saved = r.json()
+    assert all(s["reason"] for s in saved["draft_skipped"])
+    assert next(row for row in saved["draft_rows"] if row["ref"] == "L2")["description"]
+
+
+def test_a_long_statement_lists_all_its_transactions_or_says_how_many_more(client):
+    """M4: no silent cap on the transactions shown."""
+    owner = person(client)
+    account(client, owner, "monzo", "current", "Monzo")
+    header = (FIXTURES / "csv" / "monzo.csv").read_text().splitlines()[0]
+    lines = [header] + [
+        f"tx_{i:05d},{1 + i % 28:02d}/10/2026,12:00:00,Card payment,Shop {i},,Groceries,"
+        "-1.00,GBP,-1.00,GBP,,,,,,-1.00,"
+        for i in range(700)
+    ]
+    client.post("/api/statements", files=[("files", ("long.csv", ("\n".join(lines) + "\n").encode(),
+                                                     "text/csv"))])  # fmt: skip
+    drain(client)
+    sid = by_name(client)["long.csv"]["id"]
+    detail = client.get(f"/api/statements/{sid}").json()
+    assert detail["status"] == "imported", detail["check_errors"]
+    assert detail["transactions_total"] == 700 and len(detail["transactions"]) == 700

@@ -115,3 +115,39 @@ def test_model_strings_are_cleaned_and_capped_wherever_they_are_kept(ingest_env)
         fields = (r.amount_text, r.sign_from, r.raw_description, r.merchant, r.bank_type)
         assert all(clean(f) for f in fields)
     assert all(clean(s.reason) for s in out.parsed.skipped)
+
+
+def test_a_row_the_reader_left_without_a_description_takes_its_line(ingest_env):
+    """M2: the fix-up screen never gets a row it can't save."""
+    import json
+    import re
+
+    from ingest.helpers import parse_pages
+
+    services, scripted = ingest_env
+
+    def answer(body):
+        user = body["messages"][-1]["content"].split("Your previous answer")[0]
+        rows, skipped = [], []
+        for ref, text in re.findall(r"^(D\d+): (.*)$", user, re.MULTILINE):
+            if "Payroll" in text:
+                rows.append({"ref": ref, "date": "2026-10-02", "amount": 50.0,
+                             "amount_text": "+50.00", "sign_from": None, "raw_desc": "",
+                             "merchant": None, "bank_category": None, "bank_type": None,
+                             "running_balance": None})  # fmt: skip
+            else:
+                skipped.append({"ref": ref, "reason": "headings"})
+        statement = {
+            "period_start": "2026-10-01",
+            "period_end": "2026-10-31",
+            "opening_balance": None,
+            "closing_balance": None,
+            "currency": "GBP",
+        }
+        return json.dumps({"statement": statement, "transactions": rows, "skipped": skipped})
+
+    scripted.replies = [answer] * 3
+    out, _ = parse_pages(
+        services, [["Date Description Amount", "02 Oct 2026 Acme Payroll Ltd +50.00"]]
+    )
+    assert [r.raw_description for r in out.parsed.rows] == ["02 Oct 2026 Acme Payroll Ltd +50.00"]

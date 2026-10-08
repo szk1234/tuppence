@@ -448,6 +448,15 @@ class StatementStore:
             ).fetchall()
         return [TransactionRecord.model_validate(dict(r)) for r in rows]
 
+    def count_transactions(self, statement_id: str) -> int:
+        """How many rows the statement covers."""
+        with self.db.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM statement_transaction WHERE statement_id = ?",
+                [statement_id],
+            ).fetchone()
+        return int(row[0])
+
     def _drop_links(self, conn: sqlite3.Connection, statement_id: str) -> None:
         """A statement's links to its rows and its balances go (the rows stay for now)."""
         conn.execute("DELETE FROM account_balance WHERE statement_id = ?", [statement_id])
