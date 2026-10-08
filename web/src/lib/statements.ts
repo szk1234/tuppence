@@ -90,3 +90,8 @@ export const retryStatement = (id: string, version: number) =>
   api<StatementView>(`/api/statements/${encodeURIComponent(id)}/retry`, { method: 'POST', body: { expected_version: version } })
 
 export const removeStatement = (id: string) => api<void>(`/api/statements/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+/** What happens to the categories a person confirmed when a statement is read again or removed. */
+export const KEPT_NOTE =
+  "Categories you've confirmed are kept for transactions that come back when the statement is read again. Confirmations on transactions that don't come back are removed."
+export const WRONG_ACCOUNT_NOTE = "If you move it to another account, your confirmations don't move with it."

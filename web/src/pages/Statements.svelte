@@ -7,7 +7,7 @@
   import { dmyDate } from '../lib/dates'
   import { link } from '../lib/router.svelte'
   import {
-    IN_PROGRESS, listStatements, removeStatement, retryStatement, type StatementView,
+    IN_PROGRESS, KEPT_NOTE, listStatements, removeStatement, retryStatement, type StatementView,
   } from '../lib/statements'
 
   type Setting = { key: string; value: unknown; version: number }
@@ -75,7 +75,7 @@
   }
 
   async function remove(s: StatementView) {
-    if (!confirm(`Remove ${s.filename} and its transactions?`)) return
+    if (!confirm(`Remove ${s.filename} and its transactions? ${KEPT_NOTE}`)) return
     if (acting) return
     error = ''
     acting = true

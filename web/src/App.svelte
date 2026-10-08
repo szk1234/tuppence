@@ -22,11 +22,15 @@
   import Statements from './pages/Statements.svelte'
   import { statementIdFromPath } from './lib/statements'
   import Usage from './pages/Usage.svelte'
+  import Commitments from './pages/Commitments.svelte'
+  import Rules from './pages/settings/Rules.svelte'
+  import Spending from './pages/Spending.svelte'
   import Welcome from './pages/Welcome.svelte'
 
   const routes: Record<string, typeof Home> = { '/': Home, '/login': Home, '/setup': Home, '/settings/household': Household, '/settings/accounts': Accounts,
     '/settings/income': Income, '/settings/debts': Debts, '/settings/goals': Goals, '/settings/timeline': Timeline, '/settings/agents': Agents,
-    '/settings/ai': AI, '/settings/privacy': Privacy, '/usage': Usage, '/welcome': Welcome, '/statements': Statements }
+    '/settings/ai': AI, '/settings/privacy': Privacy, '/usage': Usage, '/welcome': Welcome, '/statements': Statements,
+    '/spending': Spending, '/commitments': Commitments, '/settings/rules': Rules }
   let failed = $state(false)
   onMount(() => { loadSession().catch(() => { failed = true }) })
 

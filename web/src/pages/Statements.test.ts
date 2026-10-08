@@ -52,3 +52,16 @@ it('locks the vision switch while its change is saving', async () => {
   await vi.waitFor(() => expect(box).toBeEnabled())
   expect(box).toBeChecked()
 })
+
+it('says what happens to confirmed categories before a statement is removed', async () => {
+  const ask = vi.fn(() => false)
+  vi.stubGlobal('confirm', ask)
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/settings'
+    ? json({ settings: [{ key: 'ingest.vision_for_scans', value: false, version: 0 }] })
+    : json({ statements: [view({})] })))
+  render(Statements)
+  await fireEvent.click(await screen.findByRole('button', { name: 'Remove monzo.csv' }))
+  const text = (ask.mock.calls as unknown as string[][])[0][0]
+  expect(text).toContain("Categories you've confirmed are kept for transactions that come back")
+  expect(text).toContain("Confirmations on transactions that don't come back are removed")
+})

@@ -8,7 +8,7 @@
   import { formatGBP } from '../lib/money'
   import { link, navigate } from '../lib/router.svelte'
   import {
-    acceptDraft, getStatement, IN_PROGRESS, retryStatement, saveDraft, type StatementDetail,
+    acceptDraft, getStatement, IN_PROGRESS, KEPT_NOTE, retryStatement, saveDraft, type StatementDetail, WRONG_ACCOUNT_NOTE,
   } from '../lib/statements'
 
   let { id }: { id: string } = $props()
@@ -143,10 +143,11 @@
 {#snippet again()}
   <div class="again">
     <button onclick={retry} disabled={busy}>Try again</button>
-    <span class="hint">Reads the file again from scratch. If it needs your AI model, that may cost another read.</span>
+    <span class="hint">Reads the file again from scratch. If it needs your AI model, that may cost another read. {KEPT_NOTE}</span>
     {#if !wrongAccount}
       <button class="link" onclick={() => (wrongAccount = true)}>Wrong account?</button>
     {:else}
+      <p class="hint">{WRONG_ACCOUNT_NOTE}</p>
       {#if detail}<AccountQuestion statement={detail} change onanswered={() => navigate('/statements')} />{/if}
     {/if}
   </div>
@@ -223,7 +224,7 @@
     {:else if detail.status === 'imported'}
       <details class="again">
         <summary>Something wrong with this import?</summary>
-        <p class="warn">This reads the file again. Its transactions stay until the new read is imported, which then replaces them.</p>
+        <p class="warn">This reads the file again. Its transactions stay until the new read is imported, which then replaces them. {KEPT_NOTE}</p>
         <label class="choice"><input type="checkbox" bind:checked={confirmed} /> I understand, read the file again</label>
         {#if confirmed}{@render again()}{/if}
       </details>

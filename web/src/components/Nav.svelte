@@ -10,6 +10,8 @@
   const top = [
     { href: '/', label: 'Home' },
     { href: '/statements', label: 'Statements' },
+    { href: '/spending', label: 'Spending' },
+    { href: '/commitments', label: 'Commitments' },
     { href: '/usage', label: 'Usage' },
   ]
   const settings = [
@@ -22,6 +24,7 @@
     { href: '/settings/ai', label: 'AI' },
     { href: '/settings/privacy', label: 'Privacy' },
     { href: '/settings/agents', label: 'Agents' },
+    { href: '/settings/rules', label: 'Rules' },
   ]
 </script>
 
