@@ -25,6 +25,12 @@ class KnowledgeEnv:
     def create(cls, tmp_path: Path) -> KnowledgeEnv:
         db = Database(tmp_path / "t.db")
         migrate(db, tmp_path / "b")
+        return cls.on(db)
+
+    @classmethod
+    def on(cls, db: Database) -> KnowledgeEnv:
+        """The stores on a migrated database, with the seed categories, Alex and a current
+        account (the app's own database, for tests that use the real services)."""
         versions = KnowledgeVersions(db)
         env = cls(db, versions, CategoryStore(db, versions), UnderstandingStore(db, versions))
         env.categories.seed()
@@ -88,14 +94,16 @@ class KnowledgeEnv:
         statement_id: str | None = None,
         merchant_text: str | None = None,
         bank_type: str | None = None,
+        bank_category: str | None = None,
     ) -> str:
         statement_id = statement_id or self.add_statement(account_id)
         txn_id = "t_" + secrets.token_hex(6)
         with self.db.transaction() as conn:
             conn.execute(
                 'INSERT INTO "transaction" (id, account_id, statement_id, date, amount_pence,'
-                " raw_description, merchant_text, bank_type, source_ref, fingerprint, occurrence,"
-                " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'L1', ?, 0, '2026-11-01T00:00:00Z')",
+                " raw_description, merchant_text, bank_type, bank_category, source_ref,"
+                " fingerprint, occurrence, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'L1', ?, 0, '2026-11-01T00:00:00Z')",
                 [
                     txn_id,
                     account_id,
@@ -105,6 +113,7 @@ class KnowledgeEnv:
                     text,
                     merchant_text,
                     bank_type,
+                    bank_category,
                     secrets.token_hex(12),
                 ],
             )
