@@ -554,12 +554,15 @@ def test_one_rule_for_a_sort_code_shaped_date_at_the_start_whatever_its_separato
     for line in (
         "03/10/2026 87654321 RENT 10.00",
         "2026-10-03 87654321 RENT 10.00",
-        "03 Oct 2026 87654321 RENT 10.00",
         "02/10/26 20-11-33 87654321 10.00",
     ):
         out = sensitive.prepare_outbound(line)
         assert out is not None and "87654321" not in out.text
         assert out.text.startswith(line.split(" 87654321")[0].split(" 20-11-33")[0]), out.text
+    # A named date's four-digit "year" with a number joined to it is part of the number
+    # (R-M3-25 (5)): the row's date is "03 Oct", the rest is restored on this device.
+    out = sensitive.prepare_outbound("03 Oct 2026 87654321 RENT 10.00")
+    assert out is not None and out.text == "03 Oct [hidden-a] RENT 10.00"
 
 
 def _separators() -> list[str]:
@@ -618,3 +621,58 @@ def test_two_groups_joined_by_any_short_separator_are_masked(seed):
             leaked.append((line, out.text))
     if leaked:
         pytest.fail(f"{len(leaked)} joined pairs leak a digit, e.g. {leaked[:5]}")
+
+
+# Re-review 3 M1 (R-M3-25 (5)): a named date took the group of four digits after it for its
+# year, whatever the group was, so "02 Oct 8765 4321" sent an account number whole. A named date
+# takes a four-digit group as its year only when it is 1990-2099 and no other group of digits is
+# joined to it (a second date may follow). Both variants: spaced, and glued or dashed.
+NAMED_YEAR = [
+    "02 Oct 8765 4321 RENT 250.00", "02 Oct 8765-4321 RENT 250.00", "02 Oct 8765 4321 250.00",
+    "2nd Oct 8765 4321 J SMITH 250.00", "Mon 2 Oct 8765 4321 -£250.00",
+    "02-Oct-8765-4321 RENT 250.00", "02Oct8765 4321 RENT 250.00",
+    "02 Oct 2026 8765 4321 RENT 250.00", "02 OCT 2011 3387 6543 21 250.00",
+    "02 Oct 2011-33 87654321 250.00", "02 Oct 1234 5678 RENT 1.00",
+]  # fmt: skip
+NAMED_KEPT = [
+    "02 Oct 2026 TESCO STORES 12.50", "02 Oct 2026 03 Oct 2026 TESCO STORES 12.50",
+    "2 Oct 2026 TESCO STORES 2345 12.50", "02-Oct-2026 TESCO 12.50", "02Oct2026 TESCO 12.50",
+    "02 Oct 1999 TESCO 12.50", "Mon 2 Oct 2026 LITTLE CAFE -£3.40", "02 Oct 2026 12.50",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("line", NAMED_YEAR)
+def test_a_named_dates_year_is_never_a_group_of_an_account_number(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is not None
+    assert "8765" not in out.text and "4321" not in out.text and "5678" not in out.text, out
+    assert "6543" not in out.text and "87654321" not in out.text, out
+    assert survivors(line, out.text) == [], out.text
+
+
+@pytest.mark.parametrize("line", NAMED_KEPT)
+def test_a_named_dates_real_year_is_kept(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is not None and out.text == line
+
+
+def test_the_oracle_reads_a_named_dates_year_the_same_way():
+    """The guard's own reading (`digit_runs`), written apart: the account number is a run."""
+    assert runs("02 Oct 8765 4321 RENT 250.00") == ["87654321"]
+    assert runs("02-Oct-8765-4321 RENT 250.00") == ["87654321"]
+    assert runs("02 Oct 2026 8765 4321 RENT 250.00") == ["202687654321"]
+    assert runs("02 Oct 2026 03 Oct 2026 TESCO 12.50") == []
+    assert runs("02 Oct 2026 TESCO 12.50") == []
+
+
+def test_the_guard_catches_a_named_dates_year_read_from_any_group(monkeypatch):
+    """The control: with any group of four digits after a named month read as its year, the
+    account number goes out and the guard says so."""
+    monkeypatch.setattr(sensitive, "_named_year", lambda view, year, part: True)
+    leaked = [line for line in NAMED_YEAR[:7] if survivors(line, _outbound(line))]
+    assert len(leaked) >= 5
+
+
+def _outbound(line: str) -> str:
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    return "" if out is None else out.text

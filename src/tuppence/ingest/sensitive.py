@@ -17,6 +17,7 @@ import unicodedata
 from collections.abc import Sequence
 from datetime import date
 from functools import lru_cache
+from typing import NamedTuple
 
 from tuppence.ingest.models import MaskedLine
 from tuppence.ingest.textnum import parse_date
@@ -453,7 +454,7 @@ _ROW_DATE = re.compile(
     r"(?P<d>\d{1,2})(?P<s>[/. \-])(?P<m>\d{1,2})(?P=s)(?P<y>\d{4}|\d{2})(?!\d)"
     r"|(?P<iy>\d{4})-(?P<im>\d{1,2})-(?P<id>\d{1,2})(?!\d)"
     r"|(?P<nd>\d{1,2})(?:st|nd|rd|th)?[ \-]?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
-    r"[a-z]*\.?(?:[ \-]?(?:\d{4}|\d{2})(?!\d))?",
+    r"[a-z]*\.?(?P<ny>[ \-]?(?:\d{4}|\d{2})(?!\d))?",
     re.IGNORECASE,
 )
 _WELL_FORMED = re.compile(r"(?<![\d,])(?<!\d\.)(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d|[.,]\d)")
@@ -526,10 +527,17 @@ def _joined_digits(view: str, at: int, part: Sequence[bool]) -> int:
     return digits
 
 
-def _row_date(view: str, at: int) -> re.Match[str] | None:
+class _Date(NamedTuple):
+    start: int
+    end: int
+    sort_code_shaped: bool  # a two-digit year with digits for its month: 20/11/33, 20.11.33
+
+
+def _row_date(view: str, at: int, part: Sequence[bool]) -> _Date | None:
     match = _ROW_DATE.match(view, at)
     if match is None:
         return None
+    end = match.end()
     if match.group("d") is not None:
         real = 1 <= int(match.group("d")) <= 31 and 1 <= int(match.group("m")) <= 12
     elif match.group("iy") is not None:
@@ -537,29 +545,47 @@ def _row_date(view: str, at: int) -> re.Match[str] | None:
         real = real and 1 <= int(match.group("id")) <= 31
     else:
         real = 1 <= int(match.group("nd")) <= 31
-    return match if real else None
+        if match.group("ny") is not None and not _named_year(view, match, part):
+            end = match.start("ny")  # "02 Oct", then a number: "02 Oct 8765 4321"
+    if not real:
+        return None
+    shaped = match.group("d") is not None and len(match.group("y")) == 2
+    return _Date(match.start(), end, shaped)
 
 
-def _stands(view: str, date: re.Match[str], part: Sequence[bool]) -> bool:
+def _named_year(view: str, match: re.Match[str], part: Sequence[bool]) -> bool:
+    """A named date takes the group of four digits after it as its year only when it is
+    1990-2099 and no other group of digits is joined to it, unless what follows is another
+    date ("02 Oct 2026 03 Oct 2026"): "02 Oct 8765 4321" and "02 Oct 2026 8765 4321" are an
+    account number after the date (R-M3-25 (5)). A two-digit year is always the year."""
+    year = match.group("ny").strip(" -")
+    if len(year) != 4:
+        return True
+    if not 1990 <= int(year) <= 2099:
+        return False
+    end = match.end()
+    return not _joined_digits(view, end, part) or _ROW_DATE.match(view, end + 1) is not None
+
+
+def _stands(view: str, date: _Date, part: Sequence[bool]) -> bool:
     """A leading date that is the row's own: not shaped like a sort code (a two-digit year with
     digits for its month), or one with no number of four or more digits joined after it."""
-    sort_code_shaped = date.group("d") is not None and len(date.group("y")) == 2
-    return not sort_code_shaped or _joined_digits(view, date.end(), part) < _OWN_DATE_JOINED
+    return not date.sort_code_shaped or _joined_digits(view, date.end, part) < _OWN_DATE_JOINED
 
 
 def _own_dates(view: str, part: Sequence[bool]) -> tuple[int, int] | None:
     """The span of the row's own date at the start of the line, with its posting date when one
     follows it (see above); None when the line doesn't start with one."""
     prefix = _DAY_PREFIX.match(view)
-    first = _row_date(view, prefix.end() if prefix else 0)
+    first = _row_date(view, prefix.end() if prefix else 0, part)
     if first is None:
         return None
-    end = first.end()
-    second = _row_date(view, end + 1) if view[end : end + 1] == " " else None
+    end = first.end
+    second = _row_date(view, end + 1, part) if view[end : end + 1] == " " else None
     if second is not None and _stands(view, second, part):
-        return first.start(), second.end()
+        return first.start, second.end
     if second is not None or _stands(view, first, part):
-        return first.start(), end  # a date-shaped group after it: the date, then a number
+        return first.start, end  # a date-shaped group after it: the date, then a number
     return None  # a sort code before an account number, not the row's date
 
 

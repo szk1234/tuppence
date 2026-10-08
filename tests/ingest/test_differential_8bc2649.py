@@ -239,6 +239,16 @@ PROBES = [
     "FPO J SMITH",
     "20 11 33 87654321 RENT",
     "20.11.33 87654321 RENT",
+    # re-review 3 M1 (R-M3-25 (5)): a named date's "year" read from an account number, spaced
+    # (sent whole at 8bc2649 too) and glued or dashed (masked at 8bc2649)
+    "02 Oct 8765 4321 RENT 250.00",
+    "02 Oct 8765-4321 RENT 250.00",
+    "2nd Oct 8765 4321 J SMITH 250.00",
+    "Mon 2 Oct 8765 4321 -£250.00",
+    "02-Oct-8765-4321 RENT 250.00",
+    "02Oct8765 4321 RENT 250.00",
+    "02 Oct 2026 8765 4321 RENT 250.00",
+    "02 Oct 2011-33 87654321 250.00",
 ]
 
 

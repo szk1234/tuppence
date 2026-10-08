@@ -13,7 +13,9 @@ word ("BOOTS"). Only two things are not numbers:
 - the line's own date at its start (after a day name), and a second date right after it: a
   named month or a four-digit year always, a two-digit year with digits for its month (20/11/33,
   20.11.33, 20 11 33) only when no group of four or more digits is joined after it, unless
-  another date is what follows."""
+  another date is what follows. Four digits after a named month are its year only when they read
+  1990 to 2099 with no other group joined after them ("02 Oct 8765 4321" is a date and a
+  number)."""
 
 from __future__ import annotations
 
@@ -36,7 +38,7 @@ _NUMERIC = re.compile(r"(\d{1,2})([/.\- ])(\d{1,2})\2(\d{4}|\d{2})(?!\d)")
 _ISO = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
 _NAMED = re.compile(
     r"(\d{1,2})(?:st|nd|rd|th)?[ -]?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
-    r"\.?(?:[ -]?(?:\d{4}|\d{2})(?!\d))?",
+    r"\.?(?P<year>[ -]?(?P<digits>\d{4}|\d{2})(?!\d))?",
     re.IGNORECASE,
 )
 
@@ -89,8 +91,23 @@ def _date_at(text: str, at: int) -> tuple[int, bool] | None:
     if (m := _ISO.match(text, at)) and 1950 <= int(m[1]) <= 2099 and 1 <= int(m[2]) <= 12:
         return m.end(), False
     if (m := _NAMED.match(text, at)) and 1 <= int(m[1]) <= 31:
+        if m["year"] and not _a_year(text, m["digits"], m.end()):
+            return m.start("year"), False  # the date is "02 Oct"; a number follows
         return m.end(), False
     return None
+
+
+def _a_year(text: str, digits: str, end: int) -> bool:
+    """Four digits after a named month are its year only when they read 1990 to 2099 and no
+    group of digits is joined after them, unless another date starts there."""
+    if len(digits) == 2:
+        return True
+    if not 1990 <= int(digits) <= 2099:
+        return False
+    if _number_after(text, end) == 0:
+        return True
+    after = end + 1
+    return any(p.match(text, after) for p in (_NUMERIC, _ISO, _NAMED))
 
 
 def _number_after(text: str, at: int) -> int:
