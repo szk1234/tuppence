@@ -39,6 +39,13 @@ Cloud tests may cost a little money. Add `-k local` to run only the local one.
 
 The end-to-end tests need a browser; on first run: `cd web && npx playwright install chromium`.
 
+## Statement evals
+
+- `uv run python -m evals.run --model oracle` checks the whole synthetic corpus with the deterministic oracle (no model needed; this is what CI runs).
+- `uv run python -m evals.run --model "<connection>/<model id>" --out evals/results/<name>.json` scores a real model you have set up in Tuppence (Settings > AI); its usage and cost appear on the Usage page. For a local model, run any local server (for example the llama.cpp container that `scripts/live_llamacpp.sh` starts), add it in Settings > AI, then run the eval against it. Close Tuppence first: the eval needs the data folder to itself.
+- `uv run python -m evals.table --write README.md` refreshes the README table from `evals/results/`.
+- Regenerate the binary fixtures with `uv run python scripts/make_statement_fixtures.py`; never add a real statement to the corpus.
+
 ## Personal-data guard
 
 Tuppence handles financial data, so we make sure none of yours ends up in the

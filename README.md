@@ -40,6 +40,18 @@ such as Tailscale.
 - **Works without AI** for importing, rules, budgets and UK checks; AI adds the
   understanding.
 
+## Which AI model is enough?
+
+CSV, OFX/QFX, QIF, CAMT.053 and Excel statements never need an AI model: they are
+read by fixed importers on your machine. PDFs, scans and screenshots do. The table
+below is produced by `python -m evals.run` on a synthetic statement corpus (see
+CONTRIBUTING.md), so you can see what a model costs and how well it reads.
+
+<!-- model-table:start -->
+| Model | Statements read correctly | Needing AI | Row accuracy | £ per AI statement | Seconds per AI statement |
+|---|---|---|---|---|---|
+<!-- model-table:end -->
+
 ## Develop
 
 ```bash

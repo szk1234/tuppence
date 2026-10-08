@@ -10,11 +10,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+# Make the repository root importable when run as a script.
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from evals import oracle  # noqa: E402
+
 STRUCTURED = json.dumps({"category": "test", "confidence": 1})
+SCRIPT: list[str] = []
+CALLS = {"count": 0}
+
+
+def canned_reply(messages: list[dict[str, Any]]) -> str | None:
+    """Scripted replies first, then the oracle for Tuppence's own read and CSV-mapping prompts.
+    None means: answer as before ("Echo: ...")."""
+    CALLS["count"] += 1
+    if SCRIPT:
+        return SCRIPT.pop(0)
+    text = json.dumps(messages)
+    if oracle.READ_MARKER in text or oracle.MAPPING_MARKER in text:
+        return oracle.reply(messages)
+    return None
 
 
 def _text(content: Any) -> str:
@@ -46,7 +69,18 @@ def create_fake_app() -> FastAPI:
     @app.post("/_reset")
     def reset() -> dict[str, bool]:
         last.clear()
+        SCRIPT.clear()
+        CALLS["count"] = 0
         return {"ok": True}
+
+    @app.post("/_script")
+    async def script(body: dict[str, Any]) -> dict[str, int]:
+        SCRIPT.extend(str(reply) for reply in body.get("replies", []))
+        return {"queued": len(SCRIPT)}
+
+    @app.get("/_calls")
+    async def calls() -> dict[str, int]:
+        return {"count": CALLS["count"]}
 
     @app.get("/v1/models")
     def models(request: Request) -> dict[str, Any]:
@@ -80,12 +114,16 @@ def create_fake_app() -> FastAPI:
         schema = "response_format" in body or any(
             m.get("role") == "system" and "JSON Schema" in _text(m.get("content")) for m in msgs
         )
+        canned = canned_reply(msgs)
         return {
             "model": body.get("model", "fake-small"),
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": _reply(user, schema)},
+                    "message": {
+                        "role": "assistant",
+                        "content": canned if canned is not None else _reply(user, schema),
+                    },
                     "finish_reason": "stop",
                 }
             ],
