@@ -125,3 +125,17 @@ def fixture_pages(relative: str, kind: str) -> tuple[tuple[str, ...], ...]:
     for line in doc.lines:
         pages.setdefault(line.ref.split("L", 1)[0], []).append(line.text)
     return tuple(tuple(page) for page in pages.values())
+
+
+def history_missing(base: str) -> None:
+    """A differential guard can't read the code at `base` (a shallow checkout): skipped on a
+    developer's machine, but a failure in CI, where the checkout has the whole history
+    (fetch-depth 0), so the guard never passes there without running (re-review 3 M7)."""
+    import os
+
+    import pytest
+
+    message = f"{base} isn't in this checkout's history"
+    if os.environ.get("CI") == "true":
+        pytest.fail(f"{message}: CI must check out with fetch-depth 0 to run this guard")
+    pytest.skip(message)

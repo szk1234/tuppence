@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from ingest.helpers import history_missing
 from tuppence.ingest.models import Line
 from tuppence.ingest.textprep import pages_document, text_document
 
@@ -118,7 +119,7 @@ def old_textprep() -> types.ModuleType:
     sensitive_source = _old("src/tuppence/ingest/sensitive.py")
     textprep_source = _old("src/tuppence/ingest/textprep.py")
     if sensitive_source is None or textprep_source is None:
-        pytest.skip(f"{BASE} isn't in this checkout's history")
+        history_missing(BASE)
     old_sensitive = types.ModuleType("old_sensitive")
     exec(compile(sensitive_source, "old_sensitive.py", "exec"), old_sensitive.__dict__)  # noqa: S102 - the repo's own earlier code
     sys.modules["old_sensitive"] = old_sensitive

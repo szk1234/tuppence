@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from ingest.digit_runs import fold, own_dates, survivors
+from ingest.helpers import history_missing
 from tuppence.ingest import sensitive, textprep
 
 BASE = "8bc2649"
@@ -266,7 +267,7 @@ def old_textprep() -> types.ModuleType:
     sensitive_source = _old("src/tuppence/ingest/sensitive.py")
     textprep_source = _old("src/tuppence/ingest/textprep.py")
     if sensitive_source is None or textprep_source is None:
-        pytest.skip(f"{BASE} isn't in this checkout's history")
+        history_missing(BASE)
     old_sensitive = types.ModuleType("sensitive_8bc2649")
     exec(compile(sensitive_source, "sensitive_8bc2649.py", "exec"), old_sensitive.__dict__)  # noqa: S102 - the repo's own earlier code
     sys.modules["sensitive_8bc2649"] = old_sensitive
@@ -483,3 +484,31 @@ def test_the_address_guard_can_fail(old_textprep, monkeypatch):
             old_textprep, lambda m, t=text: m.text_document(t, sha256="x"), strict=True
         )
     assert lost
+
+
+def test_without_the_history_the_guard_fails_in_ci_and_skips_elsewhere(monkeypatch):
+    """Re-review 3 M7: CI's checkout was shallow, so both differential guards skipped there."""
+    monkeypatch.setenv("CI", "true")
+    with pytest.raises(pytest.fail.Exception, match="fetch-depth 0"):
+        history_missing("0000000")
+    monkeypatch.delenv("CI")
+    with pytest.raises(pytest.skip.Exception):
+        history_missing("0000000")
+
+
+def test_ci_checks_out_the_whole_history_wherever_it_runs_the_default_suite():
+    """Every workflow job that runs the default suite (which holds the differential guards)
+    checks out with fetch-depth 0."""
+    import yaml
+
+    workflows = _SOURCE / ".github" / "workflows"
+    checked = 0
+    for path in sorted(workflows.glob("*.yml")):
+        for name, job in (yaml.safe_load(path.read_text()).get("jobs") or {}).items():
+            runs = " ".join(str(step.get("run", "")) for step in job.get("steps", []))
+            if "pytest" not in runs or "-m slow" in runs:
+                continue
+            checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses")))
+            assert (checkout.get("with") or {}).get("fetch-depth") == 0, f"{path.name}: {name}"
+            checked += 1
+    assert checked >= 2  # CI's python job and the release test job
