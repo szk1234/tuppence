@@ -217,3 +217,25 @@ def test_a_model_problem_never_fails_the_run(aenv):
     counts = commitments.run(run_id="r1", budget=None)
     assert counts["awaiting_ai"] == 1 and "model" in counts["ai_problem"].lower()
     assert [c.name for c in store.list()] == ["Streamly"]
+
+
+def test_a_stored_commitment_waits_while_only_the_ai_can_say_what_it_is(aenv):
+    """Re-filed under a category that says nothing about its kind, a stored commitment needs
+    the AI's label: while the AI can't be asked (no model, or the budget), it stays as it
+    was; once the AI says it isn't a commitment, it goes."""
+    from tuppence.llm.types import BudgetExceeded, NoModelConfigured
+
+    ids = add(aenv, months(7, 4), 999, "STREAMLY", "subscriptions.tv-streaming")
+    commitments, store = specialist(aenv)
+    commitments.run(run_id="r1", budget=None)
+    [stored] = store.list()
+    for t in ids:  # now "other": only the AI can tell what kind of payment it is
+        file_as(aenv, t, "other", aenv.merchants)
+    for problem in (NoModelConfigured("Choose a model."), BudgetExceeded("run cap")):
+        aenv.llm.script = [problem]
+        counts = commitments.run(run_id="r2", budget=None)
+        assert (counts["kept"], counts["removed"]) == (1, 0)
+        assert [c.id for c in store.list()] == [stored.id]
+    aenv.llm.script = [{"payments": [{"ref": "P1", "kind": "none"}]}]
+    counts = commitments.run(run_id="r3", budget=None)
+    assert (counts["labelled"], counts["removed"]) == (1, 1) and store.list() == []

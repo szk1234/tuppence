@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import date, datetime
 from typing import Any, Literal
 
@@ -133,13 +133,24 @@ class CommitmentStore:
             )
         }
 
-    def sync(self, conn: sqlite3.Connection, detected: Sequence[Detected]) -> dict[str, int]:
+    def sync(
+        self,
+        conn: sqlite3.Connection,
+        detected: Sequence[Detected],
+        *,
+        keep_merchants: Collection[str] = (),
+    ) -> dict[str, int]:
         """Make the stored commitments match this run's findings, inside the caller's
         transaction. A finding that shares payments with a stored commitment updates it
-        (same id); the rest are new; stored ones no longer found are removed."""
+        (same id); the rest are new; stored ones no longer found are removed, apart from
+        those of `keep_merchants`: merchants whose kind this run couldn't learn (the AI was
+        unavailable or out of budget), which stay as they were until it can."""
         now = to_iso(self.clock())
         existing: dict[str, tuple[set[str], list[str]]] = {}
-        for row in conn.execute("SELECT id, flags FROM commitment WHERE dismissed = 0"):
+        merchant_of: dict[str, str] = {}
+        for row in conn.execute(
+            "SELECT id, merchant_id, flags FROM commitment WHERE dismissed = 0"
+        ):
             ids = {
                 r[0]
                 for r in conn.execute(
@@ -148,7 +159,9 @@ class CommitmentStore:
                 )
             }
             existing[row["id"]] = (ids, json.loads(row["flags"]))
-        counts = {"new": 0, "updated": 0, "removed": 0, "new_price_rises": 0}
+            merchant_of[row["id"]] = row["merchant_id"]
+        keep = set(keep_merchants)
+        counts = {"new": 0, "updated": 0, "removed": 0, "kept": 0, "new_price_rises": 0}
         matched: set[str] = set()
         for found in detected:
             payments = set(found.payment_ids)
@@ -213,9 +226,13 @@ class CommitmentStore:
                 [(commitment_id, t) for t in found.payment_ids],
             )
         for cid in existing:
-            if cid not in matched:
-                conn.execute("DELETE FROM commitment WHERE id = ?", [cid])
-                counts["removed"] += 1
+            if cid in matched:
+                continue
+            if merchant_of[cid] in keep:
+                counts["kept"] += 1
+                continue
+            conn.execute("DELETE FROM commitment WHERE id = ?", [cid])
+            counts["removed"] += 1
         return counts
 
     def set_dismissed(

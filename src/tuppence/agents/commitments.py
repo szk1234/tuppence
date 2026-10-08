@@ -359,17 +359,23 @@ class Commitments:
                 found.append((group, series, kind, source))
         labelling = self._label([(g, s) for g, s, k, _ in found if k is None], run_id, budget)
         labels = labelling.kinds
+        # Merchants whose kind only the AI can tell and that it didn't (unavailable, out of
+        # budget, a bad reply): what is stored for them stays until it can.
+        unlabelled = {g.merchant_id for g, _, k, _ in found if k is None} - set(labels)
         with self.d.db.transaction() as conn:
             for merchant_id, kind in labels.items():
                 self.d.merchants.set_business_type(conn, merchant_id, kind, "llm")  # type: ignore[arg-type]
             detected = self._detected(found, labels, coverage)
-            counts: dict[str, Any] = dict(self.d.store.sync(conn, detected))
+            counts: dict[str, Any] = dict(
+                self.d.store.sync(conn, detected, keep_merchants=unlabelled)
+            )
         counts["labelled"] = len(labels)
         counts["found"] = len(detected)
         counts["deferred"] = labelling.deferred
         counts["awaiting_ai"] = labelling.awaiting_ai
         counts["bad_replies"] = labelling.bad_replies
         counts["scrub_failures"] = labelling.scrub_failures
+        counts["stopped"] = labelling.stopped  # "", "budget" or "awaiting_ai"
         if labelling.ai_problem:
             counts["ai_problem"] = labelling.ai_problem
         return counts
