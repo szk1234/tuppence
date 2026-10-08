@@ -10,6 +10,8 @@
   let busy = $state(false)
   let error = $state('')
   let rejected = $state<{ filename: string; reason: string }[]>([])
+  // Files uploaded before: nothing new was added for them (M3).
+  let duplicates = $state<StatementView[]>([])
   let input = $state<HTMLInputElement>()
 
   async function send(list: FileList | null | undefined) {
@@ -18,9 +20,11 @@
     busy = true
     error = ''
     rejected = []
+    duplicates = []
     try {
       const result = await uploadStatements(files)
       rejected = result.rejected
+      duplicates = result.statements.filter((s) => s.duplicate)
       onuploaded(result.statements)
     } catch (err) {
       error = err instanceof ApiError ? err.detail : 'The upload failed. Try again.'
@@ -62,6 +66,12 @@
   {#if busy}<p role="status">Uploading…</p>{/if}
 </section>
 <Notice message={error} />
+{#if duplicates.length}
+  <p class="notice" role="status">
+    {duplicates.length === 1 ? 'This file was' : 'These files were'} already uploaded, so nothing new was added:
+    {#each duplicates as item, i}{i ? ', ' : ''}<strong>{item.filename}</strong> ({item.status_label}){/each}.
+  </p>
+{/if}
 {#if rejected.length}
   <div class="notice error" role="alert">
     <p>These files weren't added:</p>

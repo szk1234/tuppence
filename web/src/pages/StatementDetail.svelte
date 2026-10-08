@@ -29,6 +29,13 @@
 
   const fail = (err: unknown) => { saved = ''; error = errorText(err) }
 
+  /** Only a statement whose sums were done and passed "adds up"; with no balance printed there
+   * was nothing to check. */
+  function balanceCheck(d: StatementDetail): string {
+    if (d.opening_balance === null && d.closing_balance === null) return 'No balances printed to check'
+    return d.balance_verified ? 'Balances add up' : 'Balance unverified'
+  }
+
   function show(d: StatementDetail) {
     detail = d
     heldSkipped = []
@@ -118,6 +125,21 @@
   }
 </script>
 
+{#snippet more()}
+  {#if detail && detail.transactions_total > detail.transactions.length}
+    <p class="hint">Showing the first {detail.transactions.length.toLocaleString('en-GB')} of {detail.transactions_total.toLocaleString('en-GB')} transactions.</p>
+  {/if}
+{/snippet}
+
+{#snippet kept()}
+  {#if detail && detail.status !== 'imported' && detail.transactions.length}
+    <h2>Transactions from its earlier import</h2>
+    <p class="hint">These stay until this file is read again and imported, which then replaces them.</p>
+    <TransactionsTable rows={detail.transactions} />
+    {@render more()}
+  {/if}
+{/snippet}
+
 {#snippet again()}
   <div class="again">
     <button onclick={retry} disabled={busy}>Try again</button>
@@ -142,9 +164,10 @@
         {#if detail.period_start}<dt>Period</dt><dd>{dmyDate(detail.period_start)} to {dmyDate(detail.period_end)}</dd>{/if}
         {#if detail.opening_balance}<dt>Opening balance</dt><dd>{formatGBP(detail.opening_balance)}</dd>{/if}
         {#if detail.closing_balance}<dt>Closing balance</dt><dd>{formatGBP(detail.closing_balance)}</dd>{/if}
-        <dt>Balance check</dt><dd>{detail.balance_verified ? 'Balances add up' : 'Balance unverified'}</dd>
+        <dt>Balance check</dt><dd>{balanceCheck(detail)}</dd>
       </dl>
       <TransactionsTable rows={detail.transactions} />
+      {@render more()}
     {:else if detail.status === 'needs_review'}
       <h2>What didn't add up</h2>
       {#if detail.check_errors.length}
@@ -194,13 +217,14 @@
     {:else}
       <p role="status">Still reading this file…</p>
     {/if}
+    {@render kept()}
     {#if detail.status === 'failed' || detail.status === 'needs_review'}
       {@render again()}
     {:else if detail.status === 'imported'}
       <details class="again">
         <summary>Something wrong with this import?</summary>
-        <p class="warn">This will remove these transactions and read the file again.</p>
-        <label class="choice"><input type="checkbox" bind:checked={confirmed} /> I understand, remove them and read the file again</label>
+        <p class="warn">This reads the file again. Its transactions stay until the new read is imported, which then replaces them.</p>
+        <label class="choice"><input type="checkbox" bind:checked={confirmed} /> I understand, read the file again</label>
         {#if confirmed}{@render again()}{/if}
       </details>
     {/if}

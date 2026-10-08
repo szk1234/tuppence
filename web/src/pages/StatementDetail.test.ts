@@ -111,8 +111,42 @@ it('guards re-reading an imported statement behind an explicit confirmation', as
   expect(await screen.findByText('Something wrong with this import?')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Wrong account?' })).not.toBeInTheDocument()
-  expect(screen.getByText('This will remove these transactions and read the file again.')).toBeInTheDocument()
+  expect(screen.getByText(/Its transactions stay until the new read is imported/)).toBeInTheDocument()
   await fireEvent.click(screen.getByLabelText(/I understand/))
   expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Wrong account?' })).toBeInTheDocument()
+})
+
+const tx = (n: number) => Array.from({ length: n }, (_, i) => ({
+  id: `t_${i}`, date: '2026-10-01', amount: '-1.00', description: `Shop ${i}`, balance_after: null,
+}))
+
+it('says when there were no balances to check, rather than that they add up', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({
+    ...base, status: 'imported', status_label: 'Imported', version: 2, check_errors: [], draft_rows: [],
+    held_lines: [], opening_balance: null, closing_balance: null, balance_verified: false,
+    transactions: tx(1), transactions_total: 1,
+  })))
+  render(StatementDetail, { id: 's_1' })
+  expect(await screen.findByText('No balances printed to check')).toBeInTheDocument()
+  expect(screen.queryByText('Balances add up')).not.toBeInTheDocument()
+})
+
+it('says how many transactions a long statement has when it shows only the first (M4)', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({
+    ...base, status: 'imported', status_label: 'Imported', version: 2, check_errors: [], draft_rows: [],
+    held_lines: [], transactions: tx(3), transactions_total: 7000,
+  })))
+  render(StatementDetail, { id: 's_1' })
+  expect(await screen.findByText(/Showing the first 3 of 7,000 transactions/)).toBeInTheDocument()
+})
+
+it('shows the rows an earlier import keeps while the file is read again (Task 9 N1)', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({
+    ...base, status: 'failed', status_label: "Couldn't import", version: 3, check_errors: [], draft_rows: [],
+    held_lines: [], error: 'The AI model couldn\'t finish reading this file.', transactions: tx(2), transactions_total: 2,
+  })))
+  render(StatementDetail, { id: 's_1' })
+  expect(await screen.findByText(/from its earlier import/)).toBeInTheDocument()
+  expect(screen.getByText('Shop 1')).toBeInTheDocument()
 })

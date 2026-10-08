@@ -34,3 +34,19 @@ it('keeps the file input inside its label so focus shows on the button', () => {
   expect(input).toHaveFocus()
   expect(input.closest('label')!.matches(':focus-within')).toBe(true)
 })
+
+it('says which files were already uploaded (M3)', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({
+    statements: [
+      { id: 's_1', filename: 'monzo.csv', status_label: 'Imported', duplicate: true },
+      { id: 's_2', filename: 'new.csv', status_label: 'Waiting to be read', duplicate: false },
+    ],
+    rejected: [],
+  }, 201)))
+  render(UploadDropzone, {})
+  const files = [new File(['a'], 'monzo.csv'), new File(['b'], 'new.csv')]
+  await fireEvent.change(screen.getByLabelText('Choose files'), { target: { files } })
+  const note = await screen.findByText(/already uploaded/)
+  expect(note.textContent).toContain('monzo.csv')
+  expect(note.textContent).not.toContain('new.csv')
+})

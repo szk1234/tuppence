@@ -32,6 +32,8 @@ export type StatementDetail = StatementView & {
   level: 'full' | 'screenshot'; check_errors: string[]; draft_rows: DraftRow[]
   draft_skipped: { ref: string; reason: string }[]; held_lines: { ref: string; text: string }[]
   transactions: Transaction[]
+  /** How many rows the statement covers: more than `transactions` lists for a long one. */
+  transactions_total: number
 }
 
 export type NewAccount = {
