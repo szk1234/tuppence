@@ -23,7 +23,7 @@ from tuppence.config.models import AgentManifest
 from tuppence.core.db import Database
 from tuppence.knowledge.authority import CODE_RULE
 from tuppence.knowledge.models import HOUSEHOLD, Decision
-from tuppence.knowledge.understanding import UnderstandingStore
+from tuppence.knowledge.understanding import UNPAIRED, UnderstandingStore
 from tuppence.knowledge.versions import KnowledgeVersions
 
 NAME = "transfer_matcher"
@@ -193,17 +193,23 @@ class TransferMatcher:
         counts = {"pairs": 0, "one_sided": 0, "released": 0}
         with self.db.transaction() as conn:
             version = self.versions.current_in(conn)
-            orphans = [
-                r[0]
-                for r in conn.execute(
-                    "SELECT transaction_id FROM understanding WHERE transfer_pair_id IS NULL"
-                    " AND status != 'confirmed'"
-                    " AND json_extract(evidence, '$.kind') = 'transfer_pair'"
-                )
-            ]
-            for txn_id in orphans:
+            # Half a pair: the other side was removed with its statement (its pair id is
+            # gone), or it no longer points back here (it was filed as something else).
+            orphans = conn.execute(
+                "SELECT u.transaction_id, u.transfer_pair_id IS NULL AS removed"
+                " FROM understanding u WHERE u.status != 'confirmed' AND ("
+                "(u.transfer_pair_id IS NULL"
+                " AND json_extract(u.evidence, '$.kind') = 'transfer_pair')"
+                " OR (u.transfer_pair_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM understanding p"
+                " WHERE p.transaction_id = u.transfer_pair_id"
+                " AND p.transfer_pair_id = u.transaction_id)))"
+            ).fetchall()
+            for txn_id, removed in orphans:
                 counts["released"] += self.understanding.release(
-                    conn, txn_id, actor=NAME, reason="the other side of this transfer was removed"
+                    conn,
+                    txn_id,
+                    actor=NAME,
+                    reason="the other side of this transfer was removed" if removed else UNPAIRED,
                 )
             scope = set(scope_ids)
             if not scope:

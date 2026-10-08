@@ -56,6 +56,8 @@ def _same(a: Understanding, b: Understanding) -> bool:
 
 
 TRANSFER_CATEGORY = "transfers.between-accounts"
+# Why the other side of a pair was released when this side stopped being a transfer.
+UNPAIRED = "the other side of this transfer is no longer a transfer"
 
 
 def _kind(conn: sqlite3.Connection, category_id: str | None) -> str | None:
@@ -212,7 +214,11 @@ class UnderstandingStore:
 
         Returns True when the row changed. A decision that may not replace the row (spec
         §10.2) is dropped. A decision that changes nothing only refreshes the row's
-        knowledge version, so the row isn't sent to the model again."""
+        knowledge version, so the row isn't sent to the model again.
+
+        A decision that ends this row's transfer pairing (a rule saying it's a gift, say)
+        releases the other side too, as `release` and `set_by_person` do: only when that row
+        still points back, and never when the person confirmed it."""
         if decision.decided_by == "human":
             raise ValueError("the person's changes go through set_by_person()")
         current = self.get_in(conn, transaction_id)
@@ -226,6 +232,11 @@ class UnderstandingStore:
                 [knowledge_version, to_iso(self.clock()), transaction_id],
             )
             return False
+        partner = (
+            self._partner(conn, current)
+            if after.transfer_pair_id != current.transfer_pair_id
+            else None
+        )
         self._write(
             conn,
             current,
@@ -235,6 +246,14 @@ class UnderstandingStore:
             reason=reason,
             knowledge_version=knowledge_version,
         )
+        if partner is not None and partner.status != "confirmed":
+            self.release(
+                conn,
+                partner.transaction_id,
+                actor=actor,
+                reason=UNPAIRED,
+                run_id=run_id,
+            )
         return True
 
     def release(

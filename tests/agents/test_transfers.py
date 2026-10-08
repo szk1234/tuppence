@@ -3,6 +3,7 @@ from datetime import date
 from agents.helpers import manifest
 from tuppence.agents.transfers import Movement, TransferMatcher, pair_transfers
 from tuppence.ingest.store import StatementStore
+from tuppence.knowledge.rules import RuleIn
 from tuppence.knowledge.why import explain
 
 
@@ -297,3 +298,78 @@ def test_why_says_a_pair_without_transfer_words_is_only_a_guess(aenv):
         " says it's a transfer, so this is only a guess. If it isn't one, choose what it is."
     )
     assert _why(aenv, out).steps[-1].endswith(": money moving between your accounts.")
+
+
+def _coincidence(aenv):
+    """The final review's probe pair: £50 to J SMITH and a £50 card credit, paired as a guess."""
+    aenv.add_account("a_card", "credit_card", owners=["p_alex"], nickname="Amex", provider="amex")
+    friend = aenv.add_txn(date(2026, 10, 3), -5000, "J SMITH")
+    credit = aenv.add_txn(date(2026, 10, 5), 5000, "GREENBASKET STORES", account_id="a_card")
+    _matcher(aenv).run([friend, credit], run_id="r1")
+    assert aenv.understanding.get(credit).transfer_pair_id == friend
+    return friend, credit
+
+
+def _released(row) -> bool:
+    return row.status == "unknown" and not row.is_transfer and row.transfer_pair_id is None
+
+
+def test_a_rule_applied_to_the_past_on_one_side_releases_the_other(aenv):
+    friend, credit = _coincidence(aenv)
+    _, changed = aenv.rules.create(
+        RuleIn(text_pattern="J SMITH", set_category_id="gifts.presents"), apply_to_past=True
+    )
+    assert changed == 1
+    mine = aenv.understanding.get(friend)
+    assert (mine.category_id, mine.is_transfer, mine.transfer_pair_id) == (
+        "gifts.presents",
+        False,
+        None,
+    )
+    other = aenv.understanding.get(credit)
+    assert _released(other) and other.waiting == "queued"
+    assert aenv.understanding.history(credit)[0].reason == (
+        "the other side of this transfer is no longer a transfer"
+    )
+
+
+def test_a_rule_matched_in_the_code_step_releases_the_other_side_and_files_it(aenv):
+    friend, credit = _coincidence(aenv)
+    aenv.rules.create(
+        RuleIn(text_pattern="J SMITH", set_category_id="gifts.presents"), apply_to_past=False
+    )
+    aenv.categorise([friend, credit])
+    assert aenv.understanding.get(friend).category_id == "gifts.presents"
+    other = aenv.understanding.get(credit)
+    assert not other.is_transfer and other.transfer_pair_id is None
+    assert other.decided_by in ("llm", "review")  # released, then filed in the same run
+
+
+def test_a_rule_on_one_side_leaves_a_partner_the_person_confirmed(aenv):
+    friend, credit = _coincidence(aenv)
+    row = aenv.understanding.get(credit)
+    aenv.understanding.set_by_person(credit, expected_version=row.version, is_transfer=True)
+    kept = aenv.understanding.get(credit)
+    aenv.rules.create(
+        RuleIn(text_pattern="J SMITH", set_category_id="gifts.presents"), apply_to_past=True
+    )
+    assert aenv.understanding.get(friend).category_id == "gifts.presents"
+    assert aenv.understanding.get(credit) == kept  # the person's: never touched
+
+
+def test_the_matcher_releases_a_partner_that_no_longer_points_back(aenv):
+    """Data written before apply() released partners: one side was re-filed, the other still
+    says it is a transfer paired with it. The next run repairs it."""
+    friend, credit = _coincidence(aenv)
+    with aenv.db.transaction() as conn:
+        conn.execute(
+            "UPDATE understanding SET category_id = 'gifts.presents', is_transfer = 0,"
+            " transfer_pair_id = NULL, decided_by = 'rule', authority = 80,"
+            ' evidence = \'{"rule": "Payments mentioning J SMITH"}\' WHERE transaction_id = ?',
+            [friend],
+        )
+    assert _matcher(aenv).run([], run_id="r2")["released"] == 1
+    other = aenv.understanding.get(credit)
+    assert _released(other) and other.waiting == "queued"
+    assert aenv.understanding.get(friend).category_id == "gifts.presents"
+    assert _matcher(aenv).run([], run_id="r3")["released"] == 0

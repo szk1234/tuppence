@@ -519,6 +519,17 @@ class Categoriser:
                     and row.waiting in ("deferred", "awaiting_ai")
                 ):  # its second look was cut short last time: it gets that look now
                     low.append(txn_id)
+            # A rule that ended a transfer pairing released the other side (`apply`): when
+            # that row is in this run too, the model files it now rather than next run.
+            asked = set(pending)
+            pending.extend(
+                r[0]
+                for r in conn.execute(
+                    "SELECT transaction_id FROM understanding WHERE status = 'unknown'"
+                    " AND transaction_id IN (SELECT value FROM json_each(?))",
+                    [json.dumps([i for i in ids if i not in asked])],
+                )
+            )
             # Everything else in scope has had its look: it leaves the queue.
             waiting = set(pending) | set(low)
             conn.execute(
