@@ -1,6 +1,6 @@
 # Tuppence
 
-**Tuppence: a private AI money coach for UK households. Your statements never leave your machine.**
+**Tuppence: a private AI money coach for UK households. With a local model, your statements never leave your machine.**
 
 Upload your bank and card statements. Tuppence works out what every payment is
 and *why* you make it, asks you smart questions, remembers the answers, and
@@ -55,8 +55,8 @@ such as Tailscale.
   cloud (Anthropic, OpenAI, Gemini, OpenRouter, Mistral, Groq, Together AI, xAI,
   DeepSeek, Qwen, Kimi, GLM) with your own key, or any OpenAI-compatible server
   through the custom option.
-- **Works without AI** for importing, rules, budgets and UK checks; AI adds the
-  understanding.
+- **Works without AI** for importing structured files (CSV, OFX, QIF, CAMT, Excel) and
+  applying your rules; AI adds the understanding.
 
 ## Which AI model is enough?
 
