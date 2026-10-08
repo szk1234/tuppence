@@ -323,3 +323,70 @@ def test_removing_a_statement_keeps_the_corrections_on_the_rows_it_covered(kenv)
         assert conn.execute("SELECT COUNT(*) FROM understanding").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM understanding_carry").fetchone()[0] == 1
     assert other
+
+
+def _transfer(pair: str) -> Decision:
+    return Decision(
+        decided_by="llm",
+        authority=MODEL,
+        status="inferred",
+        confidence=0.9,
+        category_id="transfers.between-accounts",
+        is_transfer=True,
+        transfer_pair_id=pair,
+    )
+
+
+def _pair(kenv, a: str, b: str) -> None:
+    with kenv.db.transaction() as conn:
+        kenv.understanding.apply(conn, a, _transfer(b), actor="t", knowledge_version=0)
+        kenv.understanding.apply(conn, b, _transfer(a), actor="t", knowledge_version=0)
+
+
+def test_unmarking_a_transfer_leaves_a_partner_that_was_paired_elsewhere(kenv):
+    a = kenv.add_txn(date(2026, 10, 5), -20000, "TO SAVINGS")
+    b = kenv.add_txn(date(2026, 10, 5), 20000, "FROM CURRENT")
+    c = kenv.add_txn(date(2026, 10, 6), -20000, "TO SAVINGS AGAIN")
+    _pair(kenv, a, b)
+    # b was since re-paired with c: a's pointer to b is stale.
+    with kenv.db.transaction() as conn:
+        kenv.understanding.apply(conn, b, _transfer(c), actor="t", knowledge_version=0)
+        kenv.understanding.apply(conn, c, _transfer(b), actor="t", knowledge_version=0)
+    row = kenv.understanding.set_by_person(
+        a,
+        expected_version=kenv.understanding.get(a).version,
+        is_transfer=False,
+        category_id="gifts.presents",
+    )
+    assert not row.is_transfer and row.transfer_pair_id is None
+    for other, pair in ((b, c), (c, b)):
+        kept = kenv.understanding.get(other)
+        assert kept.is_transfer and kept.transfer_pair_id == pair and kept.status == "inferred"
+
+
+def test_unmarking_a_transfer_still_releases_a_partner_that_points_back(kenv):
+    a = kenv.add_txn(date(2026, 10, 5), -20000, "TO SAVINGS")
+    b = kenv.add_txn(date(2026, 10, 5), 20000, "FROM CURRENT")
+    _pair(kenv, a, b)
+    kenv.understanding.set_by_person(
+        a,
+        expected_version=kenv.understanding.get(a).version,
+        is_transfer=False,
+        category_id="gifts.presents",
+    )
+    other = kenv.understanding.get(b)
+    assert other.status == "unknown" and not other.is_transfer and other.transfer_pair_id is None
+
+
+def test_letting_tuppence_decide_again_notes_a_confirmed_partner(kenv):
+    a = kenv.add_txn(date(2026, 10, 5), -20000, "TO SAVINGS")
+    b = kenv.add_txn(date(2026, 10, 5), 20000, "FROM CURRENT")
+    _pair(kenv, a, b)
+    kenv.understanding.set_by_person(
+        b, expected_version=kenv.understanding.get(b).version, category_id="transfers.cash"
+    )
+    released = kenv.understanding.release_by_person(
+        a, expected_version=kenv.understanding.get(a).version
+    )
+    assert released.evidence == {"released_by": "person", "partner_confirmed": b}
+    assert kenv.understanding.get(b).status == "confirmed"

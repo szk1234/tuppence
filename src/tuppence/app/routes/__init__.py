@@ -7,18 +7,22 @@ from fastapi import Depends, FastAPI
 from tuppence.app.deps import require_session
 from tuppence.app.routes import (
     accounts,
+    analysis,
     auth,
+    commitments,
     config,
     debts,
     goals,
     household,
     income,
     jobs,
+    knowledge,
     llm,
     onboarding,
     privacy,
     settings,
     statements,
+    understanding,
     usage,
 )
 
@@ -36,6 +40,10 @@ PROTECTED = [
     llm.router,
     usage.router,
     statements.router,
+    understanding.router,
+    knowledge.router,
+    commitments.router,
+    analysis.router,
 ]
 
 

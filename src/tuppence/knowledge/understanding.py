@@ -347,6 +347,7 @@ class UnderstandingStore:
                 is_transfer = kind == "transfer"
             if is_transfer is False and kind in (None, "transfer"):
                 raise InputError("Choose what this payment is instead.")
+            partner = self._partner(conn, current)  # only when it still points back
             version = self.versions.bump(
                 conn, "correction", merchant_id=current.merchant_id, note="changed by you"
             )
@@ -376,10 +377,10 @@ class UnderstandingStore:
                 reason="changed by you",
                 knowledge_version=version,
             )
-            if current.transfer_pair_id and is_transfer is False:
+            if partner is not None and is_transfer is False:
                 self.release(
                     conn,
-                    current.transfer_pair_id,
+                    partner.transaction_id,
                     actor="person",
                     reason="its pair was marked as not a transfer",
                 )
@@ -394,6 +395,9 @@ class UnderstandingStore:
                     "understanding", transaction_id, expected_version, current.version
                 )
             partner = self._partner(conn, current)
+            evidence: dict[str, Any] = {"released_by": "person"}
+            if partner is not None and partner.status == "confirmed":
+                evidence["partner_confirmed"] = partner.transaction_id
             after = current.model_copy(
                 update={
                     "status": "unknown",
@@ -403,7 +407,7 @@ class UnderstandingStore:
                     "rule_id": None,
                     "is_transfer": False,
                     "transfer_pair_id": None,
-                    "evidence": {"released_by": "person"},
+                    "evidence": evidence,
                 }
             )
             self._write(
