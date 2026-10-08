@@ -543,15 +543,29 @@ _DATE_FIRST = re.compile(
 )
 
 
-def _first_run(rows: Sequence[bool], leading: Sequence[bool], lo: int, hi: int) -> int | None:
+def _first_run(
+    rows: Sequence[bool],
+    leading: Sequence[bool],
+    lo: int,
+    hi: int,
+    header: Sequence[bool] | None = None,
+) -> int | None:
     """The first of two row-shaped lines at most `RUN_GAP` apart, both starting with their date
-    if any such pair exists, else any pair."""
+    if any such pair exists, else any pair.
+
+    A run followed by the header's own lines (`header`: the holder's name and address) before
+    the next row is the header's (re-review 2 R8): the next run is the table, if there is one."""
     shaped = [i for i in range(lo, hi) if rows[i]]
-    pairs = list(zip(shaped, shaped[1:], strict=False))
-    dated = next((a for a, b in pairs if b - a <= RUN_GAP and leading[a] and leading[b]), None)
-    if dated is not None:
-        return dated
-    return next((a for a, b in pairs if b - a <= RUN_GAP), None)
+    after = dict(zip(shaped, [*shaped[1:], hi], strict=False))
+    pairs = [(a, b) for a, b in zip(shaped, shaped[1:], strict=False) if b - a <= RUN_GAP]
+
+    def above_header(b: int) -> bool:
+        return header is not None and any(header[k] for k in range(b + 1, after[b]))
+
+    for group in ([(a, b) for a, b in pairs if leading[a] and leading[b]], pairs):
+        if group:
+            return next((a for a, b in group if not above_header(b)), group[0][0])
+    return None
 
 
 def _table_start(
@@ -562,17 +576,19 @@ def _table_start(
     *,
     leading: Sequence[bool] | None = None,
     pages: Sequence[str | None] | None = None,
+    header: Sequence[bool] | None = None,
 ) -> int | None:
     """Where the transactions start among lines `lo`..`hi` (R-M3-23 (b)): the column-heading
     row whenever there is one; else the first run of rows (two rows at most `RUN_GAP` apart,
-    rows that start with their date first); else the first row.
+    rows that start with their date first, not followed by the holder's name and address);
+    else the first row.
 
     A run comes before the heading row only when the headings are first printed on a later
     page: the rows on the pages before it are the table. On the heading's own page, lines above
     it are the header, however row-shaped (a summary box merged onto the address rows)."""
     leading = leading if leading is not None else [True] * len(rows)
     heading = next((i for i in range(lo, hi) if headings[i]), None)
-    run = _first_run(rows, leading, lo, hi)
+    run = _first_run(rows, leading, lo, hi, header)
     if heading is not None:
         if (
             run is not None
@@ -638,10 +654,12 @@ def _plain_short(text: str) -> bool:
 
 def _address_blocks(texts: Sequence[str]) -> set[int]:
     """Lines of every address block: two or more short plain lines in a row, one of them a
-    postcode or two of them address parts. Every line of the block is withheld, the town and
-    a house name too (they aren't sensitive on their own)."""
+    postcode or two of them address parts (a house or street, or the holder's name with a
+    title). Every line of the block is withheld, the town and a house name too (they aren't
+    sensitive on their own)."""
     postcode = sensitive.VALUES["postcode"]
     address = sensitive.VALUES["address"]
+    holder = sensitive.VALUES["holder_name"]  # "MR ALEX EXAMPLE" heads an address (R8)
     found: set[int] = set()
     i = 0
     while i < len(texts):
@@ -651,7 +669,13 @@ def _address_blocks(texts: Sequence[str]) -> set[int]:
         block = range(i, j)
         if len(block) >= 2 and (
             any(postcode.search(texts[k]) for k in block)
-            or sum(1 for k in block if address.search(texts[k]) or _ADDRESS_WORD.search(texts[k]))
+            or sum(
+                1
+                for k in block
+                if address.search(texts[k])
+                or _ADDRESS_WORD.search(texts[k])
+                or holder.search(texts[k])
+            )
             >= 2
         ):
             found.update(block)
@@ -751,6 +775,7 @@ def _later_page_headers(
     rows: Sequence[bool],
     headings: Sequence[bool],
     leading: Sequence[bool],
+    header: Sequence[bool] | None = None,
 ) -> set[int]:
     """Each later page's header: the lines of every page after the table's first page that
     come before that page's own table start (all of a page that has none). A page repeats the
@@ -766,7 +791,7 @@ def _later_page_headers(
     held: set[int] = set()
     for members in pages.values():
         lo, hi = members[0], members[-1] + 1
-        table = _table_start(rows, headings, lo, hi, leading=leading)
+        table = _table_start(rows, headings, lo, hi, leading=leading, header=header)
         end = hi if table is None else table
         held.update(i for i in members if i < end and not _CARRIED.search(lines[i].text))
     return held
@@ -870,18 +895,19 @@ def _split_preamble(
         and _MONEY_TOKEN.search(t) is not None
         and not is_summary(t)
         and not _BALANCE_PHRASE.search(t)
-        and kinds[i] != "balance"  # a card header's payment sentence is not a row
+        and kinds[i] is None  # a summary line, pure or one that may be a row, is no run (R8)
         and (not sensitive_at[i] or masks(i) is not None)
         for i, t in enumerate(texts)
     ]
     headings = [is_heading(t) for t in texts]
     leading = [_DATE_FIRST.match(t) is not None for t in texts]
     pages = [m.group(1) if (m := _PAGE_REF.fullmatch(line.ref)) else None for line in lines]
-    first = _table_start(rows, headings, 0, len(lines), leading=leading, pages=pages)
+    addresses = _address_blocks(texts)
+    header = [i in addresses for i in range(len(texts))]
+    first = _table_start(rows, headings, 0, len(lines), leading=leading, pages=pages, header=header)
     edge = _page_edge_repeats(lines)
     blocks = _balance_blocks(texts)
     balances = {k for block in blocks for k in block}
-    addresses = _address_blocks(texts)
     known_names = {k for n in names if (k := _name_key(n))}
     for line in lines[: first if first is not None else 0]:
         if key := _name_key(line.text):
@@ -892,7 +918,7 @@ def _split_preamble(
         names = [*names, *printed]
         sensitive_at = [is_sensitive(t, names=names) for t in texts]
         masks = _Masks(texts, names)
-    page_headers = _later_page_headers(lines, first, rows, headings, leading)
+    page_headers = _later_page_headers(lines, first, rows, headings, leading, header)
     out = _Split()
     unsure: set[int] = set()
 

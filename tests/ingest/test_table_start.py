@@ -164,3 +164,54 @@ def test_header_wordings_never_reach_the_reader(wording, heading):
     page = ["Example Bank plc", wording, *ADDRESS, "Sort code 07-12-34 Account 12345678",
             *([HEADING] if heading else []), *ROWS]  # fmt: skip
     assert _sent(page) == [*([HEADING] if heading else []), *ROWS]
+
+
+# Re-review 2 R8 (p_header3): without a heading row, two date-first summary lines above the
+# holder's name and an address without a postcode or street word started the table, so the
+# address was sent. A run followed by the holder's name or an address block before the next row
+# is the header's, and summary lines that may be rows (held) never count toward a run.
+NO_HEADING = {
+    "summary lines above a name and an address": [
+        "Example Card plc", "05/11/2026 Interest charged £3.21",
+        "05/11/2026 Payment received £250.00", "MR ALEX EXAMPLE", "Rose Cottage", "Exampletown",
+        *ROWS,
+    ],
+    "summary lines above an address block and odd headings": [
+        "Example Card plc", "05/11/2026 Interest charged £3.21", "06/11/2026 Fees £12.00",
+        "Rose Cottage", "Mill Lane", "Exampletown",
+        "Trans | Particulars | Withdrawn | Lodged | Running", *ROWS,
+    ],
+    "held lines above an address": [
+        "Example Bank plc", "02/10/2026 CASH PAID IN AT BRANCH 50.00",
+        "02/10/2026 CREDIT 900.00", "Rose Cottage", "Exampletown", *ROWS,
+    ],
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("name", list(NO_HEADING))
+def test_a_run_above_the_holders_name_or_address_is_the_header(name):
+    page = NO_HEADING[name]
+    doc = pages_document([page], sha256="x", kind="pdf", names=["Alex Example"])
+    sent = sent_lines(doc)
+    texts = [sent[r].text for r in doc.data_refs]
+    assert texts == ROWS
+    assert [s for s in SECRETS[:6] if any(s in t for t in texts)] == []
+    held = [doc.by_ref()[r].text for r in doc.held_amount_refs]
+    assert all(line in held for line in page[1:3])  # dated amounts above the table: reported
+
+
+def test_held_lines_never_start_the_table():
+    """Two dated lines that may be rows or totals ("CASH PAID IN", "CREDIT") don't make a run:
+    the table starts at the rows after them."""
+    text = "\n".join(["Example Bank", "02/10/2026 CASH PAID IN AT BRANCH 50.00",
+                      "02/10/2026 CREDIT 900.00", *ROWS])  # fmt: skip
+    doc = text_document(text, sha256="x")
+    assert [doc.by_ref()[r].text for r in doc.data_refs] == ROWS
+    assert doc.held_amount_refs == ["L2", "L3"]
+
+
+def test_a_two_row_page_followed_by_an_address_still_starts_the_table():
+    """The one run there is stays the table start, even with an address after it."""
+    page = ["Example Bank plc", *ROWS, "1 Example Street", "Exampletown EX1 2MP"]
+    doc = pages_document([page], sha256="x", kind="pdf")
+    assert [doc.by_ref()[r].text for r in doc.data_refs] == ROWS
