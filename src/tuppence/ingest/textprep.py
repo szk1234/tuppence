@@ -244,13 +244,83 @@ def is_heading(text: str) -> bool:
     )
 
 
+def is_row(text: str) -> bool:
+    """A line shaped like a transaction: a date and an amount, and nothing that makes it a
+    header line (account details, a balance, a limit, a payment due or a summary)."""
+    return (
+        _has_date(text)
+        and _MONEY_TOKEN.search(text) is not None
+        and not is_summary(text)
+        and not is_sensitive(text)
+    )
+
+
 def is_anchor(text: str) -> bool:
-    """The first line of the transaction area: a dated amount, or a row of column headings."""
-    if is_sensitive(text) or is_summary(text):
-        return False
-    if _has_date(text) and _MONEY_TOKEN.search(text):
-        return True
-    return is_heading(text)
+    """A line that may start the transaction area: a row, or a row of column headings."""
+    return is_row(text) or is_heading(text)
+
+
+RUN_GAP = 2  # rows of a run are at most this far apart (one description line between)
+
+
+def _table_start(rows: Sequence[bool], headings: Sequence[bool], lo: int, hi: int) -> int | None:
+    """Where the transactions start among lines `lo`..`hi`: the column-heading row, unless a
+    run of rows (two rows at most `RUN_GAP` apart) comes before it; else the first row.
+
+    A single dated line above the address (a balance on a date, a payment due) is not the
+    table: with a heading row or a run of rows below it, it stays in the header."""
+    heading = next((i for i in range(lo, hi) if headings[i]), None)
+    shaped = [i for i in range(lo, hi) if rows[i]]
+    run = next((a for a, b in zip(shaped, shaped[1:], strict=False) if b - a <= RUN_GAP), None)
+    if run is not None and (heading is None or run < heading):
+        return run
+    if heading is not None:
+        return heading
+    return shaped[0] if shaped else None
+
+
+# A line that is part of an address without being one on its own: a house or building name, or
+# a street word. "Exampletown" alone is not; in a block with a postcode or two of these, it is.
+_ADDRESS_WORD = re.compile(
+    r"\b(?:house|cottage|farm|lodge|mill|manor|court|mansions|building|barn|hall|villas?|"
+    r"road|street|lane|avenue|close|drive|gardens|place|terrace|crescent|square|grove|mews|"
+    r"walk|way|row|green|park|rise|view|hill)\b",
+    re.IGNORECASE,
+)
+
+
+def _plain_short(text: str) -> bool:
+    """A short line with no amount, no date and no column headings: an address line may be."""
+    return (
+        len(text.split()) <= 8
+        and not _MONEY_TOKEN.search(text)
+        and not _CURRENCY_FIGURE.search(text)
+        and not _has_date(text)
+        and not is_heading(text)
+    )
+
+
+def _address_blocks(texts: Sequence[str]) -> set[int]:
+    """Lines of every address block: two or more short plain lines in a row, one of them a
+    postcode or two of them address parts. Every line of the block is withheld, the town and
+    a house name too (they aren't sensitive on their own)."""
+    postcode = sensitive.VALUES["postcode"]
+    address = sensitive.VALUES["address"]
+    found: set[int] = set()
+    i = 0
+    while i < len(texts):
+        j = i
+        while j < len(texts) and _plain_short(texts[j]):
+            j += 1
+        block = range(i, j)
+        if len(block) >= 2 and (
+            any(postcode.search(texts[k]) for k in block)
+            or sum(1 for k in block if address.search(texts[k]) or _ADDRESS_WORD.search(texts[k]))
+            >= 2
+        ):
+            found.update(block)
+        i = max(j, i + 1)
+    return found
 
 
 def _normal(text: str) -> str:
@@ -339,27 +409,29 @@ def _unsure(texts: Sequence[str], block: range, header_end: int) -> set[int]:
 _CARRIED = re.compile(r"\b(?:brought|carried)\s+forward\b", re.IGNORECASE)
 
 
-def _later_page_headers(lines: Sequence[Line], first: int | None) -> set[int]:
-    """Each later page's header: the lines of every page after the first anchor's page that
-    come before that page's own first anchor (all of a page that has none). A page repeats the
+def _later_page_headers(
+    lines: Sequence[Line],
+    first: int | None,
+    rows: Sequence[bool],
+    headings: Sequence[bool],
+) -> set[int]:
+    """Each later page's header: the lines of every page after the table's first page that
+    come before that page's own table start (all of a page that has none). A page repeats the
     name, address and account details above its rows, and they never go to an AI reader.
     A "balance brought forward" line stays data, as it is everywhere past the first anchor."""
     if first is None or not (start := _PAGE_REF.fullmatch(lines[first].ref)):
         return set()
-    held: set[int] = set()
-    page, in_header = start.group(1), False
+    pages: dict[str, list[int]] = {}
     for i in range(first + 1, len(lines)):
         match = _PAGE_REF.fullmatch(lines[i].ref)
-        if match is None:
-            continue
-        if match.group(1) != page:
-            page, in_header = match.group(1), True
-        if not in_header:
-            continue
-        if is_anchor(lines[i].text):
-            in_header = False
-        elif not _CARRIED.search(lines[i].text):
-            held.add(i)
+        if match is not None and match.group(1) != start.group(1):
+            pages.setdefault(match.group(1), []).append(i)
+    held: set[int] = set()
+    for members in pages.values():
+        lo, hi = members[0], members[-1] + 1
+        table = _table_start(rows, headings, lo, hi)
+        end = hi if table is None else table
+        held.update(i for i in members if i < end and not _CARRIED.search(lines[i].text))
     return held
 
 
@@ -398,16 +470,19 @@ def _split_preamble(
     for i, line in enumerate(lines):
         tick(i)
         counts[_normal(line.text)] = counts.get(_normal(line.text), 0) + 1
-    first = next((i for i, ln in enumerate(lines) if is_anchor(ln.text)), None)
-    edge = _page_edge_repeats(lines)
     texts = [line.text for line in lines]
+    rows = [is_row(t) for t in texts]
+    headings = [is_heading(t) for t in texts]
+    first = _table_start(rows, headings, 0, len(lines))
+    edge = _page_edge_repeats(lines)
     blocks = _balance_blocks(texts)
     balances = {k for block in blocks for k in block}
+    addresses = _address_blocks(texts)
     known_names = {k for n in names if (k := _name_key(n))}
     for line in lines[: first if first is not None else 0]:
         if key := _name_key(line.text):
             known_names.add(key)
-    page_headers = _later_page_headers(lines, first)
+    page_headers = _later_page_headers(lines, first, rows, headings)
     withheld: list[str] = []
     data: list[str] = []
     unsure: set[int] = set()
@@ -423,10 +498,14 @@ def _split_preamble(
             and (_FURNITURE.search(text) is not None or key in edge)
         )
         name_repeat = plain and _name_key(text) in known_names and _name_key(text) is not None
-        if (
-            (first is not None and i < first)
-            or is_sensitive(text, names=names)
+        if first is not None and i < first:
+            withheld.append(line.ref)
+            if rows[i]:  # a dated amount above the table start: it may be a row, so report it
+                unsure.add(i)
+        elif (
+            is_sensitive(text, names=names)
             or i in balances
+            or i in addresses
             or is_summary(text)
             or furniture
             or name_repeat

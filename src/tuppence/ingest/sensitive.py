@@ -31,8 +31,18 @@ _BALANCE_LABEL = (
     rf"(?:{_BALANCE_WORD}\s+){{0,2}}"
     r"(?:balance(?:\s+(?:after|owing|owed|outstanding|remaining|available))?"
     r"|available(?:\s+(?:to\s+spend|credit|funds))?"
-    r"|(?:arranged\s+)?overdraft\s+limit|arranged\s+overdraft|credit\s+limit)"
+    r"|(?:arranged\s+)?overdraft\s+limit|arranged\s+overdraft|credit\s+limit"
+    # what a card statement asks for, and when (I1)
+    r"|minimum\s+(?:payment|amount)(?:\s+due)?|(?:payment|amount)\s+due)"
 )
+# A date printed between a label and its figure ("Balance on 31/10/2026 £1.00"), or as the value
+# of a dated label ("Statement date 05/11/2026", "Payment due by 20/11/2026").
+_DATE_WORDS = (
+    r"(?:\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?(?:\s+\d{2,4}\b)?"
+    r"|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\d{4}-\d{2}-\d{2}\b)"
+)
+_ON_DATE = rf"(?:(?:on|at|as\s+(?:at|of)|of|by|for)\s+)?{_DATE_WORDS}"
+_DATED_LABEL = r"(?:statement\s+date|(?:payment\s+)?due\s+date|date\s+due|payment\s+due)"
 _SIGN = r"[-+\u2212\u2013]"
 _FIGURE = (
     rf"(?:\(\s*)?(?:{_SIGN}\s*)?(?:(?:[£$€]|GBP\b)\s*)?(?:{_SIGN}\s*)?"
@@ -40,9 +50,13 @@ _FIGURE = (
     r"(?:\s*\))?(?:\s*GBP\b)?(?:\s*[-\u2212](?!\d))?"
     r"(?:\s*(?:CR|DR|O/D|OD|D|in\s+credit|overdrawn)\b)?(?:\.|\s*\*)?"
 )
-_BALANCE_ITEM = rf"(?:{_BALANCE_LABEL}\s*(?::\s*)?{_FIGURE}|{_FIGURE}\s+{_BALANCE_LABEL})"
+_BALANCE_ITEM = (
+    rf"(?:{_BALANCE_LABEL}(?:\s+{_ON_DATE})?\s*(?::\s*)?{_FIGURE}"
+    rf"|{_FIGURE}\s+{_BALANCE_LABEL}"
+    rf"|{_DATED_LABEL}\s*(?::\s*)?{_ON_DATE})"
+)
 _BALANCE_LINE = re.compile(
-    rf"^\s*{_BALANCE_ITEM}(?:\s*(?:[|·•,;/]\s*)?{_BALANCE_ITEM}){{0,2}}\s*$", re.IGNORECASE
+    rf"^\s*{_BALANCE_ITEM}(?:\s*(?:[|·•,;/:]\s*)?{_BALANCE_ITEM}){{0,2}}\s*$", re.IGNORECASE
 )
 # A summary an app prints under its own figure, beside the balance ("£20.00" over "Spent today").
 _SUMMARY_LABEL = r"(?:spent|spending)\s+(?:today|this\s+(?:week|month))"
@@ -87,8 +101,11 @@ VALUES: dict[str, re.Pattern[str]] = {
     ),
     "iban": re.compile(r"\b[A-Z]{2}\d{2}\s?[A-Z0-9]{4}(?:\s?\d{4}){2,}(?:\s?[A-Z0-9]{1,4})?\b", _I),
     "postcode": re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b", _I),
+    # a house number and street, or a flat ("Flat 3", "Apartment 12", "Apt 4B")
     "address": re.compile(
-        rf"(?<![\d/.-])\d{{1,3}}[a-z]?,?\s+(?:[A-Za-z']+\s+){{1,2}}(?:{_STREET})\b", _I
+        rf"(?<![\d/.-])\d{{1,3}}[a-z]?,?\s+(?:[A-Za-z']+\s+){{1,2}}(?:{_STREET})\b"
+        r"|\b(?:flat|apartment|apt|unit|suite)\.?\s+\d{1,4}[a-z]?\b(?![.,]\d)",
+        _I,
     ),
     # A title and a name. "Dr" before column vocabulary ("Dr Amount") is a debit column.
     "holder_name": re.compile(

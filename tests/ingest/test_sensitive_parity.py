@@ -135,6 +135,21 @@ CORPUS = [
     "Example, Alex",
     "EXAMPLE A",
     "Customer reference 99887766",
+    # header summaries with a date between the label and the figure, and a summary box merged
+    # onto an address row (I1)
+    "Balance on 31/10/2026 £2,252.32",
+    "Your balance at 31 Oct 2026: £2,252.32",
+    "Payment due 20/11/2026  Minimum payment £25.00",
+    "Payment due by 20/11/2026: minimum payment £25.00",
+    "Statement date 05/11/2026   Overdraft limit £500.00",
+    "Flat 3   Minimum payment £25.00",
+    "Minimum payment £25.00",
+    "Minimum payment due £25.00",
+    "Balance as at 31/10/2026 £2,252.32",
+    # addresses without a street word
+    "Flat 3",
+    "Apartment 12",
+    "Apt 4B",
 ]
 # The corpus R-M3-7 added at 8ca14cc, unchanged.
 SPELLINGS_8CA14CC = [
@@ -203,6 +218,12 @@ PLAIN = [
     "Ref",
     "Debit",
     "Credit",
+    # transactions that use the I1 header words (the date comes first)
+    "01/10/2026 Minimum payment 25.00",
+    "20/11/2026 Payment due 25.00",
+    "FLAT WHITE 3.40",
+    "Flat 5.00 fee",
+    "Payment due",
 ]
 # Deliberate narrowings of the 8ca14cc list: column names it took for a titled name.
 NARROWED = {"Dr Amount"}

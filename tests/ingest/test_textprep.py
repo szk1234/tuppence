@@ -453,3 +453,100 @@ def test_an_unlabelled_address_printed_only_on_page_two_is_withheld():
         "Date Description Amount",
         "05 Oct 2026 Little Cafe 3.40",
     ]
+
+
+# --- I1 (final review): the table starts at its heading row or a run of rows ------------------
+
+# Lines a UK statement prints above the address: a dated balance, limit or payment due, and a
+# summary box merged onto an address row. None of them may start the table.
+HEADER_SUMMARIES = [
+    "Balance on 31/10/2026 £2,252.32",
+    "Your balance at 31 Oct 2026: £2,252.32",
+    "Payment due 20/11/2026  Minimum payment £25.00",
+    "Payment due by 20/11/2026: minimum payment £25.00",
+    "Statement date 05/11/2026   Overdraft limit £500.00",
+    "Flat 3   Minimum payment £25.00",
+]
+ADDRESS = ["MR ALEX EXAMPLE", "Flat 3", "Example House", "Exampletown", "EX1 2MP"]
+
+
+@pytest.mark.parametrize("summary", HEADER_SUMMARIES)
+def test_a_dated_balance_or_payment_due_line_above_the_address_is_never_sent(summary):
+    page = ["Example Bank plc", summary, *ADDRESS, "Sort code 07-12-34 Account 12345678",
+            "Date Description Amount Balance",
+            "01 Oct 2026 Greenbasket Stores -42.18 2,210.14"]  # fmt: skip
+    doc = pages_document([page], sha256="x", kind="pdf", names=["Alex Example"])
+    assert _page_data(doc) == [
+        "Date Description Amount Balance",
+        "01 Oct 2026 Greenbasket Stores -42.18 2,210.14",
+    ]
+    assert doc.held_amount_refs == []  # a balance or a due date: nothing to report
+
+
+def test_the_table_starts_at_its_heading_row_not_a_lone_dated_line_above_it():
+    page = ["Example Bank plc", "Last statement 05/10/2026 £1,000.00", *ADDRESS,
+            "Date Description Amount", "01 Oct 2026 Shop 4.00",
+            "02 Oct 2026 Cafe 3.00"]  # fmt: skip
+    doc = pages_document([page], sha256="x", kind="pdf")
+    assert _page_data(doc) == [
+        "Date Description Amount",
+        "01 Oct 2026 Shop 4.00",
+        "02 Oct 2026 Cafe 3.00",
+    ]
+    assert doc.held_amount_refs == ["P1L2"]  # it may be a row: reported, never lost
+
+
+def test_without_a_heading_row_the_table_starts_at_the_first_run_of_rows():
+    page = ["Example Bank plc", "Last statement 05/10/2026 £1,000.00", *ADDRESS,
+            "01 Oct 2026 Shop 4.00", "Card purchase", "02 Oct 2026 Cafe 3.00"]  # fmt: skip
+    doc = pages_document([page], sha256="x", kind="pdf")
+    assert _page_data(doc) == ["01 Oct 2026 Shop 4.00", "Card purchase", "02 Oct 2026 Cafe 3.00"]
+    assert doc.held_amount_refs == ["P1L2"]
+
+
+def test_rows_before_a_heading_printed_only_on_a_later_page_are_data():
+    pages = [
+        ["Example Bank plc", "01 Oct 2026 Shop 4.00", "02 Oct 2026 Cafe 3.00"],
+        ["Date Description Amount", "03 Oct 2026 Bus 2.00"],
+    ]
+    doc = pages_document(pages, sha256="x", kind="pdf")
+    assert _page_data(doc)[:2] == ["01 Oct 2026 Shop 4.00", "02 Oct 2026 Cafe 3.00"]
+
+
+def test_an_address_block_without_a_street_word_is_withheld_wherever_it_is():
+    """Rows three lines apart make no run, so a lone dated line starts the table; the address
+    below it is still a block of short lines with a postcode or two address parts."""
+    page = ["Example Bank plc", "Last statement 05/10/2026 £1,000.00", "Flat 3",
+            "Example House", "Exampletown", "01 Oct 2026 Shop 4.00", "Card purchase",
+            "Greenbasket", "02 Oct 2026 Cafe 3.00"]  # fmt: skip
+    doc = pages_document([page], sha256="x", kind="pdf")
+    data = _page_data(doc)
+    for secret in ("Flat 3", "Example House", "Exampletown"):
+        assert secret not in data
+    assert "Card purchase" in data and "Greenbasket" in data
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        ["Flat 3", "Example House", "Exampletown"],
+        ["Example House", "Exampletown", "EX1 2MP"],
+        ["The Old Mill", "Riverside", "Exampletown", "EX9 9ZZ"],
+        ["Apartment 12", "Harbour Court", "Exampleton"],
+    ],
+)
+def test_address_blocks_after_the_first_row_are_withheld(block):
+    page = ["Date Description Amount", "01 Oct 2026 Shop 4.00", *block, "02 Oct 2026 Cafe 3.00"]
+    doc = pages_document([page], sha256="x", kind="pdf")
+    assert _page_data(doc) == [
+        "Date Description Amount",
+        "01 Oct 2026 Shop 4.00",
+        "02 Oct 2026 Cafe 3.00",
+    ]
+
+
+def test_description_lines_are_not_taken_for_an_address():
+    page = ["Date Description Amount", "01 Oct 2026 Shop 4.00", "Card purchase",
+            "Greenbasket Stores", "02 Oct 2026 Cafe 3.00", "Contactless"]  # fmt: skip
+    doc = pages_document([page], sha256="x", kind="pdf")
+    assert len(_page_data(doc)) == 6
