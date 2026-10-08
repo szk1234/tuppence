@@ -746,3 +746,18 @@ def test_a_line_whose_masking_fails_is_withheld_and_reported(monkeypatch, how, k
     assert ref not in doc.data_refs and ref in doc.held_amount_refs
     assert not any("87654321" in line.text for line in sent_lines(doc).values()
                    if line.ref in doc.data_refs)  # fmt: skip
+
+
+@pytest.mark.parametrize("how", ["raises", "returns nothing", "leaves the detail"])
+def test_pages_read_without_a_header_still_go_out_masked_and_fail_closed(monkeypatch, how):
+    """`pages_document(preamble=False)` finds no header, but each line is still made ready by
+    `prepare_outbound`, and one whose masking fails is withheld and reported."""
+    from tuppence.ingest import sensitive
+
+    page = ["Mon 5 Oct Little Cafe -£3.40", "Transfer to A/C 87654321 -£250.00"]
+    doc = pages_document([page], sha256="x", kind="image", preamble=False)
+    assert doc.data_refs == ["P1L1", "P1L2"]
+    assert "87654321" not in sent_lines(doc)["P1L2"].text
+    monkeypatch.setattr(sensitive, "prepare_outbound", _broken_masking(how))
+    doc = pages_document([page], sha256="x", kind="image", preamble=False)
+    assert doc.data_refs == ["P1L1"] and doc.held_amount_refs == ["P1L2"]

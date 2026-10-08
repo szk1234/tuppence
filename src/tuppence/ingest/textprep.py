@@ -1139,6 +1139,20 @@ def _in_file_order(refs: Sequence[str], lines: Sequence[Line]) -> list[str]:
     return [line.ref for line in lines if line.ref in wanted]
 
 
+def _all_masked(lines: Sequence[Line], names: Sequence[str]) -> _Split:
+    """Every line as data, with no header to find, but still made ready by
+    `sensitive.prepare_outbound` and failing closed like any other: a line that can't be sent
+    is withheld, and reported when it has an amount."""
+    out = _Split()
+    texts = [line.text for line in lines]
+    for i, line in enumerate(lines):
+        if not _send(out, line, _prepare(texts, i, names), names):
+            out.withheld.append(line.ref)
+            if has_amount(line.text):
+                out.held.append(line.ref)
+    return out
+
+
 def text_document(
     text: str, *, sha256: str, names: Sequence[str] = (), deadline: Deadline | None = None
 ) -> Document:
@@ -1183,7 +1197,8 @@ def pages_document(
                 lines.append(_capped(f"P{p}L{n}", row.rstrip(), too_long))
     long = frozenset(too_long)
     if not preamble:
-        split = _Split(data=[ln.ref for ln in lines if ln.ref not in long]).with_too_long(too_long)
+        split = _all_masked([ln for ln in lines if ln.ref not in long], names)
+        split = split.with_too_long(too_long)
     elif kind == "image":
         split = _split_screenshot(lines, names=names, too_long=long, deadline=deadline)
     else:
