@@ -202,7 +202,10 @@ def preview_rule(body: RuleBody, services: Svc) -> RulePreview:
 def create_rule(body: RuleCreate, services: Svc) -> dict[str, object]:
     check_references(services, body)
     if body.created_from_transaction_id is not None:
-        services.understanding.get(body.created_from_transaction_id)  # NotFound -> 404
+        try:
+            services.understanding.get(body.created_from_transaction_id)
+        except NotFound:
+            raise InputError("Choose a payment that exists.") from None
     rule, changed = services.rules.create(
         rule_in(body),
         apply_to_past=body.apply_to_past,

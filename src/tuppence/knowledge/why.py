@@ -96,10 +96,11 @@ def explain(
             }
     ev = u.evidence
     if u.decided_by == "memory" and merchant:
-        steps.append(
-            f"Tuppence has seen {merchant['name']} {merchant['seen_count']} times and"
-            f" it's usually {merchant['usual_category']}."
-        )
+        seen = f"Tuppence has seen {merchant['name']} {merchant['seen_count']} times"
+        if merchant["usual_category"]:
+            steps.append(f"{seen} and it's usually {merchant['usual_category']}.")
+        else:
+            steps.append(f"{seen}.")
     if u.decided_by in ("llm", "review"):
         sure = f"{round(u.confidence * 100)}% sure"
         lead = "The AI took a second look" if u.decided_by == "review" else "The AI chose this"

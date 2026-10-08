@@ -326,9 +326,13 @@ class UnderstandingStore:
         who: str | None = None,
         is_transfer: bool | None = None,
         ignored: bool | None = None,
+        link_merchant: Callable[[sqlite3.Connection], str | None] | None = None,
     ) -> Understanding:
         """The person says what this transaction is. It becomes confirmed, is written to the
-        history and bumps the knowledge version for its merchant (spec §10.2)."""
+        history and bumps the knowledge version for its merchant (spec §10.2).
+
+        `link_merchant(conn)` gives a row that has no merchant yet one, in this same transaction,
+        so a correction that fails leaves no merchant link behind and the history records it."""
         if category_id is None and who is None and is_transfer is None and ignored is None:
             raise InputError("Nothing to change.")
         with self.db.transaction() as conn:
@@ -337,6 +341,8 @@ class UnderstandingStore:
                 raise VersionConflict(
                     "understanding", transaction_id, expected_version, current.version
                 )
+            if current.merchant_id is None and link_merchant is not None:
+                current = current.model_copy(update={"merchant_id": link_merchant(conn)})
             if is_transfer is True and category_id is None:
                 category_id = TRANSFER_CATEGORY
             chosen = category_id or current.category_id

@@ -50,3 +50,29 @@ def test_the_model_then_a_rule_then_the_person(kenv):
     assert why.status_label == "You set this" and why.steps[-1].startswith("You set this on ")
     assert [h["who"] for h in why.history] == ["You", "A rule", "The AI"]
     assert row.version == why.version
+
+
+def test_the_memory_step_does_not_print_a_missing_usual_category(kenv):
+    t = kenv.add_txn(date(2026, 10, 5), -340, "LITTLE CAFE")
+    with kenv.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO merchant (id, key, name, seen_count, created_at, updated_at)"
+            " VALUES ('m_cafe', 'little cafe', 'Little Cafe', 4, 'x', 'x')"
+        )
+        kenv.understanding.apply(
+            conn,
+            t,
+            Decision(
+                decided_by="memory",
+                authority=MODEL,
+                status="guessed",
+                confidence=0.6,
+                category_id="food.eating-out",
+                merchant_id="m_cafe",
+            ),
+            actor="categoriser",
+            knowledge_version=0,
+        )
+    steps = why_of(kenv, t).steps
+    assert steps == ["Tuppence has seen Little Cafe 4 times."]
+    assert not any("None" in s for s in steps)

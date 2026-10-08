@@ -371,7 +371,7 @@ def test_rules_name_things_that_exist(client):
             r = client.post(path, json={**base, **extra})
             assert r.status_code == 422, (path, extra, r.text)
     r = client.post("/api/rules", json={**base, "created_from_transaction_id": "t_nope"})
-    assert r.status_code == 404
+    assert r.status_code == 422 and r.json()["detail"] == "Choose a payment that exists."
 
 
 def test_version_conflicts_are_409_and_error_text_never_quotes_the_statement(client):
@@ -416,3 +416,34 @@ def test_the_not_sorted_yet_tile_opens_on_its_own_list(client):
     r = client.get("/api/spending", params={"on": "2026-10-20", "category": "unsorted"}).json()
     assert [c["label"] for c in r["path"]] == ["All spending", "Not sorted yet"]
     assert (r["total"], r["direct"], r["tiles"]) == ("14.49", "14.49", [])
+
+
+def test_a_failed_correction_leaves_no_merchant_link_behind(client):
+    services = three_months(client, run=False)
+    row = txn_of(services, "Streamly")
+    assert row["merchant_id"] is None
+    with services.db.connection() as conn:
+        merchants_before = conn.execute("SELECT COUNT(*) FROM merchant").fetchone()[0]
+    r = client.patch(
+        f"/api/transactions/{row['id']}/understanding",
+        json={"category_id": "not-a-category", "expected_version": row["version"]},
+    )
+    assert r.status_code in (404, 422), r.text
+    after = services.understanding.get(row["id"])
+    assert after.merchant_id is None and after.version == row["version"]
+    with services.db.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM merchant").fetchone()[0] == merchants_before
+    ok = client.patch(
+        f"/api/transactions/{row['id']}/understanding",
+        json={"category_id": "subscriptions.tv-streaming", "expected_version": row["version"]},
+    )
+    assert ok.status_code == 200
+    linked = services.understanding.get(row["id"])
+    assert linked.merchant_id is not None
+    with services.db.connection() as conn:
+        logged = conn.execute(
+            "SELECT merchant_id FROM understanding_history WHERE transaction_id = ?"
+            " ORDER BY id DESC LIMIT 1",
+            [row["id"]],
+        ).fetchone()
+    assert logged["merchant_id"] == linked.merchant_id

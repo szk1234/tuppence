@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
+from collections.abc import Callable
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -182,24 +184,24 @@ def _understanding(u: Understanding) -> UnderstandingView:
     )
 
 
-def link_merchant(services: Services, transaction_id: str, expected_version: int) -> None:
-    """Give the row its merchant before the person confirms it. The Categoriser never writes a
-    confirmed row, so a row confirmed without one would never feed merchant memory or be
-    matched by a merchant rule. A stale version changes nothing (the correction will 409)."""
-    with services.db.transaction() as conn:
-        row = services.understanding.get_in(conn, transaction_id)  # NotFound -> 404
-        if row.merchant_id is not None or row.version != expected_version:
-            return
+def merchant_linker(
+    services: Services, transaction_id: str
+) -> Callable[[sqlite3.Connection], str | None]:
+    """Gives the row its merchant inside the correction's own transaction. The Categoriser never
+    writes a confirmed row, so a row confirmed without one would never feed merchant memory or be
+    matched by a merchant rule. If the correction fails, no merchant is left behind."""
+
+    def link(conn: sqlite3.Connection) -> str | None:
         raw = conn.execute(
             'SELECT raw_description, merchant_text FROM "transaction" WHERE id = ?',
             [transaction_id],
         ).fetchone()
+        if raw is None:
+            return None
         merchant = services.merchants.resolve(conn, raw["raw_description"], raw["merchant_text"])
-        if merchant is not None:
-            conn.execute(
-                "UPDATE understanding SET merchant_id = ? WHERE transaction_id = ?",
-                [merchant.id, transaction_id],
-            )
+        return merchant.id if merchant is not None else None
+
+    return link
 
 
 @router.get("/spending")
@@ -285,7 +287,6 @@ def correct(transaction_id: PathId, body: Correction, services: Svc) -> Correcti
             services.household.get_person(body.who)
         except NotFound:
             raise InputError("Choose someone from your household.") from None
-    link_merchant(services, transaction_id, body.expected_version)
     u = services.understanding.set_by_person(
         transaction_id,
         expected_version=body.expected_version,
@@ -293,6 +294,7 @@ def correct(transaction_id: PathId, body: Correction, services: Svc) -> Correcti
         who=body.who,
         is_transfer=body.is_transfer,
         ignored=body.ignored,
+        link_merchant=merchant_linker(services, transaction_id),
     )
     services.analysis.request("correction")
     offer = None
