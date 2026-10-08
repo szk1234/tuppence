@@ -7,7 +7,7 @@ import secrets
 import sqlite3
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, Field
 
@@ -100,6 +100,17 @@ class TransactionRecord(BaseModel):
     balance_after_pence: int | None
     source_ref: str
     match: Literal["new", "exact", "similar"]
+
+
+class _Own(NamedTuple):
+    """A row a statement imported and only it covers, with its account."""
+
+    id: str
+    date: date
+    amount_pence: int
+    raw_description: str
+    fingerprint: str
+    account_id: str
 
 
 class PersistResult(BaseModel):
@@ -281,6 +292,10 @@ class StatementStore:
                 raise VersionConflict(
                     "statement", statement_id, expected_version, int(current["version"])
                 )
+            # A statement read again still holds its earlier import (Task 9 N1): it is replaced
+            # here, in the same transaction, so its rows were never missing in between.
+            self._drop_links(conn, statement_id)
+            own = self._own_rows(conn, statement_id)
             dates = [r.date for r in parsed.rows]
             lo = parsed.period_start or (min(dates) if dates else None)
             hi = parsed.period_end or (max(dates) if dates else None)
@@ -303,6 +318,7 @@ class StatementStore:
                             (hi + timedelta(days=3)).isoformat(),
                         ],
                     )
+                    if r["id"] not in own
                 ]
             fingerprints = assign_fingerprints(parsed.rows, account_id)
             plan = plan_dedupe(
@@ -310,8 +326,9 @@ class StatementStore:
                 [fp for fp, _ in fingerprints],
                 existing,
                 window=(lo or date.min, hi or date.max),
+                exact_only=[Existing(*e[:5]) for e in own.values() if e.account_id == account_id],
             )
-            stored = {e.fingerprint: e.id for e in existing}
+            stored = {e.fingerprint: e.id for e in [*existing, *own.values()]}
             links: list[tuple[str, str, str]] = [  # (transaction id, line on this statement, match)
                 (stored[fingerprints[i][0]], parsed.rows[i].ref, "exact") for i in plan.exact
             ]
@@ -359,6 +376,17 @@ class StatementStore:
                 " match) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 [(statement_id, tid, ref, match) for tid, ref, match in links],
             )
+            # Its own earlier rows that came back keep their ids (and get this read's line
+            # refs); the rest go, or move to another statement that still covers them.
+            conn.execute(
+                'UPDATE "transaction" SET source_ref = (SELECT l.source_ref FROM'
+                ' statement_transaction l WHERE l.transaction_id = "transaction".id'
+                " AND l.statement_id = ?) WHERE statement_id = ? AND EXISTS (SELECT 1 FROM"
+                ' statement_transaction l WHERE l.transaction_id = "transaction".id'
+                " AND l.statement_id = ?)",
+                [statement_id, statement_id, statement_id],
+            )
+            self._release(conn, statement_id)
             if parsed.closing_balance_pence is not None and hi is not None:
                 household = (
                     -parsed.closing_balance_pence
@@ -420,34 +448,70 @@ class StatementStore:
             ).fetchall()
         return [TransactionRecord.model_validate(dict(r)) for r in rows]
 
-    def _unimport(self, conn: sqlite3.Connection, statement_id: str) -> None:
-        """Take a statement's import back: its links and balances go; a row it was first
-        imported from moves to the earliest other statement that still covers it, and a row
-        no statement covers any more is deleted. Transaction ids never change."""
+    def _drop_links(self, conn: sqlite3.Connection, statement_id: str) -> None:
+        """A statement's links to its rows and its balances go (the rows stay for now)."""
         conn.execute("DELETE FROM account_balance WHERE statement_id = ?", [statement_id])
         conn.execute("DELETE FROM statement_transaction WHERE statement_id = ?", [statement_id])
+
+    def _own_rows(self, conn: sqlite3.Connection, statement_id: str) -> dict[str, _Own]:
+        """Rows first imported from this statement that no other statement covers."""
+        rows = conn.execute(
+            "SELECT id, account_id, date, amount_pence, raw_description, fingerprint FROM"
+            ' "transaction" t WHERE statement_id = ? AND NOT EXISTS (SELECT 1 FROM'
+            " statement_transaction l WHERE l.transaction_id = t.id)",
+            [statement_id],
+        ).fetchall()
+        return {
+            r["id"]: _Own(
+                r["id"],
+                date.fromisoformat(r["date"]),
+                r["amount_pence"],
+                r["raw_description"],
+                r["fingerprint"],
+                r["account_id"],
+            )
+            for r in rows
+        }
+
+    def _release(self, conn: sqlite3.Connection, statement_id: str) -> None:
+        """Rows first imported from this statement that it no longer links: each moves to the
+        earliest other statement that still covers it, or, covered by none, is deleted.
+        Transaction ids never change."""
         conn.execute(
             'UPDATE "transaction" SET (statement_id, source_ref) = ('
             " SELECT l.statement_id, l.source_ref FROM statement_transaction l"
             " JOIN statement s ON s.id = l.statement_id"
             ' WHERE l.transaction_id = "transaction".id ORDER BY s.created_at, s.id LIMIT 1)'
-            " WHERE statement_id = ? AND EXISTS (SELECT 1 FROM statement_transaction l"
+            " WHERE statement_id = ? AND NOT EXISTS (SELECT 1 FROM statement_transaction l"
+            ' WHERE l.transaction_id = "transaction".id AND l.statement_id = ?)'
+            " AND EXISTS (SELECT 1 FROM statement_transaction l"
             ' WHERE l.transaction_id = "transaction".id)',
+            [statement_id, statement_id],
+        )
+        conn.execute(
+            'DELETE FROM "transaction" WHERE statement_id = ? AND NOT EXISTS (SELECT 1 FROM'
+            ' statement_transaction l WHERE l.transaction_id = "transaction".id)',
             [statement_id],
         )
-        conn.execute('DELETE FROM "transaction" WHERE statement_id = ?', [statement_id])
+
+    def _unimport(self, conn: sqlite3.Connection, statement_id: str) -> None:
+        """Take a statement's import back: its links and balances go; a row it was first
+        imported from moves to the earliest other statement that still covers it, and a row
+        no statement covers any more is deleted. Transaction ids never change."""
+        self._drop_links(conn, statement_id)
+        self._release(conn, statement_id)
 
     def reopen(self, statement_id: str, expected_version: int, **fields: Any) -> StatementRecord:
-        """Start a statement again (Try again, Wrong account?): an imported one is un-imported
-        first. One transaction, on behalf of the person (VersionConflict when stale)."""
+        """Start a statement again (Try again, Wrong account?). An imported statement keeps its
+        rows, links and balances until the new read is imported (`persist` replaces them in
+        the same transaction), so they are never missing in between, and stay if the new read
+        fails. One write, on behalf of the person (VersionConflict when stale)."""
         with self.db.transaction() as conn:
-            row = conn.execute(
-                "SELECT status FROM statement WHERE id = ?", [statement_id]
-            ).fetchone()
-            if row is None:
+            if (
+                conn.execute("SELECT 1 FROM statement WHERE id = ?", [statement_id]).fetchone()
+                is None
+            ):
                 raise NotFound("statement", statement_id)
-            if row["status"] == "imported":
-                self._unimport(conn, statement_id)
             self._write(conn, statement_id, {"analysis_state": "none", **fields}, expected_version)
         return self.get(statement_id)
 

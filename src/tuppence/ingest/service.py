@@ -6,7 +6,8 @@ Task 10's routes call this service:
   message for the person; a file already uploaded comes back with `duplicate=True`);
 - `answer_account(id, account_id=…, expected_version=…)` answers "Which account is this?";
 - `change_account(id, account_id=…, expected_version=…)` is "Wrong account?": the statement is
-  read again for the chosen account (an imported one is taken back first);
+  read again for the chosen account (an imported one keeps its rows until the new read is
+  imported, which replaces them);
 - `save_draft(...)` and `accept(...)` are the fix-up screen's save and import;
 - `retry(...)` reads a statement again; `delete(id)` removes it.
 """
@@ -342,9 +343,9 @@ class IngestService:
         self, statement_id: str, *, account_id: str, expected_version: int
     ) -> StatementRecord:
         """ "Wrong account?": read the statement again as the chosen account's. An imported
-        statement is taken back first (rows another statement covers stay), in the same
-        versioned write; the new run starts from the file, since the account's type decides
-        which way round the amounts are read."""
+        statement keeps its rows until the new read is imported, which replaces them in one
+        transaction (rows another statement covers stay); the new run starts from the file,
+        since the account's type decides which way round the amounts are read."""
         record = self.store.get(statement_id)
         if record.status == "needs_account":  # not read yet: this is just the answer
             return self.answer_account(
@@ -497,9 +498,10 @@ class IngestService:
         self.deps.registry.save_learned(doc, layout, conn=conn)
 
     def retry(self, statement_id: str, *, expected_version: int) -> StatementRecord:
-        """Read the file again from the start, as a new run. An imported statement is taken
-        back first (rows another statement covers stay). An account the person chose is kept;
-        "Wrong account?" (`change_account`) chooses another."""
+        """Read the file again from the start, as a new run. An imported statement keeps its
+        rows until the new read is imported (and if it fails); rows that come back unchanged
+        keep their ids. An account the person chose is kept; "Wrong account?"
+        (`change_account`) chooses another."""
         record = self.store.get(statement_id)
         if record.status not in FINISHED:
             raise InputError("This statement is still being read.")

@@ -86,6 +86,7 @@ def plan_dedupe(
     existing: Sequence[Existing],
     *,
     window: tuple[date, date],
+    exact_only: Sequence[Existing] = (),
 ) -> DedupePlan:
     """Decide which new rows to store.
 
@@ -94,10 +95,11 @@ def plan_dedupe(
     overlap `window` with the same amount, a date at most 2 days away and a similar
     description is the same transaction seen in another format (a CSV and a PDF of
     the same month, or a screenshot). Each stored row matches at most one new row,
-    same-day matches first.
+    same-day matches first. `exact_only` rows (a statement's own rows from its earlier read)
+    match only by fingerprint: a corrected row replaces its old self.
     """
     plan = DedupePlan()
-    stored = {e.fingerprint: e for e in existing}
+    stored = {e.fingerprint: e for e in [*existing, *exact_only]}
     used: set[str] = set()
     pending: list[int] = []
     for i, fp in enumerate(fingerprints):

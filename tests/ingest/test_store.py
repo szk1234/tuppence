@@ -250,11 +250,29 @@ def test_a_balance_two_statements_report_survives_either_going(store):
     assert descriptions(store, b.id) == ["Shop"] and stored(store) == 1
 
 
-def test_reopening_an_imported_statement_takes_its_import_back(store):
+def test_reopening_an_imported_statement_keeps_its_rows_until_the_next_import(store):
+    """Task 9 N1: the earlier import stays until the new read is persisted, which replaces it
+    in one transaction: rows that came back keep their ids, the rest go."""
     a, b = overlap(store)
+    before = {t.raw_description: t.id for t in store.transactions(b.id)}
     reopened = store.reopen(b.id, store.get(b.id).version, status="received", run=2)
     assert reopened.status == "received" and reopened.analysis_state == "none"
-    assert store.transactions(b.id) == [] and stored(store) == 3  # City Water was only on B
+    assert len(store.transactions(b.id)) == 3 and stored(store) == 4
+    store.persist(
+        b.id,
+        "a_1",
+        october(
+            row("P1L1", 5, -340, "LITTLE CAFE LONDON"),
+            row("P1L2", 9, -2890, "Northline Rail"),
+            opening=95782,
+            closing=92552,
+        ),
+        balance_verified=True,
+        stats={},
+    )
+    assert stored(store) == 3  # City Water was only on B, and isn't on its new read
+    after = {t.raw_description: t.id for t in store.transactions(b.id)}
+    assert after == {k: v for k, v in before.items() if k != "City Water"}
     assert descriptions(store, a.id) == ["Greenbasket Stores", "Little Cafe", "Northline Rail"]
     with pytest.raises(VersionConflict):
         store.reopen(a.id, 99, status="received")

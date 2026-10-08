@@ -665,3 +665,195 @@ def test_a_confirmed_layout_is_saved_only_with_the_import(ingest_env, monkeypatc
     monkeypatch.undo()
     services.ingest.accept(review.id, expected_version=review.version)
     assert len(services.layouts.learned.all()) == 1
+
+
+# --- Task 9 N1: a re-read keeps the rows until the new read is imported ----------------------
+
+
+def _ids(services, statement_id):
+    return sorted(t.id for t in services.statements.transactions(statement_id))
+
+
+def test_try_again_keeps_the_rows_until_the_new_read_is_imported(ingest_env, fixtures):
+    services, _ = ingest_env
+    monzo = add_account(services, "monzo", "current", "Monzo")
+    outcome = upload(services, fixtures, "csv/monzo.csv")
+    drain(services)
+    record = services.statements.get(outcome.record.id)
+    before = _ids(services, record.id)
+    assert record.status == "imported" and len(before) == 9
+    reopened = services.ingest.retry(record.id, expected_version=record.version)
+    assert reopened.status == "received"
+    assert _ids(services, record.id) == before and stored_rows(services, monzo.id) == 9
+    drain(services)
+    again = services.statements.get(record.id)
+    assert again.status == "imported"
+    assert _ids(services, record.id) == before  # the same rows came back: their ids are kept
+    assert again.stats["persist"]["inserted"] == 0
+    assert services.statements.balance_history(monzo.id) == []  # monzo prints no balance
+
+
+def test_a_re_read_that_fails_leaves_the_rows_in_place(ingest_env):
+    services, _ = ingest_env
+    use_local_model(services)
+    account = add_account(services, "other", "current", "Probe")
+    text = (
+        "Example Bank plc\nDate Description Amount\n02/10/2026 Shop -5.00\n03/10/2026 Cafe -3.40\n"
+    )
+    outcome = services.ingest.upload("probe.txt", text.encode())
+    drain(services)
+    record = services.statements.get(outcome.record.id)
+    if record.status == "needs_account":
+        services.ingest.answer_account(
+            record.id, account_id=account.id, expected_version=record.version
+        )
+        drain(services)
+        record = services.statements.get(record.id)
+    before = _ids(services, record.id)
+    assert record.status == "imported" and len(before) == 2
+    with services.db.transaction() as conn:  # the model goes away
+        conn.execute("DELETE FROM app_settings WHERE key = 'llm.simple_model'")
+    services.ingest.retry(record.id, expected_version=record.version)
+    drain(services)
+    failed = services.statements.get(record.id)
+    assert failed.status == "failed"
+    assert _ids(services, record.id) == before and stored_rows(services, account.id) == 2
+
+
+def test_wrong_account_keeps_the_rows_on_the_old_account_until_the_move_is_imported(
+    ingest_env, fixtures
+):
+    services, _ = ingest_env
+    joint = add_account(services, "chase", "current", "Joint")
+    mine = add_account(services, "chase", "current", "Mine")
+    outcome = upload(services, fixtures, "csv/chase.csv")
+    drain(services)
+    asked = services.statements.get(outcome.record.id)
+    services.ingest.answer_account(asked.id, account_id=joint.id, expected_version=asked.version)
+    drain(services)
+    imported = services.statements.get(asked.id)
+    services.ingest.change_account(
+        imported.id, account_id=mine.id, expected_version=imported.version
+    )
+    assert (stored_rows(services, joint.id), stored_rows(services, mine.id)) == (9, 0)
+    drain(services)
+    assert (stored_rows(services, joint.id), stored_rows(services, mine.id)) == (0, 9)
+    assert services.statements.balance_history(joint.id) == []
+
+
+def test_a_changed_read_replaces_only_what_changed(ingest_env, fixtures):
+    """Accepting a re-read with one row corrected: that row is replaced, the rest keep their
+    ids, and rows another statement shares stay."""
+    services, _ = ingest_env
+    chase, first, second = chase_twice(services, fixtures)
+    shared = set(_ids(services, first))
+    record = services.statements.get(second)
+    services.ingest.retry(second, expected_version=record.version)
+    drain(services)
+    assert set(_ids(services, second)) == shared
+    services.ingest.delete(second)
+    assert set(_ids(services, first)) == shared and stored_rows(services, chase.id) == 9
+
+
+def test_links_while_re_reading_point_only_at_their_own_account(ingest_env, fixtures):
+    services, _ = ingest_env
+    chase, first, _ = chase_twice(services, fixtures)
+    record = services.statements.get(first)
+    services.ingest.retry(first, expected_version=record.version)
+    with services.db.connection() as conn:
+        orphans = conn.execute(
+            'SELECT count(*) FROM "transaction" t WHERE NOT EXISTS'
+            " (SELECT 1 FROM statement_transaction l WHERE l.transaction_id = t.id)"
+        ).fetchone()[0]
+    assert orphans == 0
+
+
+def _invariants(services, label):
+    """Every row is covered by a statement and owned by one that covers it; an imported
+    statement links exactly the rows it persisted, all on its own account; a balance belongs
+    to a statement that exists."""
+    with services.db.connection() as c:
+        orphan = c.execute(
+            'SELECT count(*) FROM "transaction" t WHERE NOT EXISTS'
+            " (SELECT 1 FROM statement_transaction l WHERE l.transaction_id = t.id)"
+        ).fetchone()[0]
+        wrong_owner = c.execute(
+            'SELECT count(*) FROM "transaction" t WHERE NOT EXISTS'
+            " (SELECT 1 FROM statement_transaction l WHERE l.transaction_id = t.id"
+            " AND l.statement_id = t.statement_id)"
+        ).fetchone()[0]
+        cross = c.execute(
+            "SELECT count(*) FROM statement_transaction l"
+            ' JOIN "transaction" t ON t.id = l.transaction_id'
+            " JOIN statement s ON s.id = l.statement_id"
+            " WHERE s.status = 'imported' AND s.account_id != t.account_id"
+        ).fetchone()[0]
+        lost_balance = c.execute(
+            "SELECT count(*) FROM account_balance b WHERE b.statement_id IS NOT NULL"
+            " AND NOT EXISTS (SELECT 1 FROM statement s WHERE s.id = b.statement_id)"
+        ).fetchone()[0]
+        imported = c.execute(
+            "SELECT s.stats, (SELECT count(*) FROM statement_transaction l"
+            " WHERE l.statement_id = s.id) FROM statement s WHERE s.status = 'imported'"
+        ).fetchall()
+    mismatch = [n for stats, n in imported if json.loads(stats)["persist"]["rows"] != n]
+    problems = {
+        "orphan": orphan,
+        "wrong_owner": wrong_owner,
+        "cross": cross,
+        "lost_balance": lost_balance,
+        "mismatch": mismatch,
+    }
+    assert not any(problems.values()), (label, problems)
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_random_re_reads_moves_and_removals_keep_every_row_accounted_for(
+    ingest_env, fixtures, seed
+):
+    import random
+
+    services, _ = ingest_env
+    rnd = random.Random(seed)
+    use_local_model(services)
+    flex = add_account(services, "nationwide", "current", "Flex", last4="5678")
+    other = add_account(services, "nationwide", "savings", "Other")
+    csv = (fixtures / "csv" / "nationwide.csv").read_bytes()
+    pdf = (fixtures / "pdf" / "current-text.pdf").read_bytes()
+    half = b"\n".join(csv.split(b"\n")[:10]) + b"\n"
+    ids = {}
+    for name, data in rnd.sample([("csv", csv), ("pdf", pdf), ("half", half)], 3):
+        out = services.ingest.upload(name, data)
+        ids[name] = out.record.id
+        drain(services)
+        rec = services.statements.get(out.record.id)
+        if rec.status == "needs_account":
+            services.ingest.answer_account(rec.id, account_id=flex.id, expected_version=rec.version)
+            drain(services)
+        _invariants(services, ("import", name))
+    for step in range(8):
+        if not ids:
+            break
+        name = rnd.choice(sorted(ids))
+        rec = services.statements.get(ids[name])
+        op = rnd.choice(["delete", "retry", "move", "move back"])
+        if op == "delete":
+            services.ingest.delete(rec.id)
+            del ids[name]
+        elif op == "retry" and rec.status in ("imported", "needs_review", "failed"):
+            services.ingest.retry(rec.id, expected_version=rec.version)
+        elif op.startswith("move") and rec.status in ("imported", "needs_review", "failed"):
+            target = other if op == "move" else flex
+            services.ingest.change_account(rec.id, account_id=target.id,
+                                           expected_version=rec.version)  # fmt: skip
+        _invariants(services, (seed, step, op, "before reading"))
+        drain(services)
+        for statement_id in list(ids.values()):
+            r = services.statements.get(statement_id)
+            if r.status == "needs_account":
+                services.ingest.answer_account(r.id, account_id=flex.id,
+                                               expected_version=r.version)  # fmt: skip
+                drain(services)
+            elif r.status == "needs_review":
+                services.ingest.accept(r.id, expected_version=r.version)
+        _invariants(services, (seed, step, op))
