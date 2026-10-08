@@ -492,6 +492,8 @@ class IngestService:
         return self.store.get(statement_id)
 
     def _save_layout(self, doc: Document, layout: CsvLayout, conn: sqlite3.Connection) -> None:
+        # `layout.kind` is the account type it was proposed for: it is remembered on that side
+        # only (a bank account's or a card's).
         self.deps.registry.save_learned(doc, layout, conn=conn)
 
     def retry(self, statement_id: str, *, expected_version: int) -> StatementRecord:

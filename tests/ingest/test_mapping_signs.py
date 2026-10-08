@@ -59,7 +59,14 @@ def parse_csv(services, tmp_path, registry, account_kind, data, name="export.csv
         today=dt.date(2026, 11, 1),
         limits=ReaderLimits(),
     )
+    if out.learned_layout is not None:  # what the import does, in its own transaction (M11)
+        registry.save_learned(doc, out.learned_layout)
     return out, doc
+
+
+def remembered(registry, doc):
+    """The layout learned for these headings, on whichever side of account."""
+    return next(iter(layout for _, layout in registry.learned.all()), None)
 
 
 MIXED = [  # 2 of 5 rows money in: read inverted, 3 of 5 would be money in
@@ -88,7 +95,7 @@ def test_purchases_positive_on_a_bank_account_is_refused(ingest_env, tmp_path, k
     scripted.replies = [{"content": json.dumps(INVERTED)}] * 3
     out, doc = parse_csv(services, tmp_path, registry, kind, csv(rows))
     assert out.parsed.rows == [] and out.pending_layout is None
-    assert registry.match(doc) is None
+    assert remembered(registry, doc) is None
     assert any("purchases_positive" in e for e in out.errors)
     # the model was told why, by column and convention only
     feedback = scripted.requests[1]["messages"][-1]["content"].split("didn't work:")[1]
@@ -101,7 +108,7 @@ def test_a_refused_convention_can_be_corrected_on_the_retry(ingest_env, tmp_path
     registry = LayoutRegistry(load_bank_pack())
     scripted.replies = [{"content": json.dumps(INVERTED)}, {"content": json.dumps(RIGHT)}]
     out, doc = parse_csv(services, tmp_path, registry, "current", csv(MIXED))
-    assert out.errors == [] and registry.match(doc) is not None
+    assert out.errors == [] and remembered(registry, doc) is not None
     assert [r.amount_pence for r in out.parsed.rows] == [90000, 10000, -2000, -300, -50000]
 
 
@@ -112,7 +119,7 @@ def test_an_income_heavy_bank_account_is_not_second_guessed(ingest_env, tmp_path
     registry = LayoutRegistry(load_bank_pack())
     scripted.replies = [{"content": json.dumps(RIGHT)}]
     out, doc = parse_csv(services, tmp_path, registry, kind, csv(BILLS_POT), "a.csv")
-    assert out.errors == [] and out.pending_layout is None and registry.match(doc) is not None
+    assert out.errors == [] and out.pending_layout is None and remembered(registry, doc) is not None
     again, _ = parse_csv(services, tmp_path, registry, kind, csv(BILLS_POT[:4]), "b.csv")
     assert again.errors == [] and len(scripted.requests) == 1  # reused, no AI, no doubt
 
@@ -128,7 +135,7 @@ def test_a_card_whose_rows_confirm_the_signs_is_kept(ingest_env, tmp_path):
     data = csv(PAYMENTS_ONLY, balance=1000.0)
     out, doc = parse_csv(services, tmp_path, registry, "credit_card", data)
     assert [r.amount_pence for r in out.parsed.rows] == [10000] * 4
-    assert out.errors == [] and out.pending_layout is None and registry.match(doc) is not None
+    assert out.errors == [] and out.pending_layout is None and remembered(registry, doc) is not None
 
 
 def test_a_card_whose_rows_contradict_the_signs_is_held_back(ingest_env, tmp_path):
@@ -139,7 +146,7 @@ def test_a_card_whose_rows_contradict_the_signs_is_held_back(ingest_env, tmp_pat
     rows = [("GREENBASKET STORES", 42.18), ("PAYMENT RECEIVED - THANK YOU", -100.0)]
     out, doc = parse_csv(services, tmp_path, registry, "credit_card", csv(rows))
     assert any("back to front" in e for e in out.errors)
-    assert out.pending_layout is not None and registry.match(doc) is None
+    assert out.pending_layout is not None and remembered(registry, doc) is None
 
 
 def test_a_type_column_is_evidence_too(ingest_env, tmp_path):
@@ -155,7 +162,7 @@ def test_a_type_column_is_evidence_too(ingest_env, tmp_path):
     ).encode()
     scripted.replies = [{"content": json.dumps({**RIGHT, "type_column": "Type"})}]
     out, doc = parse_csv(services, tmp_path, registry, "credit_card", data)
-    assert any("back to front" in e for e in out.errors) and registry.match(doc) is None
+    assert any("back to front" in e for e in out.errors) and remembered(registry, doc) is None
 
 
 def test_a_new_card_layout_without_evidence_waits_for_the_person(ingest_env, tmp_path):
@@ -166,10 +173,12 @@ def test_a_new_card_layout_without_evidence_waits_for_the_person(ingest_env, tmp
     rows = [("GREENBASKET STORES", 42.18), ("LITTLE CAFE", 3.40)]
     out, doc = parse_csv(services, tmp_path, registry, "credit_card", csv(rows))
     assert any("which way round" in e for e in out.errors)
-    assert out.pending_layout is not None and registry.match(doc) is None
+    assert out.pending_layout is not None and remembered(registry, doc) is None
 
 
-def test_a_remembered_card_layout_is_not_trusted_for_a_bank_account(ingest_env, tmp_path):
+def test_a_remembered_card_layout_is_never_reused_for_a_bank_account(ingest_env, tmp_path):
+    """I4: a layout is remembered for the headings and the side of account it was confirmed
+    on. A bank account with the same headings gets its own mapping (read the bank's way)."""
     services, scripted = ingest_env
     use_local_model(services)
     registry = LayoutRegistry(load_bank_pack())
@@ -177,9 +186,14 @@ def test_a_remembered_card_layout_is_not_trusted_for_a_bank_account(ingest_env, 
     out, doc = parse_csv(
         services, tmp_path, registry, "credit_card", csv(PAYMENTS_ONLY, balance=900.0), "a.csv"
     )
-    assert out.errors == [] and registry.match(doc) is not None
+    assert out.errors == [] and registry.match(doc, kind="credit_card") is not None
+    assert registry.match(doc, kind="current") is None
     again, _ = parse_csv(services, tmp_path, registry, "current", csv(MIXED), "b.csv")
-    assert any("back to front" in e for e in again.errors) and len(scripted.requests) == 1
+    assert len(scripted.requests) == 2  # a fresh mapping, not the card's
+    assert again.errors == [] and [r.amount_pence for r in again.parsed.rows] == [
+        90000, 10000, -2000, -300, -50000
+    ]  # fmt: skip
+    assert {layout.kind for _, layout in registry.learned.all()} == {"credit_card", "current"}
 
 
 def test_two_columns_swapped_is_refused_by_check(ingest_env, tmp_path):
@@ -202,7 +216,7 @@ def test_two_columns_swapped_is_refused_by_check(ingest_env, tmp_path):
     scripted.replies = [{"content": json.dumps(swapped)}] * 3
     out, doc = parse_csv(services, tmp_path, registry, "current", data)
     # the column headings contradict the signs, so Check refuses it and nothing is kept
-    assert any("wrong way round" in e for e in out.errors) and registry.match(doc) is None
+    assert any("wrong way round" in e for e in out.errors) and remembered(registry, doc) is None
 
 
 # --- a sign source is required (R-M3-17) ------------------------------------------------------
@@ -242,7 +256,7 @@ def test_a_dr_cr_column_is_the_sign_source(ingest_env, tmp_path, kind, type_colu
     out, doc = parse_csv(services, tmp_path, registry, kind, typed_csv())
     assert [r.amount_pence for r in out.parsed.rows] == TYPED_PENCE
     assert out.errors == [] and len(scripted.requests) == 1
-    saved = registry.match(doc)
+    saved = remembered(registry, doc)
     assert saved is not None and saved.direction == "Type"
     again, _ = parse_csv(services, tmp_path, registry, kind, typed_csv(TYPED[:3]), "b.csv")
     assert [r.amount_pence for r in again.parsed.rows] == TYPED_PENCE[:3]
@@ -274,7 +288,7 @@ def test_dr_cr_columns_are_found_by_their_values(ingest_env, tmp_path, header, w
     scripted.replies = [{"content": json.dumps(single_amount())}]
     out, doc = parse_csv(services, tmp_path, registry, "current", data)
     assert [r.amount_pence for r in out.parsed.rows] == TYPED_PENCE
-    assert out.errors == [] and registry.match(doc) is not None
+    assert out.errors == [] and remembered(registry, doc) is not None
 
 
 @pytest.mark.parametrize("words", [("DR", "CR"), ("D", "C"), ("Debit", "Credit")])
@@ -289,7 +303,7 @@ def test_a_card_with_a_dr_cr_column_takes_its_signs_from_it(ingest_env, tmp_path
     out, doc = parse_csv(services, tmp_path, registry, "credit_card", typed_csv(words=words))
     assert [r.amount_pence for r in out.parsed.rows] == TYPED_PENCE
     assert out.errors == [] and len(scripted.requests) == 1
-    saved = registry.match(doc)
+    saved = remembered(registry, doc)
     assert saved is not None and saved.perspective == "card" and saved.direction == "Type"
 
 
@@ -315,7 +329,7 @@ def test_an_amount_column_with_no_sign_source_is_refused(ingest_env, tmp_path, k
         "money in can't be told from money out" in e and e.endswith("check the signs.")
         for e in out.errors
     )
-    assert registry.match(doc) is None and out.pending_layout is None
+    assert remembered(registry, doc) is None and out.pending_layout is None
     # the model was told, in fixed words with no value from the file
     feedback = scripted.requests[1]["messages"][-1]["content"].split("didn't work:")[1]
     assert "DR/CR column" in feedback
@@ -338,7 +352,7 @@ def test_a_refused_amount_column_can_be_corrected_with_two_columns(ingest_env, t
     scripted.replies = [{"content": json.dumps(wrong)}, {"content": json.dumps(right)}]
     out, doc = parse_csv(services, tmp_path, registry, "current", data)
     assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, -340]
-    assert out.errors == [] and registry.match(doc) is not None
+    assert out.errors == [] and remembered(registry, doc) is not None
 
 
 def test_a_missing_dr_cr_marker_on_a_later_file_is_reported():
@@ -388,7 +402,7 @@ def test_a_column_with_one_value_is_never_a_sign_source(ingest_env, tmp_path):
     scripted.replies = [{"content": json.dumps(single_amount())}]
     out, doc = parse_csv(services, tmp_path, registry, "current", signed_csv(rows))
     assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, -340, -3115]
-    saved = registry.match(doc)
+    saved = remembered(registry, doc)
     assert out.errors == [] and saved is not None and saved.direction is None
 
 
@@ -417,7 +431,7 @@ def test_a_cleared_flag_column_is_not_a_sign_source(ingest_env, tmp_path):
     data = signed_csv(rows, header="Date,Description,Amount,Cleared")
     out, doc = parse_csv(services, tmp_path, registry, "current", data)
     assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, -340]
-    assert out.errors == [] and registry.match(doc) is not None
+    assert out.errors == [] and remembered(registry, doc) is not None
 
 
 def test_printed_signs_win_over_an_agreeing_dr_cr_column(ingest_env, tmp_path):
@@ -428,7 +442,7 @@ def test_printed_signs_win_over_an_agreeing_dr_cr_column(ingest_env, tmp_path):
     scripted.replies = [{"content": json.dumps(single_amount(type_column="Type"))}]
     out, doc = parse_csv(services, tmp_path, registry, "current", signed_csv(rows, TYPE_HEADER))
     assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, -340]
-    saved = registry.match(doc)
+    saved = remembered(registry, doc)
     assert out.errors == [] and saved is not None and saved.direction is None
 
 
@@ -445,7 +459,7 @@ def test_a_dr_cr_column_that_contradicts_printed_signs_is_refused(ingest_env, tm
     scripted.replies = [{"content": json.dumps(reply)}] * 3
     out, doc = parse_csv(services, tmp_path, registry, kind, signed_csv(rows, TYPE_HEADER))
     assert any("DR/CR column disagrees" in e for e in out.errors)
-    assert registry.match(doc) is None and out.pending_layout is None
+    assert remembered(registry, doc) is None and out.pending_layout is None
     # the printed signs are kept: nothing is turned round
     assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, 500]
 
@@ -458,7 +472,7 @@ def test_a_constant_dr_column_with_unsigned_amounts_is_no_sign_source(ingest_env
     scripted.replies = [{"content": json.dumps(single_amount())}] * 3
     out, doc = parse_csv(services, tmp_path, registry, "current", signed_csv(rows, TYPE_HEADER))
     assert any("money in can't be told from money out" in e for e in out.errors)
-    assert registry.match(doc) is None
+    assert remembered(registry, doc) is None
 
 
 def test_a_later_file_whose_printed_sign_contradicts_its_marker_is_reported():

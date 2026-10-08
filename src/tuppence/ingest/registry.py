@@ -104,6 +104,20 @@ def header_key(cells: Sequence[str]) -> str:
     return hashlib.sha256(joined.encode()).hexdigest()[:16]
 
 
+Side = Literal["bank", "card"]
+
+
+def side_of(kind: AccountKind | None) -> Side:
+    """Which way round an account's single amount column reads: a bank account's (money out
+    negative) or a card's. A learned layout is only ever reused on the side it was confirmed."""
+    return "card" if kind == "credit_card" else "bank"
+
+
+def learned_key(cells: Sequence[str], kind: AccountKind | None) -> str:
+    """A learned layout's key: the headings and the side of the account it was confirmed on."""
+    return f"{header_key(cells)}:{side_of(kind)}"
+
+
 def _read(node: Traversable, name: str) -> str:
     return node.joinpath(name).read_text(encoding="utf-8")
 
@@ -214,20 +228,25 @@ class LayoutRegistry:
 
     def is_known_header(self, cells: Sequence[str]) -> bool:
         present = {norm(c) for c in cells if c.strip()}
-        if any(key == header_key(cells) for key, _ in self.learned.all()):
+        prefix = f"{header_key(cells)}:"
+        if any(key.startswith(prefix) for key, _ in self.learned.all()):
             return True
         return any(
             layout.signature and {norm(s) for s in layout.signature} <= present
             for layout in [*self.user_layouts(), *self.pack.layouts]
         )
 
-    def match(self, doc: Document) -> CsvLayout | None:
+    def match(self, doc: Document, *, kind: AccountKind | None = None) -> CsvLayout | None:
+        """The layout for this file. A learned layout is considered only for an account `kind`
+        on the side it was learned for (never when `kind` isn't known yet, as when identifying
+        the bank); then the user's own layouts and the pack's."""
         header = header_cells(doc)
         if header is not None:
-            key = header_key(header)
-            for stored_key, layout in self.learned.all():
-                if stored_key == key:
-                    return layout
+            if kind is not None:
+                key = learned_key(header, kind)
+                for stored_key, layout in self.learned.all():
+                    if stored_key == key:
+                        return layout
             present = {norm(c) for c in header if c.strip()}
             best: CsvLayout | None = None
             for layout in [*self.user_layouts(), *self.pack.layouts]:
@@ -255,14 +274,24 @@ class LayoutRegistry:
     def save_learned(
         self, doc: Document, layout: CsvLayout, *, conn: sqlite3.Connection | None = None
     ) -> CsvLayout:
+        """Remember a layout for these headings on the side of `layout.kind`, the account type
+        it was confirmed with."""
         header = header_cells(doc)
         if header is None:
             raise ValueError("only files with a heading row can be learned")
         learned = layout.model_copy(
-            update={"source": "learned", "signature": [c for c in header if c.strip()]}
+            update={
+                "source": "learned",
+                "signature": [c for c in header if c.strip()],
+                "id": learned_id(header, layout.kind),
+            }
         )
-        self.learned.put(header_key(header), learned, conn=conn)
+        self.learned.put(learned_key(header, layout.kind), learned, conn=conn)
         return learned
+
+
+def learned_id(cells: Sequence[str], kind: AccountKind | None) -> str:
+    return f"learned-{header_key(cells)}-{side_of(kind)}"
 
 
 def header_cells(doc: Document) -> list[str] | None:

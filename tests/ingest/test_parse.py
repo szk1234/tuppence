@@ -19,7 +19,7 @@ def run_parse(services, fixtures, relative, kind, account_kind, *, registry=None
         path, kind, sha256="x", limits=ExtractLimits(), known_header=registry.is_known_header
     )
     evidence = identify(doc, pack=PACK, registry=registry, key=b"test-key")
-    return parse_document(
+    outcome = parse_document(
         doc,
         path,
         evidence,
@@ -31,6 +31,9 @@ def run_parse(services, fixtures, relative, kind, account_kind, *, registry=None
         today=dt.date(2026, 11, 1),
         limits=ReaderLimits(),
     )
+    if outcome.learned_layout is not None:  # what the import does, in its own transaction
+        registry.save_learned(doc, outcome.learned_layout)
+    return outcome
 
 
 def test_known_csv_and_ofx_need_no_ai(ingest_env, fixtures):

@@ -34,7 +34,7 @@ from tuppence.ingest.models import (
 )
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, read_document, tidy
-from tuppence.ingest.registry import CsvLayout, LayoutRegistry
+from tuppence.ingest.registry import CsvLayout, LayoutRegistry, side_of
 from tuppence.ingest.textnum import decode_text
 from tuppence.ingest.textprep import sent_lines
 
@@ -59,13 +59,27 @@ class ParseOutcome(BaseModel):
     # A newly proposed CSV layout that read the file but whose signs can't be confirmed yet.
     # It is not saved; the caller may save it once the person has confirmed the statement.
     pending_layout: CsvLayout | None = None
+    # A newly learned layout that read the file cleanly. Parsing never saves it: the import
+    # does, in the same transaction as the rows (M11), so a failed import remembers nothing.
+    learned_layout: CsvLayout | None = None
 
 
+# Wording of money paid to a card (or given back by it): a payment, a refund, cashback, a
+# balance moved onto it. "CARD PAYMENT TO ..." and "CONTACTLESS PAYMENT" are purchases.
 _CARD_CREDIT = re.compile(
     r"payment\s*(?:-\s*)?(?:received|thank)|thank\s*you|\brefund|\bcash\s*back\b"
-    r"|direct\s+debit\s+payment",
+    r"|direct\s+debit\s+payment|\bdd\s+payment|payment\s+(?:by|via)\s+(?:direct\s+debit|dd"
+    r"|faster\s+payment|bank\s+transfer|standing\s+order|debit\s+card)"
+    r"|balance\s+transfer\s+in\b",
     re.IGNORECASE,
 )
+
+
+def card_payment(text: str) -> bool:
+    """A card row's description says money was paid to the card (or given back)."""
+    return _CARD_CREDIT.search(text) is not None
+
+
 _TYPE_CREDIT = {"cr", "credit", "payment", "refund"}
 _TYPE_DEBIT = {"dr", "debit", "purchase", "sale"}
 _ACCOUNT_WORDS = {"current": "a current account", "savings": "a savings account"}
@@ -77,7 +91,7 @@ def _card_evidence(parsed: ParsedStatement) -> tuple[int, int]:
     agree = disagree = 0
     for row in parsed.rows:
         kind = (row.bank_type or "").strip().casefold()
-        if kind in _TYPE_CREDIT or _CARD_CREDIT.search(row.raw_description):
+        if kind in _TYPE_CREDIT or card_payment(row.raw_description):
             want = 1
         elif kind in _TYPE_DEBIT:
             want = -1
@@ -200,6 +214,27 @@ def restore_masked(parsed: ParsedStatement, doc: Document) -> None:
                 setattr(row, name, value)
 
 
+_KIND_NAMES = {
+    "current": "a current account",
+    "savings": "a savings account",
+    "credit_card": "a credit card",
+}
+
+
+def kind_doubt(evidence: Evidence, account_kind: AccountKind) -> str | None:
+    """M7: the file (or its wording) says one side of account, a card's or a bank account's,
+    and the person chose the other. The amounts are read the chosen account's way, which would
+    be back to front, so the person checks it."""
+    said = evidence.kind or evidence.kind_hint
+    if said is None or side_of(said) == side_of(account_kind):
+        return None
+    return (
+        f"This statement looks like it's from {_KIND_NAMES[said]}, but it's being read for "
+        f"{_KIND_NAMES[account_kind]}, so its amounts may be the wrong way round. If that's the "
+        "wrong account, use Wrong account?; otherwise check the signs."
+    )
+
+
 def level_for(doc: Document) -> CheckLevel:
     return "screenshot" if doc.kind == "image" else "full"
 
@@ -224,6 +259,42 @@ def parse_document(
     raises NoModelConfigured through `llm`). `names` are the household's own names, hidden
     from layout learning like any account detail. `extract_limits` bound the sandbox that
     reads a CAMT.053 file's XML."""
+    outcome = _parse(
+        doc,
+        path,
+        evidence,
+        account_kind,
+        registry=registry,
+        llm=llm,
+        run=run,
+        context_window=context_window,
+        today=today,
+        limits=limits,
+        prompts_dir=prompts_dir,
+        names=names,
+        extract_limits=extract_limits,
+    )
+    if doubt := kind_doubt(evidence, account_kind):
+        outcome.errors.append(doubt)
+    return outcome
+
+
+def _parse(
+    doc: Document,
+    path: Path,
+    evidence: Evidence,
+    account_kind: AccountKind,
+    *,
+    registry: LayoutRegistry,
+    llm: StructuredLLM,
+    run: Any,
+    context_window: int | None,
+    today: dt.date,
+    limits: ReaderLimits,
+    prompts_dir: Path | None,
+    names: Sequence[str],
+    extract_limits: ExtractLimits | None,
+) -> ParseOutcome:
     level = level_for(doc)
     if doc.kind in ("ofx", "qif", "camt053"):
         try:
@@ -242,7 +313,8 @@ def parse_document(
             parsed=parsed, errors=check_document(doc, parsed), info={"importer": parsed.importer}
         )
     if doc.kind in ("csv", "xlsx"):
-        layout = registry.match(doc)
+        # A learned layout only for this side of account (a card's or a bank account's).
+        layout = registry.match(doc, kind=account_kind)
         if layout is not None:
             try:
                 result = parse_with_layout(doc, layout)
@@ -270,19 +342,24 @@ def parse_document(
             prompt=load_prompt("csv_mapping", prompts_dir),
         )
         if outcome.layout is not None and outcome.result is not None:
+            # The rows a fresh mapping read go through the same Check as any importer's.
+            checked = outcome.result.problems + check_document(doc, outcome.result.parsed)
             doubt = sign_doubt(outcome.result.parsed, account_kind, outcome.layout, new=True)
-            if doubt:  # read the file, but don't trust the layout enough to keep it
+            if doubt or checked:  # read the file, but don't trust the layout enough to keep it
                 parsed = outcome.result.parsed
                 return ParseOutcome(
                     parsed=parsed,
-                    errors=[doubt],
+                    errors=[*checked, *([doubt] if doubt else [])],
                     info={"importer": "csv:unknown", "attempts": outcome.attempts},
                     pending_layout=outcome.layout,
                 )
-            learned = registry.save_learned(doc, outcome.layout)
-            parsed = outcome.result.parsed.model_copy(update={"importer": f"csv:{learned.id}"})
+            parsed = outcome.result.parsed.model_copy(
+                update={"importer": f"csv:{outcome.layout.id}"}
+            )
             return ParseOutcome(
-                parsed=parsed, info={"importer": parsed.importer, "attempts": outcome.attempts}
+                parsed=parsed,
+                info={"importer": parsed.importer, "attempts": outcome.attempts},
+                learned_layout=outcome.layout,
             )
         parsed = (
             outcome.result.parsed if outcome.result else ParsedStatement(importer="csv:unknown")

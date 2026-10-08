@@ -27,7 +27,13 @@ from tuppence.ingest.importers.csv_layout import ImportResult, LayoutMismatch, p
 from tuppence.ingest.models import AccountKind, Document, ParsedStatement
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, tidy
-from tuppence.ingest.registry import CsvLayout, data_records, header_cells, header_key, norm
+from tuppence.ingest.registry import (
+    CsvLayout,
+    data_records,
+    header_cells,
+    learned_id,
+    norm,
+)
 from tuppence.ingest.sensitive import HIDDEN, classify, holds_details, mask
 from tuppence.ingest.textnum import direction_of, has_printed_sign
 from tuppence.llm.types import LLMBadResponse, Message
@@ -367,8 +373,9 @@ def mapping_to_layout(
             "a bank account's single amount column shows money out as negative"
         )
     return CsvLayout(
-        id=f"learned-{header_key(header)}",
+        id=learned_id(header, account_kind),
         name="Your bank's export (learned)",
+        kind=account_kind,
         source="learned",
         signature=[h for h in header if h.strip()],
         date=header[date_at],

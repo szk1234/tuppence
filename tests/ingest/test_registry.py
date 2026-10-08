@@ -112,6 +112,7 @@ def test_learned_layout_is_matched_by_its_exact_headings(fixtures):
     layout = CsvLayout(
         id="learned-1",
         name="learned",
+        kind="savings",
         signature=["Posting Date"],
         date="Posting Date",
         description=["Details"],
@@ -131,5 +132,13 @@ def test_learned_layout_is_matched_by_its_exact_headings(fixtures):
         sha256="y",
         known=registry.is_known_header,
     )
-    assert registry.match(later).id == "learned-1"
+    assert registry.match(later) is None  # not before the account (and its side) is known
+    assert (
+        registry.match(later, kind="current").id
+        == saved.id
+        == f"learned-{
+            header_key(['Posting Date', 'Details', 'Withdrawals', 'Deposits', 'Running Balance'])
+        }-bank"
+    )
+    assert registry.match(later, kind="credit_card") is None
     assert header_key(["Posting Date", " details "]) == header_key(["posting date", "Details"])

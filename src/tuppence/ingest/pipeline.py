@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
@@ -31,7 +33,7 @@ from tuppence.ingest.extract import ExtractLimits, extract_document
 from tuppence.ingest.identify import AccountRef, Evidence, identify, match_account
 from tuppence.ingest.models import AccountKind, CheckLevel, Document, ParsedStatement
 from tuppence.ingest.parse import ReaderLimits, parse_document
-from tuppence.ingest.registry import BankPack, LayoutRegistry
+from tuppence.ingest.registry import BankPack, CsvLayout, LayoutRegistry
 from tuppence.llm.types import LLMError, NoModelConfigured
 
 log = logging.getLogger("tuppence.ingest")
@@ -65,6 +67,7 @@ class IngestState(TypedDict):
     level: str
     info: dict[str, Any]
     pending_layout: dict[str, Any] | None
+    learned_layout: dict[str, Any] | None
     question: dict[str, Any]
     failure: str
     outcome: str
@@ -261,12 +264,13 @@ class IngestGraph:
             if isinstance(exc, UserFacing):
                 return {"failure": safe_error_text(exc)}
             raise
-        pending = outcome.pending_layout
+        pending, learned = outcome.pending_layout, outcome.learned_layout
         return {
             "parsed": outcome.parsed.model_dump(mode="json"),
             "errors": outcome.errors,
             "level": outcome.level,
             "pending_layout": pending.model_dump(mode="json") if pending is not None else None,
+            "learned_layout": learned.model_dump(mode="json") if learned is not None else None,
             "info": {
                 **outcome.info,
                 "llm_calls": run.calls,
@@ -287,7 +291,9 @@ class IngestGraph:
         errors = list(state.get("errors") or [])
         level: CheckLevel = "screenshot" if state.get("level") == "screenshot" else "full"
         info = state.get("info") or {}
-        pending = state.get("pending_layout")
+        learned = state.get("learned_layout")
+        # A layout learned from this file waits for the person when anything needs a look.
+        pending = state.get("pending_layout") or (learned if errors else None)
         if errors or pending is not None:
             # A check failed, or a learned layout is in doubt: the person looks first. A pending
             # layout is saved only when they confirm the statement (IngestService.accept).
@@ -306,12 +312,18 @@ class IngestGraph:
                 },
             )
             return {"outcome": "needs_review"}
+        doc = Document.model_validate(state["document"])
+        within = None
+        if learned is not None:  # remembered only if the import itself is kept (M11)
+            layout = CsvLayout.model_validate(learned)
+            within = partial(_save_layout, self.d.registry, doc, layout)
         self.d.store.persist(
             statement_id,
             state["account_id"],
             parsed,
             balance_verified=balance_verified(parsed, errors, level),
             stats=info,
+            within=within,
         )
         hand_off(self.d.on_imported, statement_id)
         return {"outcome": "imported"}
@@ -332,6 +344,12 @@ class IngestGraph:
         graph.add_edge("parse", "finish")
         graph.add_edge("finish", END)
         return graph.compile(checkpointer=checkpointer)
+
+
+def _save_layout(
+    registry: LayoutRegistry, doc: Document, layout: CsvLayout, conn: sqlite3.Connection
+) -> None:
+    registry.save_learned(doc, layout, conn=conn)
 
 
 def hand_off(on_imported: Callable[[str], object], statement_id: str) -> None:

@@ -63,8 +63,9 @@ def test_unknown_csv_is_learned_once(ingest_env, fixtures):
     assert outcome.layout is not None
     registry.save_learned(doc, outcome.layout)
     later = unknown(fixtures, "credit-union-nov.csv", known=registry.is_known_header)
-    found = registry.match(later)
+    found = registry.match(later, kind="current")  # learned for a bank account (the default)
     assert found is not None and found.id == outcome.layout.id and len(scripted.requests) == 1
+    assert registry.match(later, kind="credit_card") is None  # never for a card
 
 
 def test_a_mapping_that_fails_check_is_retried_then_given_up(ingest_env, fixtures):

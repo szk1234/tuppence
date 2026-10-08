@@ -20,5 +20,5 @@ def test_learned_layouts_survive_a_restart(tmp_path, fixtures):
     )
     LayoutRegistry(load_bank_pack(), learned=LearnedLayouts(db)).save_learned(doc, layout)
     after_restart = LayoutRegistry(load_bank_pack(), learned=LearnedLayouts(db))
-    found = after_restart.match(doc)
-    assert found is not None and found.id == "learned-1" and found.source == "learned"
+    found = after_restart.match(doc, kind="current")
+    assert found is not None and found.id.startswith("learned-") and found.source == "learned"
