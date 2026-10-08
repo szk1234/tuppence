@@ -29,7 +29,7 @@ from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, tidy
 from tuppence.ingest.registry import CsvLayout, data_records, header_cells, header_key, norm
 from tuppence.ingest.sensitive import HIDDEN, classify, holds_details, mask
-from tuppence.ingest.textnum import direction_of
+from tuppence.ingest.textnum import direction_of, has_printed_sign
 from tuppence.llm.types import LLMBadResponse, Message
 
 SAMPLE_ROWS = 5
@@ -219,20 +219,53 @@ def _best_date_format(values: Sequence[str]) -> str | None:
 _KIND_WORDS = {"current": "a current account", "savings": "a savings account"}
 
 
+def _priced(rows: Sequence[Sequence[str]], amount_at: int) -> list[Sequence[str]]:
+    return [row for row in rows if len(row) > amount_at and row[amount_at].strip()]
+
+
 def _direction_column(
     header: Sequence[str], rows: Sequence[Sequence[str]], amount_at: int, prefer: int | None
-) -> str | None:
-    """The column that says DR or CR (Debit or Credit) on every row with an amount, worked out
-    on this device: the sign source for a single amount column. The model's type column is
+) -> int | None:
+    """The column that says DR or CR (Debit or Credit) on every row with an amount, and both
+    ways round somewhere, worked out on this device. A column with one value on every row
+    (a card type, a cleared flag) says nothing about direction. The model's type column is
     tried first."""
-    priced = [row for row in rows if len(row) > amount_at and row[amount_at].strip()]
+    priced = _priced(rows, amount_at)
     order = [*([prefer] if prefer is not None else []), *range(len(header))]
     for i in order:
         if i == amount_at or not header[i].strip() or not priced:
             continue
-        if all(len(row) > i and direction_of(row[i]) is not None for row in priced):
-            return header[i]
+        ways = {direction_of(row[i]) if len(row) > i else None for row in priced}
+        if ways == {-1, 1}:
+            return i
     return None
+
+
+def marker_contradiction(doc: Document, layout: CsvLayout, parsed: ParsedStatement) -> str | None:
+    """Why a DR/CR column and the amounts' own printed signs can't both be right, or None.
+
+    When the amounts print their own signs, those win and the column is not the sign source;
+    a row whose marker says the other way means one of them is wrong."""
+    header = header_cells(doc)
+    if header is None or layout.amount is None or layout.direction is not None:
+        return None
+    records = data_records(doc)
+    amount_at = header.index(layout.amount)
+    at = _direction_column(header, [cells for _, cells in records], amount_at, None)
+    if at is None:
+        return None
+    marker = {ref: direction_of(cells[at]) for ref, cells in records if len(cells) > at}
+    wrong = sum(
+        1
+        for row in parsed.rows
+        if (way := marker.get(row.ref)) is not None and row.amount_pence * way < 0
+    )
+    if not wrong:
+        return None
+    return (
+        f"The DR/CR column disagrees with the amounts' own signs on {_plural(wrong)}, so money "
+        "in can't be told from money out. Please check the signs."
+    )
 
 
 def missing_sign_source(
@@ -272,7 +305,8 @@ def mapping_to_layout(
     A hidden heading can't be chosen. The date format comes from every value in the date
     column (`rows` is every data row). On a bank account, a single amount column read as a
     card's (purchases positive) contradicts the account type and is refused. A column of DR/CR
-    markers beside a single amount column is found here and gives each amount its direction."""
+    markers beside a single amount column printed without signs is found here and gives each
+    amount its direction; amounts that print their own signs keep them."""
     shown = [shown_heading(h, names=names) for h in header]
     index: dict[str, int] = {}
     for i, name in enumerate(shown):
@@ -309,11 +343,14 @@ def mapping_to_layout(
     }
     columns = {what: column(name, what) for what, name in roles.items()}
     direction = None
-    if mapping.amount_column is not None:
+    if mapping.amount_column is not None:  # a DR/CR column signs amounts printed without one
+        amount_at = position(mapping.amount_column, "amount_column")
         type_at = position(mapping.type_column, "type_column") if mapping.type_column else None
-        direction = _direction_column(
-            header, rows, position(mapping.amount_column, "amount_column"), type_at
-        )
+        at = _direction_column(header, rows, amount_at, type_at)
+        if at is not None and not any(
+            has_printed_sign(row[amount_at]) for row in _priced(rows, amount_at)
+        ):
+            direction = header[at]
     dates = [" ".join(row[date_at].split()) for row in rows if len(row) > date_at]
     date_format = _best_date_format([d for d in dates if d])
     if date_format is None:
@@ -480,8 +517,12 @@ def propose_layout(
         errors = _describe(last.problems, layout, header, names) + summarise_checks(
             check_document(doc, last.parsed)
         )
-        if doubt := missing_sign_source(last.parsed, layout, account_kind):
-            errors.append(doubt)
+        for doubt in (
+            missing_sign_source(last.parsed, layout, account_kind),
+            marker_contradiction(doc, layout, last.parsed),
+        ):
+            if doubt:
+                errors.append(doubt)
         if not errors:
             return MappingOutcome(layout=layout, result=last, errors=[], attempts=attempt)
     return MappingOutcome(layout=None, result=last, errors=errors, attempts=max_attempts)

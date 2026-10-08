@@ -305,7 +305,8 @@ def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence
             continue
         errors.extend(_evidence(row, line))
         label = (row.sign_from or "").strip()
-        if parsed.perspective == "card":
+        # A card's figure is read the card's way unless a DR/CR cell on the row gives its sign.
+        if parsed.perspective == "card" and _cell_direction(label, line.text) is None:
             errors.extend(_card_sign(row, line.text))
         else:
             errors.extend(_sign(row, line.text, label))
@@ -453,7 +454,7 @@ def _bounded(text: str, start: int, end: int) -> bool:
 def _cell_direction(label: str, own: str) -> int | None:
     """The direction of a DR/CR (Debit/Credit) marker printed as a whole cell of the row's own
     line (a table's direction column), else None."""
-    cell = rf"(?:^|[,;\t|])\s*\"?{re.escape(label.strip())}\"?\s*(?:[,;\t|]|$)"
+    cell = rf"(?:^|[,;\t|]) *\"?{re.escape(label.strip())}\"? *(?:[,;\t|]|$)"
     return direction_of(label) if re.search(cell, own, re.IGNORECASE) else None
 
 

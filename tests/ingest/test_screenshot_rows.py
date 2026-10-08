@@ -190,3 +190,53 @@ def test_a_masked_card_ending_is_never_sent(ingest_env):
     assert texts(doc, doc.data_refs) == ["LITTLE CAFE -£12.80", "5 Oct CITY WATER -£31.15"]
     parse_shot(services, rows)
     assert "4242" not in json.dumps(scripted.requests, ensure_ascii=False)
+
+
+# N6 (re-review 3): balance labels and figure-only lines next to two-line rows. The balance is
+# never sent, and a row's amount is never lost without a "held back" error.
+BALANCE_FIGURES = ("1,184.56", "1,500.00", "1,084.56")
+TWO_LINE_SCREENS = {
+    "h1 two balances, figure above label": (
+        ["£1,184.56", "Available balance", "£1,500.00", "Balance", "Today", "LITTLE CAFE -£12.80"],
+        True,
+    ),
+    "h2 balance and spent today, figure above label": (
+        ["£1,184.56", "Balance", "£20.00", "Spent today", "Today", "LITTLE CAFE -£12.80"],
+        True,
+    ),
+    "h2b both figures read first": (
+        ["£1,184.56", "£20.00", "Balance", "Spent today", "Today", "LITTLE CAFE -£12.80"],
+        True,
+    ),
+    "h3 figure above label, amount-first row below": (
+        [
+            "Current Account",
+            "£1,184.56",
+            "Available balance",
+            "-£12.80",
+            "Little Cafe",
+            "5 Oct CITY WATER -£31.15",
+        ],
+        False,
+    ),
+    "h4 screen cut after a label, two-line row above": (
+        ["5 Oct CITY WATER -£31.15", "Little Cafe", "-£12.80", "Available balance"],
+        False,
+    ),
+    "h7 two-line row, then label over figure": (
+        ["5 Oct CITY WATER -£31.15", "Little Cafe", "-£12.80", "Balance", "£1,184.56"],
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize(("rows", "clean"), TWO_LINE_SCREENS.values(), ids=TWO_LINE_SCREENS.keys())
+def test_a_balance_never_takes_a_rows_amount_silently(ingest_env, rows, clean):
+    services, scripted = ingest_env
+    out = parse_shot(services, rows)
+    sent = json.dumps(scripted.requests, ensure_ascii=False)
+    assert not any(figure in sent for figure in BALANCE_FIGURES)
+    held = any("held back" in e for e in out.errors)
+    if "-£12.80" not in sent:  # the Little Cafe row's amount was held back: say so
+        assert held
+    assert held != clean

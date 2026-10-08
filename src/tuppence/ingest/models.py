@@ -35,6 +35,8 @@ class Document(BaseModel):
     )  # before the table: identity, never sent to AI
     header_refs: list[str] = Field(default_factory=list)  # column headings: not data
     data_refs: list[str] = Field(default_factory=list)  # every one must become a row or a skip
+    # withheld lines with an amount that may be a transaction: reported, never lost silently
+    held_amount_refs: list[str] = Field(default_factory=list)
     table: list[list[str]] | None = None  # CSV/XLSX cells for each line in `lines`, same order
     meta: dict[str, str] = Field(default_factory=dict)  # e.g. OFX BANKID/ACCTID, CAMT IBAN/BIC
     pages: int = 0

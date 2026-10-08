@@ -13,6 +13,7 @@ from tuppence.ingest.registry import CsvLayout, column_getter, data_records, hea
 from tuppence.ingest.textnum import (
     direction_of,
     has_credit_marker,
+    has_printed_sign,
     parse_date,
     parse_money,
     to_pence,
@@ -115,6 +116,8 @@ def _record(
             way = direction_of(marker)
             if way is None:
                 return [], [], f"{ref}: can't tell whether the amount is money in or out"
+            if has_printed_sign(amount_text) and pence * way < 0:
+                return [], [], f"{ref}: the amount's sign and its DR/CR marker disagree"
             pence, sign_from = way * abs(pence), marker
         elif layout.perspective == "card":
             pence = abs(pence) if has_credit_marker(amount_text) else -pence

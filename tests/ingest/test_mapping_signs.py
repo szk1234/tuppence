@@ -277,14 +277,20 @@ def test_dr_cr_columns_are_found_by_their_values(ingest_env, tmp_path, header, w
     assert out.errors == [] and registry.match(doc) is not None
 
 
-def test_a_card_with_a_dr_cr_column_takes_its_signs_from_it(ingest_env, tmp_path):
+@pytest.mark.parametrize("words", [("DR", "CR"), ("D", "C"), ("Debit", "Credit")])
+def test_a_card_with_a_dr_cr_column_takes_its_signs_from_it(ingest_env, tmp_path, words):
+    """N9: the card's own answer is used on the first request (no fallback to another)."""
     services, scripted = ingest_env
     use_local_model(services)
     registry = LayoutRegistry(load_bank_pack())
-    scripted.replies = [{"content": json.dumps(single_amount(amounts_are="purchases_positive"))}]
-    out, doc = parse_csv(services, tmp_path, registry, "credit_card", typed_csv())
+    scripted.replies = [
+        {"content": json.dumps(single_amount(amounts_are="purchases_positive"))}
+    ] * 3
+    out, doc = parse_csv(services, tmp_path, registry, "credit_card", typed_csv(words=words))
     assert [r.amount_pence for r in out.parsed.rows] == TYPED_PENCE
-    assert out.errors == [] and registry.match(doc) is not None
+    assert out.errors == [] and len(scripted.requests) == 1
+    saved = registry.match(doc)
+    assert saved is not None and saved.perspective == "card" and saved.direction == "Type"
 
 
 UNSIGNED = [("GREENBASKET STORES", 42.18), ("ACME PAYROLL", 900.0), ("LITTLE CAFE", 3.40)]
@@ -358,3 +364,123 @@ def test_a_missing_dr_cr_marker_on_a_later_file_is_reported():
     assert [r.amount_pence for r in result.parsed.rows] == [-400]
     assert [r.sign_from for r in result.parsed.rows] == ["DR"]
     assert result.problems == ["L3: can't tell whether the amount is money in or out"]
+
+
+# --- printed signs win over a DR/CR column (N7) ----------------------------------------------
+
+
+def signed_csv(rows, header="Date,Description,Amount,Card Type"):
+    lines = [header] + [f"{i:02d}/10/2026,{row}" for i, row in enumerate(rows, start=1)]
+    return ("\n".join(lines) + "\n").encode()
+
+
+def test_a_column_with_one_value_is_never_a_sign_source(ingest_env, tmp_path):
+    """s7: a card-type column reads "Debit" on every row; the salary stays money in."""
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    rows = [
+        "SHOP,-42.18,Debit",
+        "ACME PAYROLL,900.00,Debit",
+        "CAFE,-3.40,Debit",
+        "WATER,-31.15,Debit",
+    ]
+    scripted.replies = [{"content": json.dumps(single_amount())}]
+    out, doc = parse_csv(services, tmp_path, registry, "current", signed_csv(rows))
+    assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, -340, -3115]
+    saved = registry.match(doc)
+    assert out.errors == [] and saved is not None and saved.direction is None
+
+
+def test_a_layout_learned_from_a_month_without_money_in_keeps_printed_signs(ingest_env, tmp_path):
+    """s7b: the next month's salary and refund (printed positive) stay money in."""
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    scripted.replies = [{"content": json.dumps(single_amount())}]
+    first = ["SHOP,-42.18,Debit", "CAFE,-3.40,Debit", "WATER,-31.15,Debit"]
+    out, _ = parse_csv(services, tmp_path, registry, "current", signed_csv(first), "a.csv")
+    assert out.errors == []
+    later = ["SHOP,-42.18,Debit", "ACME PAYROLL,900.00,Debit", "REFUND SHOP,5.00,Debit"]
+    again, _ = parse_csv(services, tmp_path, registry, "current", signed_csv(later), "b.csv")
+    assert [r.amount_pence for r in again.parsed.rows] == [-4218, 90000, 500]
+    assert again.errors == [] and len(scripted.requests) == 1
+
+
+def test_a_cleared_flag_column_is_not_a_sign_source(ingest_env, tmp_path):
+    """s6: "C" on every row is a status, not money in."""
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    rows = ["SHOP,-42.18,C", "ACME PAYROLL,900.00,C", "CAFE,-3.40,C"]
+    scripted.replies = [{"content": json.dumps(single_amount())}]
+    data = signed_csv(rows, header="Date,Description,Amount,Cleared")
+    out, doc = parse_csv(services, tmp_path, registry, "current", data)
+    assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, -340]
+    assert out.errors == [] and registry.match(doc) is not None
+
+
+def test_printed_signs_win_over_an_agreeing_dr_cr_column(ingest_env, tmp_path):
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    rows = ["SHOP,-42.18,DR", "ACME PAYROLL,900.00,CR", "CAFE,-3.40,DR"]
+    scripted.replies = [{"content": json.dumps(single_amount(type_column="Type"))}]
+    out, doc = parse_csv(services, tmp_path, registry, "current", signed_csv(rows, TYPE_HEADER))
+    assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, -340]
+    saved = registry.match(doc)
+    assert out.errors == [] and saved is not None and saved.direction is None
+
+
+TYPE_HEADER = "Date,Description,Amount,Type"
+
+
+@pytest.mark.parametrize("kind", ["current", "credit_card"])
+def test_a_dr_cr_column_that_contradicts_printed_signs_is_refused(ingest_env, tmp_path, kind):
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    rows = ["SHOP,-42.18,DR", "ACME PAYROLL,900.00,DR", "REFUND,5.00,CR"]
+    reply = single_amount(amounts_are="money_out_negative")
+    scripted.replies = [{"content": json.dumps(reply)}] * 3
+    out, doc = parse_csv(services, tmp_path, registry, kind, signed_csv(rows, TYPE_HEADER))
+    assert any("DR/CR column disagrees" in e for e in out.errors)
+    assert registry.match(doc) is None and out.pending_layout is None
+    # the printed signs are kept: nothing is turned round
+    assert [r.amount_pence for r in out.parsed.rows] == [-4218, 90000, 500]
+
+
+def test_a_constant_dr_column_with_unsigned_amounts_is_no_sign_source(ingest_env, tmp_path):
+    services, scripted = ingest_env
+    use_local_model(services)
+    registry = LayoutRegistry(load_bank_pack())
+    rows = ["SHOP,42.18,DR", "CAFE,3.40,DR", "WATER,31.15,DR"]
+    scripted.replies = [{"content": json.dumps(single_amount())}] * 3
+    out, doc = parse_csv(services, tmp_path, registry, "current", signed_csv(rows, TYPE_HEADER))
+    assert any("money in can't be told from money out" in e for e in out.errors)
+    assert registry.match(doc) is None
+
+
+def test_a_later_file_whose_printed_sign_contradicts_its_marker_is_reported():
+    from tuppence.ingest.importers.csv_layout import parse_with_layout
+    from tuppence.ingest.registry import CsvLayout
+    from tuppence.ingest.textprep import csv_document
+
+    layout = CsvLayout(
+        id="learned-x",
+        name="x",
+        source="learned",
+        signature=["Date", "Description", "Type", "Amount"],
+        date="Date",
+        description=["Description"],
+        amount="Amount",
+        direction="Type",
+    )
+    doc = csv_document(
+        b"Date,Description,Type,Amount\n01/10/2026,SHOP,DR,-4.00\n02/10/2026,PAY,DR,900.00\n"
+        b"03/10/2026,REFUND,CR,-5.00\n",
+        sha256="x",
+    )
+    result = parse_with_layout(doc, layout)
+    assert [r.amount_pence for r in result.parsed.rows] == [-400, -90000]
+    assert result.problems == ["L4: the amount's sign and its DR/CR marker disagree"]

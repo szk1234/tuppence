@@ -78,6 +78,14 @@ def direction_of(text: str | None) -> int | None:
     return _DIRECTIONS.get((text or "").strip().rstrip(".").casefold())
 
 
+_PRINTED_SIGN = re.compile(r"[-+\u2212\u2013(]|\b(?:CR|DR)\.?\s*$", re.IGNORECASE)
+
+
+def has_printed_sign(text: str) -> bool:
+    """An amount printed with its own direction: a plus or minus, brackets, or a CR/DR mark."""
+    return _PRINTED_SIGN.search(text.strip()) is not None
+
+
 def has_credit_marker(text: str) -> bool:
     return bool(re.search(r"\bCR\.?\s*$", text.strip(), re.IGNORECASE))
 

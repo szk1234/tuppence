@@ -242,10 +242,65 @@ def _page_edge_repeats(lines: Sequence[Line]) -> set[str]:
     return {text for text, pages in seen.items() if len(pages) >= 2}
 
 
-def balance_refs(lines: Sequence[Line]) -> set[str]:
-    """Lines that show a balance: a balance line, or a balance label on its own line and the
-    figure printed below (or above) it. Never transactions, never sent to a model."""
-    return {lines[i].ref for i in sensitive.balance_lines([line.text for line in lines])}
+_DAY_WORDS = re.compile(
+    r"\b(?:today|yesterday|tomorrow|pending|earlier|(?:mon|tues|wednes|thurs|fri|satur|sun)day"
+    r"|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b",
+    re.IGNORECASE,
+)
+_SECTION = re.compile(
+    r"^\s*(?:(?:recent|latest|all|account)\s+)?(?:transactions|activity|payments)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _owns_amount(text: str) -> bool:
+    """Words that may be a row's description with its amount on the line above or below: no
+    amount, and not a date or day heading, a section title or a balance label."""
+    if (
+        has_amount(text)
+        or _SECTION.match(text)
+        or sensitive.is_balance_label(text)
+        or sensitive.is_balance_line(text)
+    ):
+        return False
+    rest = _DAY_WORDS.sub(" ", _NAMED_DATE.sub(" ", _NUMERIC_DATE.sub(" ", text)))
+    return re.search(r"[A-Za-z]", rest) is not None
+
+
+def _balance_blocks(texts: Sequence[str]) -> list[range]:
+    """Runs of lines that are balance labels or figures on their own, with at least one of
+    each: "Available balance" over "£1,184.56", "£1,184.56" over "Balance". Every line of a
+    run is held back, since any of its figures may be the balance."""
+    label = [sensitive.is_balance_label(t) for t in texts]
+    figure = [sensitive.is_figure_line(t) for t in texts]
+    blocks: list[range] = []
+    i = 0
+    while i < len(texts):
+        j = i
+        while j < len(texts) and (label[j] or figure[j]):
+            j += 1
+        run = range(i, j)
+        if any(label[k] for k in run) and any(figure[k] for k in run):
+            blocks.append(run)
+        i = max(j, i + 1)
+    return blocks
+
+
+def _unsure(texts: Sequence[str], block: range, header_end: int) -> set[int]:
+    """The figures of a held-back block that may be a row's amount, so they are reported:
+    all of them when there are more figures than labels (which is the balance can't be told),
+    else a figure at the edge of the block beside words that may be its row's description
+    (above it only once past the header, where a title like "Current Account" sits)."""
+    figures = [k for k in block if sensitive.is_figure_line(texts[k])]
+    if 2 * len(figures) > len(block):
+        return set(figures)
+    unsure: set[int] = set()
+    top, bottom = block[0], block[-1]
+    if top in figures and top - 1 >= header_end and _owns_amount(texts[top - 1]):
+        unsure.add(top)
+    if bottom in figures and bottom + 1 < len(texts) and _owns_amount(texts[bottom + 1]):
+        unsure.add(bottom)
+    return unsure
 
 
 def split_preamble(
@@ -258,12 +313,23 @@ def split_preamble(
     A repeat is furniture when it has a page marker, sits at the edge of 2+ pages, or has
     no figures or date and is a holder's name (`names`, or a name line in the preamble).
     """
+    withheld, data, _ = _split_preamble(lines, names=names)
+    return withheld, data
+
+
+def _split_preamble(
+    lines: Sequence[Line], *, names: Sequence[str] = ()
+) -> tuple[list[str], list[str], list[str]]:
+    """`split_preamble`, plus the held-back figures past the first anchor that may be a
+    row's amount (see `_unsure`)."""
     counts: dict[str, int] = {}
     for line in lines:
         counts[_normal(line.text)] = counts.get(_normal(line.text), 0) + 1
     first = next((i for i, ln in enumerate(lines) if is_anchor(ln.text)), None)
     edge = _page_edge_repeats(lines)
-    balances = balance_refs(lines)
+    texts = [line.text for line in lines]
+    blocks = _balance_blocks(texts)
+    balances = {k for block in blocks for k in block}
     known_names = {k for n in names if (k := _name_key(n))}
     for line in lines[: first if first is not None else 0]:
         if key := _name_key(line.text):
@@ -284,7 +350,7 @@ def split_preamble(
         if (
             (first is not None and i < first)
             or is_sensitive(text, names=names)
-            or line.ref in balances
+            or i in balances
             or is_summary(text)
             or furniture
             or name_repeat
@@ -292,7 +358,11 @@ def split_preamble(
             withheld.append(line.ref)
         else:
             data.append(line.ref)
-    return withheld, data
+    unsure: set[int] = set()
+    for block in blocks:
+        if first is not None and block[0] > first:  # the summary box above the table never is
+            unsure |= _unsure(texts, block, first)
+    return withheld, data, [lines[k].ref for k in sorted(unsure)]
 
 
 _CURRENCY_FIGURE = re.compile(r"[£$€]\s?\d")
@@ -309,32 +379,48 @@ def split_screenshot(
     """(withheld refs, data refs) for a screenshot from a banking app.
 
     Apps list pending and "Today" rows without a date, so only the lines above the first line
-    with a date or an amount (a balance line doesn't count) are the header. After it, a line
-    is withheld when it shows account details or a balance, or is only a name. A withheld
-    line with an amount on it, other than a balance, may be a transaction: the parse step
-    reports it rather than lose it silently."""
-    balances = balance_refs(lines)
+    with a date or an amount (a balance doesn't count) are the header. After it, a line is
+    withheld when it shows account details or a balance, or is only a name."""
+    withheld, data, _ = _split_screenshot(lines, names=names)
+    return withheld, data
+
+
+def _split_screenshot(
+    lines: Sequence[Line], *, names: Sequence[str] = ()
+) -> tuple[list[str], list[str], list[str]]:
+    """`split_screenshot`, plus the withheld lines with an amount that may be a transaction:
+    every one but a plain balance. The parse step reports them rather than lose them."""
+    texts = [line.text for line in lines]
+    blocks = _balance_blocks(texts)
+    balances = {k for block in blocks for k in block}
+    balances |= {i for i, text in enumerate(texts) if sensitive.is_balance_line(text)}
     first = next(
         (
             i
-            for i, ln in enumerate(lines)
-            if (_has_date(ln.text) or has_amount(ln.text)) and ln.ref not in balances
+            for i, text in enumerate(texts)
+            if (_has_date(text) or has_amount(text)) and i not in balances
         ),
         len(lines),
     )
+    unsure: set[int] = set()
+    for block in blocks:
+        unsure |= _unsure(texts, block, first)
     withheld: list[str] = []
     data: list[str] = []
+    held: list[str] = []
     for i, line in enumerate(lines):
         if (
             i < first
-            or line.ref in balances
+            or i in balances
             or is_sensitive(line.text, names=names)
             or _name_key(line.text) is not None
         ):
             withheld.append(line.ref)
+            if has_amount(line.text) and (i not in balances or i in unsure):
+                held.append(line.ref)
         else:
             data.append(line.ref)
-    return withheld, data
+    return withheld, data, held
 
 
 def text_document(text: str, *, sha256: str, names: Sequence[str] = ()) -> Document:
@@ -343,8 +429,15 @@ def text_document(text: str, *, sha256: str, names: Sequence[str] = ()) -> Docum
         for n, t in enumerate(text.split("\n"), start=1)
         if t.strip()
     ]
-    preamble, data = split_preamble(lines, names=names)
-    return Document(kind="text", sha256=sha256, lines=lines, preamble_refs=preamble, data_refs=data)
+    preamble, data, held = _split_preamble(lines, names=names)
+    return Document(
+        kind="text",
+        sha256=sha256,
+        lines=lines,
+        preamble_refs=preamble,
+        data_refs=data,
+        held_amount_refs=held,
+    )
 
 
 def pages_document(
@@ -362,14 +455,21 @@ def pages_document(
             if row.strip():
                 n += 1
                 lines.append(Line(ref=f"P{p}L{n}", text=row.rstrip()))
+    held: list[str] = []
     if not preamble:
         pre, data = [], [ln.ref for ln in lines]
     elif kind == "image":
-        pre, data = split_screenshot(lines, names=names)
+        pre, data, held = _split_screenshot(lines, names=names)
     else:
-        pre, data = split_preamble(lines, names=names)
+        pre, data, held = _split_preamble(lines, names=names)
     return Document(
-        kind=kind, sha256=sha256, lines=lines, preamble_refs=pre, data_refs=data, pages=len(pages)
+        kind=kind,
+        sha256=sha256,
+        lines=lines,
+        preamble_refs=pre,
+        data_refs=data,
+        held_amount_refs=held,
+        pages=len(pages),
     )
 
 

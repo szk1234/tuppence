@@ -328,3 +328,13 @@ def test_an_absurd_amount_is_reported():
         parsed=statement(big),
     )
     assert any("larger than any real transaction" in e for e in errors)
+
+
+def test_a_dr_cr_cell_is_found_in_linear_time():
+    import time
+
+    d = doc("02/10/2026,Shop" + "\t" * 20_000 + "x,12.30")
+    p = statement(row("L2", 2, -1230, "12.30", sign_from="DR"))
+    start = time.monotonic()
+    check_document(d, p)
+    assert time.monotonic() - start < 2

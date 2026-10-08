@@ -252,6 +252,24 @@ PAIRS = [
 ]
 
 
+def held_amounts(rows, kind):
+    doc = page(rows, kind)
+    by_ref = doc.by_ref()
+    return [by_ref[r].text for r in doc.held_amount_refs]
+
+
+def page(rows, kind):
+    if kind == "image":
+        return pages_document(
+            [["5 Oct SHOP -£3.40", *rows, "6 Oct CAFE -£1.00"]], sha256="x", kind="image"
+        )
+    return pages_document(
+        [["Date Description Amount", "02 Oct 2026 Shop 4.00", *rows, "03 Oct 2026 Cafe 3.00"]],
+        sha256="x",
+        kind="pdf",
+    )
+
+
 def withheld_lines(rows, kind):
     if kind == "image":
         doc = pages_document(
@@ -271,14 +289,17 @@ def withheld_lines(rows, kind):
 @pytest.mark.parametrize("rows", PAIRS, ids=" / ".join)
 def test_a_balance_label_and_its_figure_on_separate_lines_are_both_held_back(rows, kind):
     assert all(row in withheld_lines(rows, kind) for row in rows)
+    assert held_amounts(rows, kind) == []  # plainly a balance: nothing to report
 
 
 @pytest.mark.parametrize("kind", ["pdf", "image"])
-def test_a_figure_beside_a_balance_label_is_only_held_back_as_its_pair(kind):
+def test_a_figure_that_may_be_a_rows_amount_is_held_back_and_counted(kind):
+    """N6: "-£12.80" sits under its row's description and above a balance label with a figure
+    under it. Either figure may be the balance, so both are held back, and both count as
+    possible transactions: the statement needs a look rather than losing the row."""
     rows = ["Coffee shop", "-£12.80", "Balance", "£1,171.76"]
-    withheld = withheld_lines(rows, kind)
-    assert "Balance" in withheld and "£1,171.76" in withheld
-    assert "-£12.80" not in withheld and "Coffee shop" not in withheld
+    assert {"-£12.80", "Balance", "£1,171.76"} <= set(withheld_lines(rows, kind))
+    assert set(held_amounts(rows, kind)) == {"-£12.80", "£1,171.76"}
 
 
 @pytest.mark.parametrize(
@@ -290,6 +311,13 @@ def test_a_figure_beside_a_balance_label_is_only_held_back_as_its_pair(kind):
         "SWIFT code" + " " * 20_000 + "x",
         "Mr" + " " * 20_000 + "&" + " " * 20_000 + "x",
         "••••" + " " * 20_000 + "x",
+        # N8: long runs of mask characters or digit groups
+        "•" * 20_000 + "x",
+        "·" * 20_000 + "x",
+        "." * 20_000 + "x",
+        "*" * 20_000 + "x",
+        "Balance £" + "123," * 5_000 + "x",
+        "Balance £" + "123 " * 5_000 + "x",
         "(" + " " * 20_000 + "x",
         "£1,184.56" + " " * 20_000 + "x",
         "Available balance £1.00" + " " * 20_000 + "x",

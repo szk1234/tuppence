@@ -309,3 +309,24 @@ def test_reading_balances_takes_linear_time_on_long_gaps():
     start = time.monotonic()
     local_balances(doc, perspective="household")
     assert time.monotonic() - start < 2
+
+
+def test_a_wrapped_rows_amount_above_a_balance_label_is_reported_not_lost(ingest_env):
+    """N6 p1: a PDF row wrapped onto two lines, then a "Balance" label at the foot of the page.
+    The figure may be the balance, so it is held back, and the statement needs a look."""
+    from ingest.helpers import parse_pages
+
+    services, scripted = ingest_env
+    page = [
+        *HEAD,
+        "Opening balance 1,000.00",
+        TABLE,
+        "01/10/2026 GREENBASKET STORES 3.40 996.60",
+        "02/10/2026 LITTLE CAFE",
+        "12.80",
+        "Balance",
+    ]
+    out, doc = parse_pages(services, [page])
+    by_ref = doc.by_ref()
+    assert [by_ref[r].text for r in doc.held_amount_refs] == ["12.80"]
+    assert any("held back" in e for e in out.errors)

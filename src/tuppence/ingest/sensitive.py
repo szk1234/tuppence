@@ -36,7 +36,7 @@ _BALANCE_LABEL = (
 _SIGN = r"[-+\u2212\u2013]"
 _FIGURE = (
     rf"(?:\(\s*)?(?:{_SIGN}\s*)?(?:(?:[£$€]|GBP\b)\s*)?(?:{_SIGN}\s*)?"
-    r"(?:\d{1,3}(?:[,\u00a0 ]\d{3})+|\d+)(?:\.\d{2})?"
+    r"(?>\d{1,3}(?:[,\u00a0 ]\d{3})+|\d+)(?:\.\d{2})?"
     r"(?:\s*\))?(?:\s*GBP\b)?(?:\s*[-\u2212](?!\d))?"
     r"(?:\s*(?:CR|DR|O/D|OD|D|in\s+credit|overdrawn)\b)?(?:\.|\s*\*)?"
 )
@@ -44,7 +44,9 @@ _BALANCE_ITEM = rf"(?:{_BALANCE_LABEL}\s*(?::\s*)?{_FIGURE}|{_FIGURE}\s+{_BALANC
 _BALANCE_LINE = re.compile(
     rf"^\s*{_BALANCE_ITEM}(?:\s*(?:[|·•,;/]\s*)?{_BALANCE_ITEM}){{0,2}}\s*$", re.IGNORECASE
 )
-_LABEL_ONLY = re.compile(rf"^\s*{_BALANCE_LABEL}\s*(?::\s*)?$", re.IGNORECASE)
+# A summary an app prints under its own figure, beside the balance ("£20.00" over "Spent today").
+_SUMMARY_LABEL = r"(?:spent|spending)\s+(?:today|this\s+(?:week|month))"
+_LABEL_ONLY = re.compile(rf"^\s*(?:{_BALANCE_LABEL}|{_SUMMARY_LABEL})\s*(?::\s*)?$", re.IGNORECASE)
 _FIGURE_ONLY = re.compile(rf"^\s*{_FIGURE}\s*$", re.IGNORECASE)
 _MONEY_SHAPE = re.compile(r"[£$€]|GBP|\.\d{2}", re.IGNORECASE)
 
@@ -72,10 +74,12 @@ VALUES: dict[str, re.Pattern[str]] = {
     # a full card number; laid-out text may leave a wide gap between its groups of four
     "card_number": re.compile(r"\b(?:\d[ -]?){12,18}\d\b|\b\d{4}(?:[ -]{1,3}\d{4}){3}\b", _I),
     "card_ending": re.compile(
-        r"\bending\s+(?:in\s+)?\d{3,4}\b|\*{2,}[\s-]*\d{2,4}|(?<![a-z])x{2,}[\s-]*\d{4}\b"
+        r"\bending\s+(?:in\s+)?\d{3,4}\b|(?<!\*)\*{2,}[\s-]*\d{2,4}|(?<![a-z])x{2,}[\s-]*\d{4}\b"
         r"|\b\d{4}[\s-]*\*{2,}"
         # the last digits behind bullets, dots or an ellipsis: "•••• 4242", "...4242", "…4242"
-        r"|[•●·∙◦∗]{2,}[\s-]*\d{2,4}(?![.,]?\d)|(?:…|\.{3,})\s*\d{4}(?![.,]?\d)",
+        # (a mask run is tried from its first character only, so a long run stays fast)
+        r"|(?<![•●·∙◦∗])[•●·∙◦∗]{2,}[\s-]*\d{2,4}(?![.,]?\d)"
+        r"|(?<![.…])(?:…|\.{3,})\s*\d{4}(?![.,]?\d)",
         _I,
     ),
     "swift_code": re.compile(
@@ -180,19 +184,10 @@ def is_figure_line(text: str) -> bool:
     return _FIGURE_ONLY.search(text) is not None and _MONEY_SHAPE.search(text) is not None
 
 
-def balance_lines(texts: Sequence[str]) -> set[int]:
-    """Indexes of the lines that show a balance: balance lines, and a balance label printed on
-    a line of its own together with the figure-only line below it (or, when there is none
-    below, above it), as apps lay out "Available balance" under "£1,184.56"."""
-    found = {i for i, text in enumerate(texts) if is_balance_line(text)}
-    for i, text in enumerate(texts):
-        if not _LABEL_ONLY.search(text):
-            continue
-        if i + 1 < len(texts) and is_figure_line(texts[i + 1]):
-            found.update((i, i + 1))
-        elif i > 0 and is_figure_line(texts[i - 1]) and i - 1 not in found:
-            found.update((i - 1, i))
-    return found
+def is_balance_label(text: str) -> bool:
+    """A line that is only a balance label ("Available balance", "Balance:") or a summary an
+    app prints beside it ("Spent today"): its figure is on the line above or below."""
+    return _LABEL_ONLY.search(text) is not None
 
 
 def is_sensitive(text: str, *, names: Sequence[str] = ()) -> bool:
