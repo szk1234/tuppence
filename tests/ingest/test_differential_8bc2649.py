@@ -280,26 +280,31 @@ def _shown(module: types.ModuleType, doc) -> dict[str, str]:
     return {ref: sent[ref].text for ref in doc.data_refs}
 
 
-def _on_purpose(printed: str, before: str | None, now: str, more: collections.Counter[str]) -> bool:
+def _on_purpose(
+    printed: str, before: str | None, now: str, more: collections.Counter[str], strict: bool
+) -> bool:
     folded = fold(printed)
     own = own_dates(folded)
     if own is not None:
         dates = _tokens(folded[own[0] : own[1]])
         if not (more - dates):
             return True  # only the row's own date or dates
+    if strict:
+        return False
     detail = sensitive.classify(now, names=NAMES) - sensitive.LABEL_CLASSES
     return before is None and not detail and not survivors(printed, now)
 
 
-def _regressions(old_textprep, build) -> list[tuple[str, str | None, str]]:
-    """(printed, sent at BASE or None, sent now) for every line that shows more now."""
+def _regressions(old_textprep, build, *, strict: bool = False) -> list[tuple[str, str | None, str]]:
+    """(printed, sent at BASE or None, sent now) for every line that shows more now. `strict`:
+    only the row's own dates may show more (address lines are never sent on purpose)."""
     old, new = build(old_textprep), build(textprep)
     before, now = _shown(old_textprep, old), _shown(textprep, new)
     printed = new.by_ref()
     out = []
     for ref, text in now.items():
         more = _tokens(text) - _tokens(before.get(ref) or "")
-        if more and not _on_purpose(printed[ref].text, before.get(ref), text, more):
+        if more and not _on_purpose(printed[ref].text, before.get(ref), text, more, strict):
             out.append((printed[ref].text, before.get(ref), text))
     return out
 
@@ -411,3 +416,57 @@ def test_the_guard_can_fail(old_textprep, monkeypatch):
     text = "\n".join([*HEAD, *_interleaved(SEPARATED, ROWS)])
     lost = _regressions(old_textprep, lambda m: m.text_document(text, sha256="x", names=NAMES))
     assert len(lost) >= 5
+
+
+def _address_pages() -> list[list[str]]:
+    """Address lines in every position: between rows, after the last row, in the header with
+    and without a heading row, with and without a name above them."""
+    from ingest import test_table_start as table
+
+    blocks = [*table.ADDRESS_LINES.values(), *table.ADDRESS_LAYOUTS]
+    rows = [table.ROW_A, table.ROW_B]
+    after = [table.ROW_C, table.ROW_D]
+    pages = []
+    for block in blocks:
+        for name in table.NAMES_ABOVE.values():
+            lines = [*name, *block]
+            pages += [
+                [*rows, *lines, *after],
+                [*rows, *lines],
+                ["Example Bank plc", *lines, *rows],
+                ["Example Bank plc", *lines, "Date Description Paid out Paid in Balance", *rows],
+                [*rows, lines[-1], *after],  # one line of it on its own
+            ]
+    return pages
+
+
+def test_no_address_line_shows_more_than_at_8bc2649(old_textprep):
+    """No address line, in any position, is sent now that wasn't at 8bc2649 (strict: no line
+    may show more than its own dates). The coordinator's "Apt 2B / 10/12 High St." layout was
+    sent at 8bc2649 too, so this guard can't see it; `test_table_start` asserts it absolutely."""
+    lost = []
+    for page in _address_pages():
+        text = "\n".join(page)
+        lost += _regressions(
+            old_textprep,
+            lambda m, t=text: m.text_document(t, sha256="x", names=NAMES),
+            strict=True,
+        )
+        lost += _regressions(
+            old_textprep,
+            lambda m, p=page: m.pages_document([p], sha256="x", kind="image", names=NAMES),
+            strict=True,
+        )
+    assert lost == []
+
+
+def test_the_address_guard_can_fail(old_textprep, monkeypatch):
+    """The control: with no address block found, address lines 8bc2649 withheld are sent."""
+    monkeypatch.setattr(textprep, "_address_blocks", lambda texts, holders=None, single=True: set())
+    lost = []
+    for page in _address_pages()[:10]:
+        text = "\n".join(page)
+        lost += _regressions(
+            old_textprep, lambda m, t=text: m.text_document(t, sha256="x"), strict=True
+        )
+    assert lost

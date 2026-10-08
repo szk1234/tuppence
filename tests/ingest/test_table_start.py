@@ -282,3 +282,38 @@ def test_a_single_continuation_line_after_a_row_is_sent_unless_it_shows_a_detail
     lines[2] = "Sort code 20-11-33"
     doc = text_document("\n".join(lines), sha256="x")
     assert "L3" not in doc.data_refs
+
+
+# Coordinator probe after b0f51cc (p_addr2): address lines with a merchant-like or date-like token
+# ("10/12 High St.", "Flat 2/1", "Unit 5+6") are still parts of the address, so the block doesn't
+# end at them, and a street line standing alone after a row is withheld too.
+ADDRESS_LAYOUTS = [
+    ["Flat 2/1", "10 Example Street", "Glasgow"],
+    ["Flat 2/1", "Rose Court", "Exampletown"],
+    ["Unit 5+6", "Mill Lane", "Exampletown"],
+    ["The Old Rectory", "St. John's Close", "Littlebury"],
+    ["Apt 2B", "10/12 High St.", "Exampletown"],
+    ["c/o A Example", "Rose Cottage", "Exampletown"],
+]
+
+
+@pytest.mark.parametrize("where", ["after rows", "header"])
+@pytest.mark.parametrize("address", ADDRESS_LAYOUTS, ids=[" / ".join(a) for a in ADDRESS_LAYOUTS])
+def test_the_coordinators_address_layouts_are_withheld(address, where):
+    if where == "after rows":
+        lines = [ROW_A, ROW_B, *address, ROW_C]
+    else:
+        lines = ["Example Bank", "Alex Example", *address,
+                 "Date Description Paid out Paid in Balance", ROW_A, ROW_B]  # fmt: skip
+    doc = text_document("\n".join(lines), sha256="0" * 64, names=["Alex Example"])
+    sent = [doc.by_ref()[r].text for r in doc.data_refs]
+    assert [line for line in address if line in sent] == [], sent
+    assert all(row in sent for row in (ROW_A, ROW_B))
+
+
+@pytest.mark.parametrize("line", ["10/12 High St.", "Flat 3, 5 Example Road", "Rose Court"])
+def test_a_street_line_standing_alone_after_a_row_is_withheld(line):
+    lines = [ROW_A, line, ROW_C]
+    doc = text_document("\n".join(lines), sha256="x")
+    assert "L2" not in doc.data_refs and "L2" not in doc.held_amount_refs  # no amount on it
+    assert doc.data_refs == ["L1", "L3"]

@@ -613,7 +613,7 @@ def _table_start(
 _ADDRESS_WORD = re.compile(
     r"\b(?:house|cottage|farm|lodge|mill|manor|court|mansions|building|barn|hall|villas?|"
     r"road|street|lane|avenue|close|drive|gardens|place|terrace|crescent|square|grove|mews|"
-    r"walk|way|row|green|park|rise|view|hill)\b",
+    r"walk|way|row|green|park|rise|view|hill|st|rd|ave|ln)\b",
     re.IGNORECASE,
 )
 
@@ -662,27 +662,41 @@ _MERCHANT_TOKEN = re.compile(r"[A-Za-z0-9][.*/&@#_:+][A-Za-z0-9]|(?:^|\s)\*\S")
 _CAPITALISED_WORD = re.compile(r"[A-Z][A-Za-z'\-]*[.,]?")
 
 
-def _address_blocks(texts: Sequence[str], holders: Sequence[bool] | None = None) -> set[int]:
-    """Lines of every address block, wherever it is printed (rule (b)): two or more short lines
-    in a row with no amount, date, column headings or merchant-like token, of which one is a
-    postcode, a house or street, a building or street word, or a name (a titled name, or a
-    holder's or household name: `holders`), or three or more of capitalised words only ("The
-    Old Rectory", "Church Lodge", "Littlebury"). Every line of the block is withheld, the town
-    and a house name too (they aren't sensitive on their own). They have no amount, so no row
-    is lost."""
+def _address_blocks(
+    texts: Sequence[str], holders: Sequence[bool] | None = None, *, single: bool = True
+) -> set[int]:
+    """Lines of every address block, wherever it is printed (rule (b)), failing closed.
+
+    A line is part of an address when it has no amount and shows a postcode, a house or street,
+    a building or street word ("High St.", "Rose Court"), or a name (a titled name, or a
+    holder's or household name: `holders`), whatever else is on it ("10/12 High St.", "Flat
+    2/1"). A block is a run of lines with no amount: address parts, and short lines with no date,
+    column headings or merchant-like token ("AMZN.CO.UK/PM", "B&Q"). Only an amount, or such a
+    line that names no address part, ends it. A block is withheld whole when it has an address
+    part, or when it is three or more lines of capitalised words only ("The Old Rectory",
+    "Upper Example", "Littlebury"); with `single`, one address part on its own is withheld too
+    (a statement's continuation line never shows a street; a screenshot may print a merchant
+    named after one on its own line, above its amount). They have no amount, so no row is
+    lost."""
     postcode = sensitive.VALUES["postcode"]
     address = sensitive.VALUES["address"]
     holder = sensitive.VALUES["holder_name"]  # "MR ALEX EXAMPLE" heads an address (R8)
+    amounts = [has_amount(text) for text in texts]
 
     def part(k: int) -> bool:
         text = texts[k]
-        return bool(
+        return not amounts[k] and bool(
             postcode.search(text)
             or address.search(text)
             or _ADDRESS_WORD.search(text)
             or holder.search(text)
             or (holders is not None and holders[k])
         )
+
+    def member(k: int) -> bool:
+        if amounts[k] or is_heading(texts[k]):
+            return False
+        return part(k) or (_plain_short(texts[k]) and not _MERCHANT_TOKEN.search(texts[k]))
 
     def capitalised(k: int) -> bool:
         return all(_CAPITALISED_WORD.fullmatch(word) for word in texts[k].split())
@@ -691,11 +705,12 @@ def _address_blocks(texts: Sequence[str], holders: Sequence[bool] | None = None)
     i = 0
     while i < len(texts):
         j = i
-        while j < len(texts) and _plain_short(texts[j]) and not _MERCHANT_TOKEN.search(texts[j]):
+        while j < len(texts) and member(j):
             j += 1
         block = range(i, j)
-        if len(block) >= 2 and (
-            any(part(k) for k in block) or (len(block) >= 3 and all(capitalised(k) for k in block))
+        parts = [k for k in block if part(k)]
+        if (parts and (len(block) >= 2 or single)) or (
+            len(block) >= 3 and all(capitalised(k) for k in block)
         ):
             found.update(block)
         i = max(j, i + 1)
@@ -881,11 +896,23 @@ def _shows_detail(text: str, names: Sequence[str]) -> bool:
     )
 
 
-def _send(out: _Split, line: Line, prepared: MaskedLine | None, names: Sequence[str] = ()) -> bool:
+def _send(
+    out: _Split,
+    line: Line,
+    prepared: MaskedLine | None,
+    names: Sequence[str] = (),
+    *,
+    plain: bool = False,
+) -> bool:
     """Make `line` data, sent as `prepared` (from `sensitive.prepare_outbound`); False when it
     can't be sent. It fails closed: a line whose masking failed or still shows a detail that
-    `sensitive.classify` finds is never sent (the caller withholds and reports it)."""
-    if prepared is None or _shows_detail(prepared.text, names):
+    `sensitive.classify` finds is never sent (the caller withholds and reports it). `plain`:
+    classify found nothing on `line` itself, so a `prepared` that is `line` as it is needs no
+    second look."""
+    if prepared is None:
+        return False
+    unchanged = plain and not prepared.hidden and prepared.text == line.text
+    if not unchanged and _shows_detail(prepared.text, names):
         return False
     out.data.append(line.ref)
     if prepared.hidden or prepared.text != line.text:
@@ -990,7 +1017,7 @@ def _split_preamble(
             out.withheld.append(line.ref)  # no amount on it, so no row is lost
         elif (
             money and _SUMMARY_WORD.search(text) and not _single_transaction(text, rows[i])
-        ) or not _send(out, line, masks(i), masks.names):
+        ) or not _send(out, line, masks(i), masks.names, plain=not sensitive_at[i]):
             out.withheld.append(line.ref)  # a total or a row? or details that won't mask:
             unsure.add(i)  # the person decides
     for block in blocks:
@@ -1062,7 +1089,7 @@ def _split_screenshot(
         unsure |= _unsure(texts, block, first)
     names = [*names, *header_names(texts, range(min(first, len(texts))))]
     holders = ["holder_name" in sensitive.classify(t, names=names) for t in texts]
-    addresses = _address_blocks(texts, holders)  # wherever they are (R-M3-23 (b))
+    addresses = _address_blocks(texts, holders, single=False)  # wherever they are (rule (b))
     out = _Split()
     for i, line in enumerate(lines):
         tick(i)
@@ -1086,7 +1113,7 @@ def _split_screenshot(
             and i not in summaries
             and _name_key(text) is None
             and (not detail or has_amount(text))
-            and _send(out, line, _prepare(texts, i, names), names)
+            and _send(out, line, _prepare(texts, i, names), names, plain=not detail)
         ):
             continue  # sent (a row with account details has them masked)
         out.withheld.append(line.ref)
