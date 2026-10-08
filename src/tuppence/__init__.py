@@ -3,7 +3,7 @@
 import os as _os
 import sys as _sys
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.2.0.dev1"
 
 # LangGraph sends every run, statement text included, to LangSmith when the environment turns
 # tracing on. Tuppence never traces. This runs before langgraph or langsmith can be imported

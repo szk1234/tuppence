@@ -22,6 +22,7 @@ jobs:
         run: |
           if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "stable=true" >> "$GITHUB_OUTPUT"; else echo "stable=false" >> "$GITHUB_OUTPUT"; fi
       - run: uv sync --locked
+      - run: uv run python scripts/check_release_version.py "$GITHUB_REF_NAME"
       - run: uv run pytest -q
       - run: npm --prefix web ci && npm --prefix web test
 
@@ -83,15 +84,48 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: "desktop-${{ matrix.os }}", path: "dist/Tuppence-*" }
 
+  python:
+    needs: [test, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: web_dist, path: src/tuppence/web_dist }
+      # the wheel is built from the working tree (so it carries the UI); `uv build` alone would
+      # build it from the sdist, which leaves web_dist out
+      - run: uv build --wheel
+      - run: uv build --sdist
+      - name: The wheel must carry the UI
+        run: |
+          python3 - <<'PY'
+          import glob, zipfile
+          wheel = sorted(glob.glob("dist/tuppence-*.whl"))[-1]
+          names = zipfile.ZipFile(wheel).namelist()
+          assert "tuppence/web_dist/index.html" in names, f"{wheel} has no tuppence/web_dist/index.html"
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: { name: python-dist, path: "dist/tuppence-*" }
+
   release:
-    needs: [test, desktop]
+    needs: [test, desktop, python, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { pattern: "desktop-*", merge-multiple: true, path: release-files }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: python-dist, path: release-files }
+      - run: |
+          cd release-files && sha256sum * > SHA256SUMS.txt
+          cd .. && notes=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then cp "$notes" notes.md; else echo "See CHANGELOG.md." > notes.md; fi
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: "release-files/Tuppence-*"
+          files: "release-files/*"
+          body_path: notes.md
           prerelease: ${{ needs.test.outputs.stable != 'true' }}

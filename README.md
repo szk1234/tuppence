@@ -10,16 +10,32 @@ gives UK-specific guidance — from bills creeping up to money you may be owed.
 > cloud model, your statement text goes to the provider you chose, and every
 > call is logged so you can see exactly what was sent.
 
-> **Status: pre-alpha.** Tuppence is under active development and not ready
-> for real use yet. Watch the repo for the developer preview.
+> **Status: developer preview (v0.2.0-dev.1).** Tuppence imports your statements, works out
+> what each payment is, pairs transfers between your accounts, and finds your bills and
+> subscriptions. Questions, the coach and the UK advisor skills aren't in it yet. Expect rough
+> edges and breaking changes, and keep your own copies of your statements.
 
-## Run it
+## Developer preview
 
-| How | For | Command |
+| How | For | Start here |
 |---|---|---|
-| Docker | home servers, NAS, self-hosters | from a clone of this repo: `git clone https://github.com/szk1234/tuppence && cd tuppence && docker compose up -d --build`, then open `http://<server>:8040` (a published image arrives with the developer preview) |
-| Desktop app | Windows, macOS, Linux | download from Releases (coming with the developer preview) |
-| uvx | technical users | not yet on PyPI; arrives with the developer preview. For now, from a clone: `uv run tuppence serve` |
+| Docker | home servers, NAS, self-hosters | [docs/install/docker.md](docs/install/docker.md): `TUPPENCE_VERSION=v0.2.0-dev.1 docker compose up -d` |
+| Desktop app (unsigned) | Windows, macOS, Linux | download from [Releases](https://github.com/szk1234/tuppence/releases); [how to open an unsigned app](docs/install/desktop-unsigned.md) |
+| From source | technical users, contributors | [docs/install/from-source.md](docs/install/from-source.md) |
+
+What works in this preview:
+- import CSV from 12 UK banks and cards, OFX/QFX, QIF, CAMT.053 and Excel with no AI, and
+  PDFs, scans and screenshots with your AI (every amount checked against the file);
+- every transaction sorted into a category: your rules and what Tuppence already knows first,
+  then your AI in small batches, with a "Why?" for every decision;
+- transfers between your own accounts and card repayments paired, so they don't count as spending;
+- bills, subscriptions and instalments found from the gaps between payments, with next due
+  dates, yearly costs, price rises, missed payments, duplicates and free trials that turned paid;
+- Spending (drill down from "Food & drink" to a single payment) and Commitments (a calendar of
+  what's due) pages, and Home cards.
+
+Not yet: questions and the learning loop, the coach, UK checks and advice, reports, signed
+installers. See [CHANGELOG.md](CHANGELOG.md).
 
 Platform note: reading scans and screenshots uses on-device OCR (onnxruntime and
 OpenCV), which needs macOS 14 or later (Apple silicon or Intel), 64-bit Windows

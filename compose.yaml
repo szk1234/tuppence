@@ -2,7 +2,7 @@
 # Optional local AI: docker compose --profile ollama up -d
 services:
   tuppence:
-    image: ghcr.io/szk1234/tuppence:latest
+    image: ghcr.io/szk1234/tuppence:${TUPPENCE_VERSION:-latest}
     build: .
     ports:
       - "8040:8040"

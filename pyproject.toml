@@ -1,6 +1,6 @@
 [project]
 name = "tuppence"
-version = "0.1.0.dev0"
+version = "0.2.0.dev1"
 description = "A private AI money coach for UK households. Your statements never leave your machine."
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 authors = [{ name = "Tuppence contributors" }]
 keywords = ["personal-finance", "uk", "budgeting", "local-first", "llm", "self-hosted", "privacy"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Environment :: Web Environment",
   "Intended Audience :: End Users/Desktop",
   "Programming Language :: Python :: 3.12",
