@@ -257,3 +257,71 @@ def test_closed_accounts_are_ignored_and_no_accounts_is_explained():
         match_account(MONZO, [acct("old", "monzo", "current", status="closed")], []).reason
         == "You haven't added any accounts yet."
     )
+
+
+def _pdf_evidence(*lines):
+    from tuppence.ingest.textprep import pages_document
+
+    registry = LayoutRegistry(PACK)
+    doc = pages_document([list(lines)], sha256="x", kind="pdf")
+    return identify(doc, pack=PACK, registry=registry, key=KEY)
+
+
+DEBIT_HEADER = (
+    "Nationwide Building Society",
+    "FlexAccount statement",
+    "Alex Example",
+    "Account number 12345678",
+    "Visa debit card ending 1234",
+    "Date Description Paid out Paid in Balance",
+    "02 Oct 2026 Greenbasket Stores 42.18 957.82",
+)
+
+
+@pytest.mark.parametrize(
+    ("line", "hint"),
+    [
+        ("Visa debit card ending 1234", "current"),
+        ("Debit card ending 1234", "current"),
+        ("Debit Mastercard ending 1234", "current"),
+        ("Current account statement", "current"),
+        ("Card ending 1234", None),  # either kind of card
+        ("Minimum payment £25.00", "credit_card"),
+        ("Credit limit £3,000.00", "credit_card"),
+        ("Your credit card statement", "credit_card"),
+        ("Minimum payment by Direct Debit from your current account", None),  # both: unsure
+    ],
+)
+def test_wording_only_hints_at_the_account_type(line, hint):
+    assert header_facts(line).kind_hint == hint
+
+
+def test_a_debit_card_ending_is_a_current_accounts_card():
+    ev = _pdf_evidence(*DEBIT_HEADER)
+    assert (ev.kind, ev.kind_hint, ev.last4, ev.providers) == (
+        None,
+        "current",
+        None,
+        ["nationwide"],
+    )
+    accounts = [
+        acct("cur", "nationwide", "current", "5678"),
+        acct("cc", "nationwide", "credit_card"),
+    ]
+    m = match_account(ev, accounts, [])
+    assert m.account_id is None and m.best_guess == "cur" and set(m.candidates) == {"cur", "cc"}
+    assert m.prefill["kind"] == "current"
+
+
+def test_an_account_of_another_type_is_asked_about_never_assigned():
+    ev = _pdf_evidence(*DEBIT_HEADER)
+    only_card = [acct("cc", "nationwide", "credit_card")]
+    m = match_account(ev, only_card, [])
+    assert m.account_id is None and m.best_guess is None and m.candidates == ["cc"]
+    assert "current account" in m.reason
+    # nor by an earlier answer or a matching last 4
+    with_last4 = ev.model_copy(update={"last4": "1234"})
+    card_1234 = [acct("cc", "nationwide", "credit_card", "1234")]
+    assert match_account(with_last4, card_1234, ["cc"]).account_id is None
+    # the same statement and a current account: assigned as before
+    assert match_account(ev, [acct("cur", "nationwide", "current")], []).account_id == "cur"

@@ -64,7 +64,16 @@ _LABELLED_NUMBER = re.compile(
     re.IGNORECASE,
 )
 _MASKED = re.compile(rf"{_MASK}{{2,}}[ \-]?(\d{{4,}})(?!\d)")
-_CARD_WORDS = re.compile(r"minimum payment|credit limit|card ending|card statement", re.IGNORECASE)
+# Wording only a credit card statement prints. "Card ending 1234" is not among it: a current
+# account statement prints its debit card's ending too.
+_CARD_WORDS = re.compile(
+    r"minimum\s+payment|credit\s+limit|credit\s+card|card\s+statement", re.IGNORECASE
+)
+# Wording of a current account and its debit card.
+_DEBIT_WORDS = re.compile(
+    r"debit\s+card|visa\s+debit|debit\s+mastercard|mastercard\s+debit|current\s+account",
+    re.IGNORECASE,
+)
 
 
 class HeaderFacts(BaseModel):
@@ -73,7 +82,17 @@ class HeaderFacts(BaseModel):
     period_end: date | None = None
     opening_pence: int | None = None  # as printed
     closing_pence: int | None = None
-    looks_like_card: bool = False
+    looks_like_card: bool = False  # credit card wording
+    looks_like_debit: bool = False  # current account or debit card wording
+
+    @property
+    def kind_hint(self) -> AccountKind | None:
+        """The account type the wording suggests: a hint, never firm evidence."""
+        if self.looks_like_card and not self.looks_like_debit:
+            return "credit_card"
+        if self.looks_like_debit and not self.looks_like_card:
+            return "current"
+        return None
 
 
 class Evidence(BaseModel):
@@ -81,7 +100,8 @@ class Evidence(BaseModel):
     layout_id: str | None = None
     providers: list[str] = Field(default_factory=list)  # firm evidence: one of these banks
     provider_hint: str | None = None  # a guess, for preselecting and prefilling only
-    kind: AccountKind | None = None
+    kind: AccountKind | None = None  # firm: the file's format or the bank's layout says so
+    kind_hint: AccountKind | None = None  # the wording suggests it; it never decides alone
     last4: str | None = None
     facts: HeaderFacts = Field(default_factory=HeaderFacts)
     label: str
@@ -114,7 +134,10 @@ def _money(text: str) -> int | None:
 
 
 def header_facts(text: str) -> HeaderFacts:
-    facts = HeaderFacts(looks_like_card=bool(_CARD_WORDS.search(text)))
+    facts = HeaderFacts(
+        looks_like_card=bool(_CARD_WORDS.search(text)),
+        looks_like_debit=bool(_DEBIT_WORDS.search(text)),
+    )
     if period := _PERIOD.search(text):
         facts.period_start, facts.period_end = (
             parse_date(period.group(1)),
@@ -213,22 +236,22 @@ def identify(doc: Document, *, pack: BankPack, registry: LayoutRegistry, key: by
     # The bank's name and the account facts are in the header, not in payee names further down.
     top = f"{preamble_text}\n{first_lines}".casefold()
     facts = header_facts(preamble_text or first_lines)
+    hint = facts.kind_hint
     for marker in pack.pdf_markers:
         if any(needle.casefold() in top for needle in marker.any):
-            kind = marker.kind or ("credit_card" if facts.looks_like_card else None)
             return Evidence(
-                layout_fingerprint=f"{doc.kind}:{marker.provider}:{kind or '-'}",
+                layout_fingerprint=f"{doc.kind}:{marker.provider}:{marker.kind or hint or '-'}",
                 providers=[marker.provider],
                 provider_hint=marker.provider,
-                kind=kind,
+                kind=marker.kind,
+                kind_hint=None if marker.kind else hint,
                 last4=facts.last4,
                 facts=facts,
                 label=f"{'PDF' if doc.kind == 'pdf' else 'text'} statement",
             )
-    kind = "credit_card" if facts.looks_like_card else None
     return Evidence(
-        layout_fingerprint=f"{doc.kind}:unknown:{kind or '-'}",
-        kind=kind,
+        layout_fingerprint=f"{doc.kind}:unknown:{hint or '-'}",
+        kind_hint=hint,
         last4=facts.last4,
         facts=facts,
         label=f"{'PDF' if doc.kind == 'pdf' else 'text'} statement",
@@ -248,7 +271,7 @@ def _identify_table(doc: Document, registry: LayoutRegistry, facts: HeaderFacts)
             layout_fingerprint=fingerprint,
             last4=facts.last4,
             facts=facts,
-            kind="credit_card" if facts.looks_like_card else None,
+            kind_hint=facts.kind_hint,
             label="CSV file in a new layout",
         )
     last4 = facts.last4 or _column_last4(doc, layout)
@@ -276,6 +299,13 @@ def _column_last4(doc: Document, layout: CsvLayout) -> str | None:
     return None
 
 
+_KIND_WORDS = {
+    "current": "a current account",
+    "savings": "a savings account",
+    "credit_card": "a credit card",
+}
+
+
 def match_account(
     evidence: Evidence, accounts: Sequence[AccountRef], remembered: Sequence[str]
 ) -> AccountMatch:
@@ -285,15 +315,27 @@ def match_account(
     oldest first. Memory only decides on its own when every earlier answer was the
     same account and no other account at that bank has the same type, so two
     accounts with identical exports (a personal and a joint Monzo) are always asked.
+
+    A strong match needs the account type to agree too. A firm type (the file's format or
+    the bank's layout) narrows the accounts; a type the wording only suggests never does,
+    but an account of another type is then asked about, never assigned.
     """
     active = [a for a in accounts if a.status == "active"]
+    hint = evidence.kind_hint
     prefill: dict[str, str | None] = {
         "provider": evidence.providers[0] if evidence.providers else evidence.provider_hint,
-        "kind": evidence.kind,
+        "kind": evidence.kind or hint,
         "last4": evidence.last4,
     }
+    clash: list[AccountRef] = []  # strong matches but for their type
 
-    def strong(account: AccountRef, reason: str) -> AccountMatch:
+    def fits(account: AccountRef) -> bool:
+        return hint is None or account.kind == hint
+
+    def strong(account: AccountRef, reason: str) -> AccountMatch | None:
+        if not fits(account):
+            clash.append(account)
+            return None
         return AccountMatch(
             account_id=account.id,
             best_guess=account.id,
@@ -321,15 +363,24 @@ def match_account(
     last4_unmatched = False
     if evidence.last4:
         exact = [a for a in pool if a.last4 == evidence.last4]
-        if len(exact) == 1 and trusted:
-            return strong(exact[0], "The bank, account type and last 4 digits match.")
+        if (
+            len(exact) == 1
+            and trusted
+            and (found := strong(exact[0], "The bank, account type and last 4 digits match."))
+        ):
+            return found
         if not exact:
             last4_unmatched = True
             pool = [a for a in pool if a.last4 is None]
         else:
             pool = exact
-    if evidence.providers and len(pool) == 1 and not last4_unmatched:
-        return strong(pool[0], "It's your only account at this bank of this type.")
+    if (
+        evidence.providers
+        and len(pool) == 1
+        and not last4_unmatched
+        and (found := strong(pool[0], "It's your only account at this bank of this type."))
+    ):
+        return found
     distinct = list(dict.fromkeys(remembered))
     if len(distinct) == 1 and not last4_unmatched:
         chosen = next((a for a in pool if a.id == distinct[0]), None)
@@ -340,16 +391,21 @@ def match_account(
                 specific
                 or (evidence.providers and evidence.last4 and evidence.last4 == chosen.last4)
             )
+            and (found := strong(chosen, "You chose this account for this kind of file before."))
         ):
-            return strong(chosen, "You chose this account for this kind of file before.")
+            return found
     candidates = [a.id for a in (pool or active)]
+    by_id = {a.id: a for a in active}
+    fitting = [c for c in candidates if fits(by_id[c])]
     in_memory = [r for r in reversed(distinct) if r in candidates]
     hinted = [
-        a.id for a in active if evidence.provider_hint and a.provider == evidence.provider_hint
+        a.id
+        for a in active
+        if evidence.provider_hint and a.provider == evidence.provider_hint and fits(a)
     ]
     best = (
         (in_memory[0] if in_memory else None)
-        or (candidates[0] if len(candidates) == 1 else None)
+        or (fitting[0] if len(fitting) == 1 else None)
         or (hinted[0] if hinted else None)
     )
     if last4_unmatched and not pool:
@@ -358,6 +414,11 @@ def match_account(
         reason = "You haven't added any accounts yet."
     elif not pool:
         reason = "None of your accounts match this statement."
+    elif clash and hint is not None:
+        reason = (
+            f"This statement looks like it's from {_KIND_WORDS[hint]}, and your matching "
+            "account isn't one. Please choose the account."
+        )
     elif len(candidates) == 1:
         reason = "This looks like one of your accounts. Please confirm."
     else:
