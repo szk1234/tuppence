@@ -249,6 +249,7 @@ LINE: dict[str, LineCall] = {
     "sensitive.is_sensitive": sensitive.is_sensitive,
     "sensitive.holds_details": sensitive.holds_details,
     "sensitive.mask": sensitive.mask,
+    "sensitive.scrub": sensitive.scrub,
     "sensitive.prepare_outbound": lambda s: sensitive.prepare_outbound(
         s, names=["Alex Example"], before=s, after=s
     ),

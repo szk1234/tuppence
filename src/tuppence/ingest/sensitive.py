@@ -341,6 +341,30 @@ def mask(text: str, *, names: Sequence[str] = ()) -> str:
     return _DIGIT_RUN.sub("<NUM>", out.text)
 
 
+def scrub(text: str) -> str:
+    """`text` (a transaction's description, merchant or bank category) as the understanding
+    specialists may put it in a prompt (spec §4.6), from `prepare_outbound`, the one builder of
+    outbound statement text: HIDDEN when it can't be sent at all; otherwise what it sends, with
+    each detail it masked (an account, sort code, card number or ending, IBAN, postcode,
+    address, a titled name, the value after a label) written as HIDDEN, and every other run of
+    four or more digits that isn't inside an amount or a date it kept written as <NUM>. Words
+    are kept, so the merchant still reads. The household's names are left to the Pseudonymise
+    setting, so none are passed here.
+
+    Scrub the whole text before shortening it: a cut can leave part of a number that no
+    longer looks like one."""
+    out = prepare_outbound(text)
+    if out is None:
+        return HIDDEN
+    sent = out.text
+    keep = _kept(_letters(sent))
+
+    def number(match: re.Match[str]) -> str:
+        return match.group(0) if all(keep[match.start() : match.end()]) else "<NUM>"
+
+    return _PLACEHOLDER.sub(HIDDEN, _DIGIT_RUN.sub(number, sent))
+
+
 # --- masking details inside a transaction line (I2) -------------------------------------------
 #
 # Masking reads `normalise(text)` exactly as `classify` does, finds every detail with the same
