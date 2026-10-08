@@ -450,3 +450,41 @@ def test_one_job_runs_per_kind_and_scope(env):
     q.complete(first.id)
     second = q.claim()
     assert second is not None and second.scope_key == "s_1" and second.payload == {"n": 2}
+
+
+def test_expedite_makes_a_debounced_job_ready_now(tmp_path):
+    db = Database(tmp_path / "t.db")
+    migrate(db, tmp_path / "b")
+    q = JobQueue(db, clock=Clock())
+    q.enqueue("analysis", scope_key="household", debounce_s=30)
+    assert q.claim() is None
+    generation = q.work_generation
+    assert q.expedite("analysis", scope_key="household") == 1
+    assert q.work_generation == generation + 1  # an idle worker is woken
+    assert q.claim().kind == "analysis"
+    generation = q.work_generation
+    assert q.expedite("analysis", scope_key="household") == 0
+    assert q.work_generation == generation  # nothing moved: nobody is woken
+
+
+def test_expedite_wakes_a_waiting_worker_promptly(env):
+    """ "Run analysis now": a worker in a long idle wait runs the debounced job at once."""
+    import threading
+    import time
+
+    q, _ = env
+    done = threading.Event()
+    w = Worker(
+        q, {"analysis": lambda j: done.set()}, threads=1, poll_interval=30.0, max_idle_interval=30
+    )
+    q.enqueue("analysis", scope_key="household", debounce_s=30)
+    w.start()
+    try:
+        time.sleep(0.2)  # the worker found nothing ready and is waiting 30 s
+        assert not done.is_set()
+        start = time.monotonic()
+        assert q.expedite("analysis", scope_key="household") == 1
+        assert done.wait(2.0)
+        assert time.monotonic() - start < 2.0
+    finally:
+        w.stop()

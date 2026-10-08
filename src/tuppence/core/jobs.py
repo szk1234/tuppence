@@ -123,6 +123,19 @@ class JobQueue:
         self.notify_work()  # after commit, so a woken worker can see the row
         return job_id
 
+    def expedite(self, kind: str, *, scope_key: str = "") -> int:
+        """Make the pending job of this kind and scope ready now (the person pressed "Run
+        now"). Returns how many jobs it moved (0 or 1)."""
+        with self.db.transaction() as conn:
+            moved = conn.execute(
+                "UPDATE job SET run_after = ?"
+                " WHERE kind = ? AND scope_key = ? AND status = 'queued'",
+                [to_iso(self.clock()), kind, scope_key],
+            ).rowcount
+        if moved:
+            self.notify_work()  # after commit: an idle worker runs it now, not at its next poll
+        return moved
+
     def claim(
         self, *, exclusive_kinds: frozenset[str] = frozenset(), kinds: frozenset[str] | None = None
     ) -> Job | None:
