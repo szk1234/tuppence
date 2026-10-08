@@ -11,7 +11,7 @@
 
 <section>
   <h1>Tuppence</h1>
-  <p class="tagline">A private AI money coach for UK households. Your statements never leave your machine.</p>
+  <p class="tagline">A private AI money coach for UK households. With a local model, your statements never leave your machine.</p>
   {#if health}<p class="status ok">Connected · v{health.version} · {health.mode}</p>
   {:else if error}<p class="status err">Can't reach the Tuppence service. Is it running?</p>
   {:else}<p class="status">Connecting…</p>{/if}
