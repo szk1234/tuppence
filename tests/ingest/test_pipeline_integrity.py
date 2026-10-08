@@ -498,12 +498,16 @@ def held_back_draft(services):
         kind="pdf",
         sha256="d" * 64,
         lines=[
+            # the summary box, read on this device (the check reads balances from what is
+            # printed, never from the reader's own values)
+            Line(ref="P0L1", text="Opening balance £1,000.00"),
+            Line(ref="P0L2", text="Closing balance £954.42"),
             Line(ref="P1L1", text="Date Description Paid out Paid in Balance"),
             Line(ref="P1L2", text="02 Oct 2026 Greenbasket Stores 42.18 957.82"),
             Line(ref="P2L1", text="Little Cafe 3.40 954.42"),
         ],
         data_refs=["P1L1", "P1L2"],
-        preamble_refs=["P2L1"],
+        preamble_refs=["P0L1", "P0L2", "P2L1"],
         held_amount_refs=["P2L1"],
         pages=2,
     )

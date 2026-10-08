@@ -35,6 +35,7 @@ from tuppence.ingest import (
     service,
     textnum,
     textprep,
+    verify,
 )
 from tuppence.ingest.clock import CheckTimeout, after
 from tuppence.ingest.importers import csv_layout, ofx, qif
@@ -251,7 +252,7 @@ LINE: dict[str, LineCall] = {
     "check.balance_printed": lambda s: check.balance_printed(
         _row("L1", -100, "1.00", balance_after_pence=100), s, "household"
     ),
-    "parse.card_payment": parse.card_payment,
+    "verify.card_payment": verify.card_payment,
     "dedupe.normalise_description": dedupe.normalise_description,
     "dedupe.description_tokens": dedupe.description_tokens,
     "dedupe.similar_descriptions": lambda s: dedupe.similar_descriptions(s, s),
@@ -326,9 +327,14 @@ DOC: dict[str, DocCall] = {
     "check.check_statement": lambda d, p: check.check_statement(p, dates=True),
     "check.check_document": lambda d, p: check.check_document(d, p),
     "check.balance_verified": lambda d, p: check.balance_verified(p, [], "full"),
-    "parse.sign_doubt": lambda d, p: parse.sign_doubt(p, "credit_card", _layout(), new=True),
-    "parse.held_back_message": lambda d, p: parse.held_back_message(d),
-    "parse.too_long_message": lambda d, p: parse.too_long_message(d),
+    "verify.sign_doubt": lambda d, p: verify.sign_doubt(p, "credit_card", _layout(), new=True),
+    "verify.held_back_message": lambda d, p: verify.held_back_message(d),
+    "verify.too_long_message": lambda d, p: verify.too_long_message(d),
+    "verify.evidenced_closing": lambda d, p: verify.evidenced_closing(d, p),
+    "verify.decided": lambda d, p: verify.decided(d, p),
+    "verify.verify": lambda d, p: verify.verify(
+        d, p.model_copy(deep=True), verify.Basis(account_kind="current"), level="full"
+    ),
     "parse.restore_masked": lambda d, p: parse.restore_masked(p.model_copy(deep=True), d),
     "parse.level_for": lambda d, p: parse.level_for(d),
     "dedupe.assign_fingerprints": lambda d, p: dedupe.assign_fingerprints(p.rows, "a"),
@@ -360,7 +366,9 @@ DOC: dict[str, DocCall] = {
         _layout(), registry.header_cells(d)
     ),
     "csv_layout.parse_with_layout": lambda d, p: _try(csv_layout.parse_with_layout, d, _layout()),
-    "service.recheck": lambda d, p: service.recheck(d, p.model_copy(deep=True), "full"),
+    "service.recheck": lambda d, p: service.recheck(
+        d, p.model_copy(deep=True), "full", basis=verify.Basis(account_kind="current")
+    ),
     "service.confirmed_layout": lambda d, p: service.confirmed_layout(
         {"pending_layout": _layout().model_dump(), "proposed_signs": {}}, p
     ),
@@ -501,6 +509,7 @@ _UNTRUSTED = {
     "b",
 }
 _MODULES = [
+    "verify",
     "textprep",
     "sensitive",
     "identify",
@@ -569,7 +578,12 @@ def test_every_function_that_reads_untrusted_text_is_swept():
         lambda d, p, t: dedupe.plan_dedupe(
             p.rows, [str(i) for i in range(len(p.rows))], [], window=(DAY, DAY), deadline=t
         ),
-        lambda d, p, t: service.recheck(d, p, "full", deadline=t),
+        lambda d, p, t: service.recheck(
+            d, p, "full", basis=verify.Basis(account_kind="credit_card"), deadline=t
+        ),
+        lambda d, p, t: verify.verify(
+            d, p, verify.Basis(account_kind="current"), level="full", deadline=t
+        ),
     ],
 )
 def test_the_passes_over_a_document_stop_at_the_deadline(call):

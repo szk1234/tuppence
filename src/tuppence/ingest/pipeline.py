@@ -69,6 +69,7 @@ class IngestState(TypedDict):
     info: dict[str, Any]
     pending_layout: dict[str, Any] | None
     learned_layout: dict[str, Any] | None
+    basis: dict[str, Any] | None  # what the rows were read with (verify.Basis)
     question: dict[str, Any]
     failure: str
     outcome: str
@@ -279,7 +280,9 @@ class IngestGraph:
                 return {"failure": safe_error_text(exc)}
             raise
         pending, learned = outcome.pending_layout, outcome.learned_layout
+        basis = outcome.basis.model_dump(mode="json") if outcome.basis is not None else None
         return {
+            "basis": basis,
             "parsed": outcome.parsed.model_dump(mode="json"),
             "errors": outcome.errors,
             "level": outcome.level,
@@ -323,6 +326,8 @@ class IngestGraph:
                     "level": level,
                     "pending_layout": pending,
                     "proposed_signs": {r.ref: r.amount_pence > 0 for r in parsed.rows},
+                    # what the rows were read with, so "Check again" runs the same verify
+                    "basis": state.get("basis"),
                 },
             )
             return {"outcome": "needs_review"}

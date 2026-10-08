@@ -137,12 +137,17 @@ def test_local_balances_with_many_label_lines_above_the_table_is_quick():
 
 def test_text_with_long_comma_lines_is_checked_quickly():
     """N2 (also): the model's balances were looked for on every data line with the quadratic
-    figure reader (0.14 s a line)."""
-    from tuppence.ingest.parse import _sent_balance
+    figure reader (0.14 s a line); all of a statement's checks are now quick on such lines."""
+    from tuppence.ingest.verify import Basis, verify
 
     line = "02/10/2026 X " + "000," * 2_400 + "12 -4.00"
     doc = textprep.text_document("Date Description Amount\n" + (line + "\n") * 500, sha256="x")
-    assert _took(_sent_balance, doc, 123_456, "household") < BOUND
+    parsed = ParsedStatement(
+        importer="ai-read",
+        closing_balance_pence=123_456,
+        rows=[_row(ref, -400, "-4.00") for ref in doc.data_refs[1:]],
+    )
+    assert _took(verify, doc, parsed, Basis(account_kind="current"), level="full") < BOUND
 
 
 def test_planning_duplicates_of_one_amount_on_one_day_is_quick():

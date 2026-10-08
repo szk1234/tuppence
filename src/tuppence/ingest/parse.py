@@ -7,7 +7,6 @@ PDF, OCR and plain-text statements. Used by the ingest graph and the eval harnes
 from __future__ import annotations
 
 import datetime as dt
-import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -15,8 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tuppence.core.errors import safe_error_text
-from tuppence.ingest.balances import local_balances, repair_signs
-from tuppence.ingest.check import balance_printed, check_document, check_rows, check_statement
+from tuppence.ingest import verify
 from tuppence.ingest.clock import after
 from tuppence.ingest.extract import ExtractLimits, read_camt
 from tuppence.ingest.identify import Evidence
@@ -29,15 +27,20 @@ from tuppence.ingest.models import (
     AccountKind,
     CheckLevel,
     Document,
-    ParsedRow,
     ParsedStatement,
-    Perspective,
 )
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, read_document, tidy
-from tuppence.ingest.registry import CsvLayout, LayoutRegistry, side_of
+from tuppence.ingest.registry import CsvLayout, LayoutRegistry
 from tuppence.ingest.textnum import decode_text
-from tuppence.ingest.textprep import sent_lines
+from tuppence.ingest.verify import (  # noqa: F401 - parse's own names for them
+    Basis,
+    card_payment,
+    held_back_message,
+    kind_doubt,
+    sign_doubt,
+    too_long_message,
+)
 
 ACCOUNT_LABELS: dict[str, str] = {
     "current": "current account",
@@ -66,137 +69,9 @@ class ParseOutcome(BaseModel):
     # A newly learned layout that read the file cleanly. Parsing never saves it: the import
     # does, in the same transaction as the rows (M11), so a failed import remembers nothing.
     learned_layout: CsvLayout | None = None
-
-
-# Wording of money paid to a card (or given back by it): a payment, a refund, cashback, a
-# balance moved onto it. "CARD PAYMENT TO ..." and "CONTACTLESS PAYMENT" are purchases.
-_CARD_CREDIT = re.compile(
-    r"payment\s*(?:-\s*)?(?:received|thank)|thank\s*you|\brefund|\bcash\s*back\b"
-    r"|direct\s+debit\s+payment|\bdd\s+payment|payment\s+(?:by|via)\s+(?:direct\s+debit|dd"
-    r"|faster\s+payment|bank\s+transfer|standing\s+order|debit\s+card)"
-    r"|balance\s+transfer\s+in\b",
-    re.IGNORECASE,
-)
-
-
-def card_payment(text: str) -> bool:
-    """A card row's description says money was paid to the card (or given back)."""
-    return _CARD_CREDIT.search(text) is not None
-
-
-_TYPE_CREDIT = {"cr", "credit", "payment", "refund"}
-_TYPE_DEBIT = {"dr", "debit", "purchase", "sale"}
-_ACCOUNT_WORDS = {"current": "a current account", "savings": "a savings account"}
-
-
-def _card_evidence(parsed: ParsedStatement) -> tuple[int, int]:
-    """(rows that agree, rows that disagree) with the signs read: a payment to the card or a
-    refund is money in, a row typed as a purchase or debit is money out."""
-    agree = disagree = 0
-    for row in parsed.rows:
-        kind = (row.bank_type or "").strip().casefold()
-        if kind in _TYPE_CREDIT or card_payment(row.raw_description):
-            want = 1
-        elif kind in _TYPE_DEBIT:
-            want = -1
-        else:
-            continue
-        if row.amount_pence * want > 0:
-            agree += 1
-        elif row.amount_pence:
-            disagree += 1
-    return agree, disagree
-
-
-def sign_doubt(
-    parsed: ParsedStatement, account_kind: AccountKind, layout: CsvLayout, *, new: bool
-) -> str | None:
-    """Why a learned layout's signs can't be trusted yet, or None.
-
-    Two money columns are checked by Check against their headings. A single amount column
-    adds up (with a balance column too) whichever way round it is read, so:
-    - on a current or savings account, a layout that reads it the card's way is a
-      contradiction;
-    - on a card, the rows are the evidence: a payment or refund read as money out (or a
-      purchase read as money in) means back to front, and a new layout with no such row
-      waits for the person to confirm it."""
-    if layout.amount is None:
-        return None
-    if account_kind in _ACCOUNT_WORDS:
-        if layout.perspective != "card":
-            return None
-        return (
-            "The remembered layout for this file reads purchases as positive, as a card "
-            f"statement does, which doesn't fit {_ACCOUNT_WORDS[account_kind]}. The signs may "
-            "be back to front, so please check them."
-        )
-    if layout.direction is not None:  # each amount's direction is printed in a DR/CR column
-        return None
-    agree, disagree = _card_evidence(parsed)
-    if disagree:
-        return (
-            f"{disagree} of these rows (payments to the card, refunds or purchases) would be "
-            "stored the wrong way round, so the signs may be back to front. Please check them."
-        )
-    if not agree and new:
-        return (
-            "Nothing in this file shows which way round the card's amounts are (such as a "
-            "payment to the card or a refund), so please check the signs before this layout "
-            "is remembered."
-        )
-    return None
-
-
-def held_back_message(doc: Document, count: int | None = None) -> str | None:
-    """Withheld lines with an amount that may be transactions (text prep lists them): say so,
-    without quoting them, instead of losing them silently. `count` is how many are still
-    undecided (all of them by default). Lines left out for being too long have their own
-    message (`too_long_message`)."""
-    if count is None:
-        long = set(doc.too_long_refs)
-        count = sum(1 for ref in doc.held_amount_refs if ref not in long)
-    what = "screenshot" if doc.kind == "image" else "statement"
-    if count == 0:
-        return None
-    if count == 1:
-        return (
-            f"A line of this {what} with an amount on it was held back from the AI because it "
-            "may show account details or a balance. It may be a transaction, so please check it."
-        )
-    return (
-        f"{count} lines of this {what} with an amount on them were held back from the AI because "
-        "they may show account details or a balance. They may be transactions, so please check "
-        "them."
-    )
-
-
-def too_long_message(doc: Document, count: int | None = None) -> str | None:
-    """Lines too long to read safely were left out: say so (`count` still undecided)."""
-    count = len(doc.too_long_refs) if count is None else count
-    if count == 0:
-        return None
-    these = "A line" if count == 1 else f"{count} lines"
-    them = "it" if count == 1 else "them"
-    return (
-        f"{these} of this file {'was' if count == 1 else 'were'} too long to read, so "
-        f"{'it was' if count == 1 else 'they were'} left out. Please check {them}."
-    )
-
-
-def _sent_balance(doc: Document, pence: int | None, perspective: Perspective) -> int | None:
-    """`pence` if it is the balance printed on a line the reader was sent, else None."""
-    if pence is None:
-        return None
-    sent = sent_lines(doc)
-    probe = ParsedRow(
-        ref="", date=dt.date(2000, 1, 1), amount_pence=0, amount_text="", raw_description="",
-        balance_after_pence=pence,
-    )  # fmt: skip
-    for ref in doc.data_refs:
-        line = sent.get(ref)
-        if line is not None and balance_printed(probe, f"0.00 {line.text}", perspective):
-            return pence
-    return None
+    # What the statement was read with: kept in the draft, so the fix-up screen's "Check
+    # again" runs the same `verify` as this step (R-M3-23 (c)).
+    basis: Basis | None = None
 
 
 _FIELDS = ("raw_description", "merchant", "bank_category", "bank_type")
@@ -216,27 +91,6 @@ def restore_masked(parsed: ParsedStatement, doc: Document) -> None:
                 for placeholder, original in masked.hidden.items():
                     value = value.replace(placeholder, original)
                 setattr(row, name, value)
-
-
-_KIND_NAMES = {
-    "current": "a current account",
-    "savings": "a savings account",
-    "credit_card": "a credit card",
-}
-
-
-def kind_doubt(evidence: Evidence, account_kind: AccountKind) -> str | None:
-    """M7: the file (or its wording) says one side of account, a card's or a bank account's,
-    and the person chose the other. The amounts are read the chosen account's way, which would
-    be back to front, so the person checks it."""
-    said = evidence.kind or evidence.kind_hint
-    if said is None or side_of(said) == side_of(account_kind):
-        return None
-    return (
-        f"This statement looks like it's from {_KIND_NAMES[said]}, but it's being read for "
-        f"{_KIND_NAMES[account_kind]}, so its amounts may be the wrong way round. If that's the "
-        "wrong account, use Wrong account?; otherwise check the signs."
-    )
 
 
 def level_for(doc: Document) -> CheckLevel:
@@ -282,8 +136,10 @@ def parse_document(
         extract_limits=extract_limits,
         local_seconds=local_seconds,
     )
-    if doubt := kind_doubt(evidence, account_kind):
-        outcome.errors.append(doubt)
+    if outcome.basis is None:  # a file refused before any row was read
+        outcome.basis = Basis(account_kind=account_kind, evidence=evidence)
+        if doubt := kind_doubt(evidence, account_kind):
+            outcome.errors.append(doubt)
     return outcome
 
 
@@ -306,6 +162,7 @@ def _parse(
 ) -> ParseOutcome:
     level = level_for(doc)
     deadline = after(local_seconds)
+    basis = Basis(account_kind=account_kind, evidence=evidence)
     if doc.kind in ("ofx", "qif", "camt053"):
         try:
             if doc.kind == "camt053":  # the XML is parsed in the sandbox, never in the app
@@ -321,10 +178,9 @@ def _parse(
                 errors=[safe_error_text(exc)],
                 info={"importer": doc.kind},
             )
+        checked = verify.verify(doc, parsed, basis, level=level, deadline=deadline)
         return ParseOutcome(
-            parsed=parsed,
-            errors=check_document(doc, parsed, deadline=deadline),
-            info={"importer": parsed.importer},
+            parsed=parsed, errors=checked.errors, info={"importer": parsed.importer}, basis=basis
         )
     if doc.kind in ("csv", "xlsx"):
         # A learned layout only for this side of account (a card's or a bank account's).
@@ -338,13 +194,14 @@ def _parse(
                     errors=[safe_error_text(exc)],
                     info={"importer": f"csv:{layout.id}"},
                 )
-            errors = result.problems + check_document(doc, result.parsed, deadline=deadline)
-            if layout.source == "learned" and (
-                doubt := sign_doubt(result.parsed, account_kind, layout, new=False)
-            ):
-                errors.append(doubt)
+            if layout.source == "learned":  # a bank's own layout is no one's guess
+                basis = basis.model_copy(update={"layout": layout})
+            checked = verify.verify(doc, result.parsed, basis, level=level, deadline=deadline)
             return ParseOutcome(
-                parsed=result.parsed, errors=errors, info={"importer": result.parsed.importer}
+                parsed=result.parsed,
+                errors=result.problems + checked.errors,
+                info={"importer": result.parsed.importer},
+                basis=basis,
             )
         outcome = propose_layout(
             doc,
@@ -357,26 +214,25 @@ def _parse(
             local_seconds=local_seconds,
         )
         if outcome.layout is not None and outcome.result is not None:
-            # The rows a fresh mapping read go through the same Check as any importer's.
-            checked = outcome.result.problems + check_document(
-                doc, outcome.result.parsed, deadline=after(local_seconds)
-            )
-            doubt = sign_doubt(outcome.result.parsed, account_kind, outcome.layout, new=True)
-            if doubt or checked:  # read the file, but don't trust the layout enough to keep it
-                parsed = outcome.result.parsed
+            # The rows a fresh mapping read go through the same checks as any importer's.
+            basis = basis.model_copy(update={"layout": outcome.layout, "layout_new": True})
+            parsed = outcome.result.parsed
+            checked = verify.verify(doc, parsed, basis, level=level, deadline=after(local_seconds))
+            errors = [*outcome.result.problems, *checked.errors]
+            if errors:  # read the file, but don't trust the layout enough to keep it yet
                 return ParseOutcome(
                     parsed=parsed,
-                    errors=[*checked, *([doubt] if doubt else [])],
+                    errors=errors,
                     info={"importer": "csv:unknown", "attempts": outcome.attempts},
                     pending_layout=outcome.layout,
+                    basis=basis,
                 )
-            parsed = outcome.result.parsed.model_copy(
-                update={"importer": f"csv:{outcome.layout.id}"}
-            )
+            parsed = parsed.model_copy(update={"importer": f"csv:{outcome.layout.id}"})
             return ParseOutcome(
                 parsed=parsed,
                 info={"importer": parsed.importer, "attempts": outcome.attempts},
                 learned_layout=outcome.layout,
+                basis=basis,
             )
         parsed = (
             outcome.result.parsed if outcome.result else ParsedStatement(importer="csv:unknown")
@@ -404,68 +260,29 @@ def _parse(
         prompt=load_prompt("read", prompts_dir),
         deadline=deadline,
     )
-    # Period and balances come from the lines that were withheld from the model, read on this
-    # device. The model's own values are only fallbacks when those lines gave none.
-    deadline = after(local_seconds)  # this device's work after the read has its own time
+    # The period comes from the header, read on this device; balances and signs too, in
+    # `verify` (the model's opening balance is never used, its closing one only when it is
+    # the running balance printed on the last row).
     parsed, facts = read.parsed, evidence.facts
     restore_masked(parsed, doc)
     if facts.period_start and facts.period_end:
         parsed.period_start, parsed.period_end = facts.period_start, facts.period_end
-    local = local_balances(doc, perspective=perspective, deadline=deadline)
-    # The model's own opening or closing balance is a fallback only when it is printed as the
-    # balance of a line it was sent ("Balance brought forward 1,000.00"); otherwise it is
-    # something the model worked out, and it could make anything add up.
-    parsed.opening_balance_pence = (
-        local.opening
-        if local.opening is not None
-        else _sent_balance(doc, parsed.opening_balance_pence, perspective)
-    )
-    parsed.closing_balance_pence = (
-        local.closing
-        if local.closing is not None
-        else _sent_balance(doc, parsed.closing_balance_pence, perspective)
-    )
-    # Directions are proved from balances read on this device only, never the model's.
-    repair = repair_signs(
-        doc,
-        parsed,
-        opening=local.opening,
-        closing=local.closing,
-        level=level,
-        deadline=deadline,
-    )
-    whole_file = check_rows(
-        doc.lines,
-        all_lines=doc.lines,
-        context_refs=doc.header_refs,
-        data_refs=doc.data_refs,
-        parsed=parsed,
-        level=level,
-        deadline=deadline,
-    )
-    errors = [
-        *read.errors,
-        *whole_file,
-        *check_statement(parsed, level=level, dates=True, deadline=deadline),
-        *repair.errors,
-    ]
-    if held := held_back_message(doc):
-        errors.append(held)
-    if long := too_long_message(doc):
-        errors.append(long)
+    checked = verify.verify(doc, parsed, basis, level=level, deadline=after(local_seconds))
+    errors = [*read.errors, *checked.errors]
     if not parsed.rows:
         errors.append("No transactions were read from this file, so it needs a look.")
     elif not read.ok and not errors:
         errors.append("This statement couldn't be read reliably, so it needs a look.")
     return ParseOutcome(
         parsed=parsed,
-        # The whole-file check quotes the model's text: clean and cap it like every error.
+        # The checks quote the model's text: clean and cap it like every error.
         errors=list(dict.fromkeys(tidy(e) for e in errors)),
         level=level,
         info={
             "importer": "ai-read",
             "attempts": read.attempts,
             "chunks": read.chunks,
-            "signs_repaired": repair.repaired,
+            "signs_repaired": checked.repaired,
         },
+        basis=basis,
     )

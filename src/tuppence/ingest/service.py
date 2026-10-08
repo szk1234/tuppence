@@ -31,12 +31,13 @@ from tuppence.core.errors import InputError, safe_error_text
 from tuppence.core.money import MAX_PENCE
 from tuppence.core.records import NotFound, VersionConflict
 from tuppence.core.secrets import SecretError
-from tuppence.ingest.check import balance_verified, check_rows, check_statement
+from tuppence.ingest import verify
+from tuppence.ingest.check import balance_verified
 from tuppence.ingest.clock import Deadline, after
 from tuppence.ingest.files import StatementFiles
 from tuppence.ingest.handoff import ANALYSIS_JOB
 from tuppence.ingest.models import CheckLevel, Document, ParsedRow, ParsedStatement, SkippedLine
-from tuppence.ingest.parse import LOCAL_SECONDS, held_back_message, too_long_message
+from tuppence.ingest.parse import LOCAL_SECONDS
 from tuppence.ingest.pipeline import READ_FAILED, IngestGraph, RunContext, hand_off
 from tuppence.ingest.registry import CsvLayout
 from tuppence.ingest.sniff import UploadRejected, check_zip, sniff
@@ -81,30 +82,14 @@ def recheck(
     parsed: ParsedStatement,
     level: CheckLevel,
     *,
+    basis: verify.Basis,
     deadline: Deadline | None = None,
 ) -> list[str]:
-    """Every check again after the person's edits. Rows they changed skip the line checks.
-    A held-back line counts once the person makes it a row or skips it; until then it is
-    reported, as the parse step did."""
-    used = {r.ref for r in parsed.rows} | {s.ref for s in parsed.skipped}
-    decided = [r for r in doc.held_amount_refs if r in used]
-    long = set(doc.too_long_refs)
-    errors = check_rows(
-        doc.lines,
-        all_lines=doc.lines,
-        context_refs=doc.header_refs,
-        data_refs=[*doc.data_refs, *decided],
-        parsed=parsed,
-        level=level,
-        deadline=deadline,
-    )
-    errors += check_statement(parsed, level=level, dates=True, deadline=deadline)
-    held_left = [r for r in doc.held_amount_refs if r not in used and r not in long]
-    if held := held_back_message(doc, len(held_left)):
-        errors.append(held)
-    if too_long := too_long_message(doc, sum(1 for r in long if r not in used)):
-        errors.append(too_long)
-    return list(dict.fromkeys(errors))
+    """Every check again after the person's edits: the same `verify` as the read (R-M3-23
+    (c)), with what the statement was read with, so sign repair, the balances and the doubts
+    about the account and the layout all run again. Rows the person changed skip the line
+    checks; a held-back line counts once they make it a row or skip it."""
+    return verify.verify(doc, parsed, basis, level=level, deadline=deadline).errors
 
 
 def _level(draft: dict[str, Any]) -> CheckLevel:
@@ -457,12 +442,34 @@ class IngestService:
             skipped_refs.add(skip.ref)
         parsed.rows, parsed.skipped = kept, list(skipped)
         level = _level(record.draft)
+        errors = recheck(
+            doc,
+            parsed,
+            level,
+            basis=self._basis(record),
+            deadline=after(LOCAL_SECONDS, "Checking this statement"),
+        )
         draft = {**record.draft, "parsed": parsed.model_dump(mode="json")}
         return self.store.update_versioned(
             statement_id,
             expected_version,
             draft=draft,
-            check_errors=recheck(doc, parsed, level, deadline=after(LOCAL_SECONDS)),
+            check_errors=errors,
+        )
+
+    def _basis(self, record: StatementRecord) -> verify.Basis:
+        """What the statement's rows were read with (kept in its draft); for a draft from
+        before it was kept, the chosen account's type and any layout waiting in it."""
+        assert record.draft is not None
+        if (kept := record.draft.get("basis")) is not None:
+            return verify.Basis.model_validate(kept)
+        kind = next(
+            (a.kind for a in self.deps.accounts.list() if a.id == record.account_id), "current"
+        )
+        pending = record.draft.get("pending_layout")
+        layout = CsvLayout.model_validate(pending) if pending is not None else None
+        return verify.Basis.model_validate(
+            {"account_kind": kind, "layout": layout, "layout_new": layout is not None}
         )
 
     def accept(self, statement_id: str, *, expected_version: int) -> StatementRecord:

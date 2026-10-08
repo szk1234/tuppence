@@ -15,8 +15,12 @@ import pytest
 from tuppence.ingest import textprep
 from tuppence.ingest.textprep import has_amount, pages_document, text_document
 
-HEAD = ["Example Bank", "Statement 01/10/2026 to 31/10/2026", "Date Description Paid out Paid in Balance",
-        "01/10/2026 SHOP 4.00 1,000.00"]  # fmt: skip
+HEAD = [
+    "Example Bank",
+    "Statement 01/10/2026 to 31/10/2026",
+    "Date Description Paid out Paid in Balance",
+    "01/10/2026 SHOP 4.00 1,000.00",
+]
 SHOT = ["Mon 2 Oct", "TESCO -£12.50"]
 
 # The reviewer's p_held probe: withheld and dropped before; each may be a row.
