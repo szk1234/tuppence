@@ -324,6 +324,26 @@ def test_each_vision_call_gets_only_what_is_left_of_the_extraction_deadline(tmp_
     assert len(llm.seconds) == 2 and all(s <= 60 for s in llm.seconds)
 
 
+def test_each_page_is_budgeted_for_its_repair_turn_too(tmp_path):
+    """m8: a page whose reply needs the structured repair turn takes two calls, so a scan is
+    refused up front when the run couldn't afford two a page, not halfway through."""
+    from tuppence.ingest.vision import VisionOCR, VisionTooLong
+    from tuppence.llm.budget import RunBudget
+
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(_two_page_scan())
+    llm = _CountingLLM()
+    run = RunBudget(max_calls=5, max_tokens=10**6, max_gbp=1.0, max_seconds=3600)
+    with pytest.raises(VisionTooLong, match="2 pages") as refused:
+        extract_document(
+            path, "pdf", sha256="x", limits=LIMITS, vision=VisionOCR(llm, run, prompt="x")
+        )
+    assert "(1)" in str(refused.value) and llm.seconds == []
+    run = RunBudget(max_calls=6, max_tokens=10**6, max_gbp=1.0, max_seconds=3600)
+    extract_document(path, "pdf", sha256="x", limits=LIMITS, vision=VisionOCR(llm, run, prompt="x"))
+    assert len(llm.seconds) == 2
+
+
 def test_a_scan_with_more_pages_than_the_run_may_read_is_refused_plainly(tmp_path):
     """M9: refused before any vision call, with what to do, not a budget failure halfway."""
     from tuppence.core.errors import UserFacing

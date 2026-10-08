@@ -15,6 +15,9 @@ from tuppence.ingest.prompts import load_prompt
 from tuppence.llm.types import BudgetExceeded, ImageData, Message, NoModelConfigured
 
 READ_RESERVE = 2  # AI calls kept for reading the transcribed rows afterwards
+# A page's reply may need the structured repair turn: two calls (m8). Budgeting for it up
+# front means a long scan is refused before any call, never by the budget halfway through.
+CALLS_PER_PAGE = 2
 
 
 class VisionLines(BaseModel):
@@ -58,15 +61,15 @@ class VisionOCR:
 
     def check_pages(self, pages: int) -> None:
         """Refuse, before any call, a scan with more pages than this run's AI calls can read
-        (one call a page, a few kept for reading the rows)."""
+        (two calls a page at most, a few kept for reading the rows)."""
         max_calls = getattr(self.run, "max_calls", None)
         if max_calls is None:
             return
-        left = max_calls - self.run.calls - READ_RESERVE
-        if pages > left:
+        readable = max(0, (max_calls - self.run.calls - READ_RESERVE) // CALLS_PER_PAGE)
+        if pages > readable:
             raise VisionTooLong(
                 f"This scan has {pages} pages, more than your AI vision model can read for one "
-                f"statement ({max(left, 0)}). On the Statements page, under “Reading scans and "
+                f"statement ({readable}). On the Statements page, under “Reading scans and "
                 "screenshots”, turn off the AI vision model to read it on this device, or upload "
                 "fewer pages at a time."
             )
