@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from tuppence.core.errors import safe_error_text
 from tuppence.ingest.balances import local_balances, repair_signs
-from tuppence.ingest.check import check_document, check_rows, check_statement
+from tuppence.ingest.check import balance_printed, check_document, check_rows, check_statement
 from tuppence.ingest.extract import ExtractLimits, read_camt
 from tuppence.ingest.identify import Evidence
 from tuppence.ingest.importers.camt import CamtError, parsed_from_facts
@@ -24,11 +24,19 @@ from tuppence.ingest.importers.csv_layout import LayoutMismatch, parse_with_layo
 from tuppence.ingest.importers.ofx import OfxError, parse_ofx
 from tuppence.ingest.importers.qif import QifError, parse_qif
 from tuppence.ingest.mapping import propose_layout
-from tuppence.ingest.models import AccountKind, CheckLevel, Document, ParsedStatement
+from tuppence.ingest.models import (
+    AccountKind,
+    CheckLevel,
+    Document,
+    ParsedRow,
+    ParsedStatement,
+    Perspective,
+)
 from tuppence.ingest.prompts import load_prompt
 from tuppence.ingest.reader import StructuredLLM, read_document, tidy
 from tuppence.ingest.registry import CsvLayout, LayoutRegistry
 from tuppence.ingest.textnum import decode_text
+from tuppence.ingest.textprep import sent_lines
 
 ACCOUNT_LABELS: dict[str, str] = {
     "current": "current account",
@@ -155,6 +163,22 @@ def too_long_message(doc: Document, count: int | None = None) -> str | None:
         f"{these} of this file {'was' if count == 1 else 'were'} too long to read, so "
         f"{'it was' if count == 1 else 'they were'} left out. Please check {them}."
     )
+
+
+def _sent_balance(doc: Document, pence: int | None, perspective: Perspective) -> int | None:
+    """`pence` if it is the balance printed on a line the reader was sent, else None."""
+    if pence is None:
+        return None
+    sent = sent_lines(doc)
+    probe = ParsedRow(
+        ref="", date=dt.date(2000, 1, 1), amount_pence=0, amount_text="", raw_description="",
+        balance_after_pence=pence,
+    )  # fmt: skip
+    for ref in doc.data_refs:
+        line = sent.get(ref)
+        if line is not None and balance_printed(probe, f"0.00 {line.text}", perspective):
+            return pence
+    return None
 
 
 _FIELDS = ("raw_description", "merchant", "bank_category", "bank_type")
@@ -292,10 +316,19 @@ def parse_document(
     if facts.period_start and facts.period_end:
         parsed.period_start, parsed.period_end = facts.period_start, facts.period_end
     local = local_balances(doc, perspective=perspective)
-    if local.opening is not None:
-        parsed.opening_balance_pence = local.opening
-    if local.closing is not None:
-        parsed.closing_balance_pence = local.closing
+    # The model's own opening or closing balance is a fallback only when it is printed as the
+    # balance of a line it was sent ("Balance brought forward 1,000.00"); otherwise it is
+    # something the model worked out, and it could make anything add up.
+    parsed.opening_balance_pence = (
+        local.opening
+        if local.opening is not None
+        else _sent_balance(doc, parsed.opening_balance_pence, perspective)
+    )
+    parsed.closing_balance_pence = (
+        local.closing
+        if local.closing is not None
+        else _sent_balance(doc, parsed.closing_balance_pence, perspective)
+    )
     # Directions are proved from balances read on this device only, never the model's.
     repair = repair_signs(doc, parsed, opening=local.opening, closing=local.closing, level=level)
     whole_file = check_rows(

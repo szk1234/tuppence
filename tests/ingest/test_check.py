@@ -154,6 +154,7 @@ def test_every_data_line_exactly_once():
 def test_one_line_may_give_two_rows():
     d = doc("20/10/2026,Northline Rail,-28.90,0.50", header=False)
     p = statement(row("L2#fee", 20, -50, "0.50"), row("L2", 20, -2890, "-28.90"))
+    p.importer = "csv:example"  # a fee column split out by a CSV layout
     assert check_document(d, p) == []
 
 

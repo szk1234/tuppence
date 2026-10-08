@@ -213,7 +213,8 @@ def retry_message(
 
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_REF = re.compile(r"\b(?:P\d+)?L\d+\b")
+_REF = re.compile(r"(?<![?\w])(?:P\d+)?L\d+\b")
+UNKNOWN = "?"  # marks a ref the model made up, so it can never name a line of the file
 
 
 def tidy(text: str, limit: int = 200) -> str:
@@ -414,16 +415,18 @@ def _read_chunk(
 
 
 def _with_real_refs(out: ReadOut, real: dict[str, str]) -> ReadOut:
-    """The reply with the model's ids turned back into the file's own refs. An id the model
-    made up stays as written, and is then reported as a ref that isn't in the chunk."""
+    """The reply with the model's ids turned back into the file's own refs. Only an id the
+    model was given counts: any other (one it made up, a guess at a file ref such as "P1L2",
+    or an id with a suffix such as "D2#fee") is marked unknown, so it names no line and is
+    reported as a ref that isn't in the chunk."""
+
+    def known(ref: str) -> str:
+        return real.get(ref) or f"{UNKNOWN}{ref}"
+
     return ReadOut(
         statement=out.statement,
-        transactions=[
-            row.model_copy(update={"ref": real.get(row.ref, row.ref)}) for row in out.transactions
-        ],
-        skipped=[
-            skip.model_copy(update={"ref": real.get(skip.ref, skip.ref)}) for skip in out.skipped
-        ],
+        transactions=[row.model_copy(update={"ref": known(row.ref)}) for row in out.transactions],
+        skipped=[skip.model_copy(update={"ref": known(skip.ref)}) for skip in out.skipped],
     )
 
 

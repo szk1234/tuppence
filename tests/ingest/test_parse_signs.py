@@ -189,7 +189,8 @@ def test_the_models_opening_balance_never_proves_a_first_row(ingest_env):
     body["statement"]["opening_balance"] = 2800.0
     scripted.replies = [{"content": json.dumps(body)}] * 3
     out, _ = parse_pages(services, [page])
-    assert out.parsed.opening_balance_pence == 280000  # kept only as Check's fallback
+    # Printed on no line it was sent, the model's opening isn't kept even as a fallback.
+    assert out.parsed.opening_balance_pence is None
     assert any("can't tell whether" in e for e in out.errors)
 
 

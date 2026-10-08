@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from tuppence.core.money import MAX_PENCE
 from tuppence.ingest.models import (
@@ -25,7 +26,7 @@ from tuppence.ingest.models import (
     Perspective,
     SkippedLine,
 )
-from tuppence.ingest.textnum import direction_of, pounds
+from tuppence.ingest.textnum import direction_of, pounds, to_pence
 
 MAX_PERIOD_DAYS = 400
 DATE_SLACK = timedelta(days=3)
@@ -39,6 +40,84 @@ _DEBIT_MARKER = re.compile(r"(?<![\s,;|])[\s,;|]*DR\b", re.IGNORECASE)
 def base_ref(ref: str) -> str:
     """`L12#fee` → `L12`: one line may give more than one row."""
     return ref.split("#", 1)[0]
+
+
+# --- figures: printed money tokens, read one way for amounts, balances and signs ----------------
+
+# A run of digits with its thousands commas and decimal points, taken whole: "1,250.00" is one
+# run, so "250.00" inside it is never a figure of its own; "50.00.2026" (two points) is none.
+_RUN = re.compile(r"\d[\d,]*(?:\.\d+)*")
+_CELL_EDGE = ',;\t|"'
+
+
+@dataclass(frozen=True)
+class Figure:
+    """A money figure printed on a line: where its digits are, its size in pence, and what is
+    printed around it."""
+
+    start: int  # first digit
+    end: int  # after the last digit
+    pence: int  # the size, never negative
+    negative: bool  # a minus before it (after any £), brackets round it, or a minus after it
+    shown: str  # as printed, with its sign or brackets
+
+
+def _grouped_start(whole: str) -> int:
+    """Where the valid number starts in `whole` (digits and commas): the longest tail that is
+    a lone digit run or a 1-3 digit head followed by groups of exactly three ("2026,12" is the
+    year and then 12; "1,250" is one number)."""
+    groups = whole.split(",")
+    offset = 0
+    for k, head in enumerate(groups):
+        rest = groups[k + 1 :]
+        if head and (not rest or (len(head) <= 3 and all(len(g) == 3 for g in rest))):
+            return offset
+        offset += len(head) + 1
+    return len(whole)
+
+
+def _at_cell_edge(text: str, start: int, end: int) -> bool:
+    """The number is a whole cell of a CSV line, allowing a sign, £ or brackets round it."""
+    before = text[:start].rstrip(" £$€-+\u2212\u2013(")
+    after = text[end:].lstrip(" )-\u2212")
+    return (not before or before[-1] in _CELL_EDGE) and (not after or after[0] in _CELL_EDGE)
+
+
+def figures(text: str) -> list[Figure]:
+    """Every money figure on `text`, in order: a number with pence ("1,250.00"), or a whole
+    number after a currency sign ("£250") or alone in a cell of a CSV line (",900,"). Only
+    whole runs count, so no figure is ever part of a longer number or a date."""
+    found: list[Figure] = []
+    for match in _RUN.finditer(text):
+        run = match.group(0).rstrip(",")
+        if run.count(".") > 1:
+            continue
+        whole, _, pennies = run.partition(".")
+        if "." in run and len(pennies) != 2:
+            continue
+        offset = _grouped_start(whole)
+        if offset >= len(whole):
+            continue
+        start, end = match.start() + offset, match.start() + len(run)
+        if not pennies and not (
+            (start > 0 and text[start - 1] in "£$€") or _at_cell_edge(text, start, end)
+        ):
+            continue
+        number = whole[offset:].replace(",", "") + (f".{pennies}" if pennies else "")
+        cursor = start - 1 if start > 0 and text[start - 1] in "£$€" else start
+        lead = text[cursor - 1] if cursor > 0 else ""
+        bracketed = lead == "(" and text[end : end + 1] == ")"
+        trailing = text[end : end + 1] in ("-", "\u2212") and not text[end + 1 : end + 2].isalnum()
+        if lead and lead in "-\u2212\u2013":
+            negative, shown = True, text[cursor - 1 : end]
+        elif bracketed:
+            negative, shown = True, text[cursor - 1 : end + 1]
+        elif trailing:
+            negative, shown = True, text[cursor : end + 1]
+        else:
+            negative, shown = False, text[cursor:end]
+        found.append(Figure(start, end, to_pence(Decimal(number)), negative, shown))
+    return found
 
 
 def amount_renderings(pence: int) -> set[str]:
@@ -61,40 +140,25 @@ _CREDIT_AFTER = re.compile(r"(?<!\s)\s*(?:CR|in\s+credit)\b", re.IGNORECASE)
 
 def balance_printed(row: ParsedRow, text: str, perspective: Perspective) -> bool:
     """Whether the running balance a row claims is printed on its own line `text` (the line as
-    it was sent), with the sign it is stored with. A figure the same size as the row's amount
-    must be printed twice, once for each. A row that claims no balance passes.
+    it was sent) as that line's balance: the last figure on it, after the row's amount (so the
+    amount itself never counts), the same size and with the sign it is stored with. A row that
+    claims no balance passes.
 
     A balance the model worked out for itself, printed nowhere, is not evidence of anything:
     it can't prove which way an amount goes or that a statement adds up."""
     balance = row.balance_after_pence
     if balance is None:
         return True
-    signs: list[int] = []
-    for rendering in sorted(amount_renderings(balance), key=len, reverse=True):
-        start = 0
-        while (index := text.find(rendering, start)) >= 0:
-            end = index + len(rendering)
-            start = index + 1
-            if not _bounded(text, index, end):
-                continue
-            cursor = index - 1 if index > 0 and text[index - 1] in "£$" else index
-            before = text[cursor - 1] if cursor > 0 else ""
-            negative = (
-                before in "-−"
-                or (before == "(" and text[end : end + 1] == ")")
-                or (text[end : end + 1] in ("-", "−") and not text[end + 1 : end + 2].isalnum())
-            )
-            after = text[end:]
-            if perspective == "card":  # a card prints what is owed; CR means in credit
-                negative = negative or _CREDIT_AFTER.match(after) is not None
-            else:
-                negative = negative or _OVERDRAWN_AFTER.match(after) is not None
-            signs.append(-1 if negative else 1)
-    want = -1 if balance < 0 else 1
-    matching = sum(1 for sign in signs if sign == want)
-    if abs(balance) == abs(row.amount_pence):
-        return matching >= 1 and len(signs) >= 2
-    return matching >= 1
+    printed = figures(text)
+    if len(printed) < 2:  # a single figure is the row's own amount
+        return False
+    last = printed[-1]  # the balance column is the last on the line
+    after = text[last.end :]
+    if perspective == "card":  # a card prints what is owed; CR means in credit
+        negative = last.negative or _CREDIT_AFTER.match(after) is not None
+    else:
+        negative = last.negative or _OVERDRAWN_AFTER.match(after) is not None
+    return last.pence == abs(balance) and negative == (balance < 0)
 
 
 def drop_unprinted_balances(parsed: ParsedStatement, lines: Sequence[Line]) -> list[str]:
@@ -123,8 +187,8 @@ def check_rows(
 ) -> list[str]:
     lines = _combine(all_lines, chunk)
     if level == "screenshot":
-        return _too_large(parsed.rows) + _evidence_only(parsed.rows, lines)
-    errors = _too_large(parsed.rows)
+        return _too_large(parsed.rows) + _zero(parsed.rows) + _evidence_only(parsed.rows, lines)
+    errors = _too_large(parsed.rows) + _zero(parsed.rows)
     errors.extend(_coverage(parsed.rows, parsed.skipped, context_refs, data_refs))
     period_errors = _period(parsed)
     errors.extend(_rows(parsed, lines, context_refs))
@@ -202,6 +266,10 @@ def _too_large(rows: Sequence[ParsedRow]) -> list[str]:
         for row in rows
         if abs(row.amount_pence) > MAX_PENCE
     ]
+
+
+def _zero(rows: Sequence[ParsedRow]) -> list[str]:
+    return [f"{row.ref}: amount is zero" for row in rows if row.amount_pence == 0]
 
 
 def _grouped(text: str) -> str:
@@ -302,33 +370,28 @@ def _period(parsed: ParsedStatement) -> list[str]:
     return errors
 
 
-def _numeric(amount_text: str) -> Decimal | None:
-    cleaned = amount_text.strip()
-    for token in ("£", "$", "€", ",", " ", " ", "(", ")"):
-        cleaned = cleaned.replace(token, "")
-    cleaned = cleaned.replace("−", "-")
-    if cleaned.casefold().endswith(("cr", "dr")):
-        cleaned = cleaned[:-2]
-    cleaned = cleaned.strip("+").strip("-")
-    try:
-        value = Decimal(cleaned)
-    except InvalidOperation:
-        return None
-    return value if value.is_finite() else None
-
-
 def _evidence(row: ParsedRow, line: Line) -> list[str]:
+    """`amount_text` is one figure (read by `figures`, like every figure here), its size is the
+    row's amount, and it is printed on the line as a whole figure: "50.00" is not found in
+    "150.00" or "£1,250.00"."""
     errors: list[str] = []
-    if row.amount_text not in line.text:
-        errors.append(f'{row.ref}: amount_text "{row.amount_text}" not found on line')
-    parsed = _numeric(row.amount_text)
-    if parsed is None:
+    own = figures(row.amount_text)
+    if len(own) != 1:
         errors.append(f'{row.ref}: amount_text "{row.amount_text}" is not a number')
-    elif abs(parsed - Decimal(abs(row.amount_pence)) / 100) > Decimal("0.005"):
+        return errors
+    figure = own[0]
+    if figure.pence != abs(row.amount_pence):
         errors.append(
-            f'{row.ref}: amount_text "{row.amount_text}" is {parsed:.2f}, '
+            f'{row.ref}: amount_text "{row.amount_text}" is {pounds(figure.pence)}, '
             f"amount is {pounds(row.amount_pence)}"
         )
+    printed = {(f.start, f.end) for f in figures(line.text)}
+    start = 0
+    while (index := line.text.find(row.amount_text, start)) >= 0:
+        if (index + figure.start, index + figure.end) in printed:
+            return errors
+        start = index + 1
+    errors.append(f'{row.ref}: amount_text "{row.amount_text}" not found on line')
     return errors
 
 
@@ -364,11 +427,14 @@ def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence
             continue
         errors.extend(_evidence(row, line))
         label = (row.sign_from or "").strip()
+        # Only a CSV importer's own split-out fee rows ("L12#fee", from a Fee column) are
+        # printed as a plain charge. A ref the AI reader returns never gets this.
+        fee = row.ref.endswith("#fee") and parsed.importer.startswith("csv:")
         # A card's figure is read the card's way unless a DR/CR cell on the row gives its sign.
         if parsed.perspective == "card" and _cell_direction(label, line.text) is None:
             errors.extend(_card_sign(row, line.text))
         else:
-            errors.extend(_sign(row, line.text, label))
+            errors.extend(_sign(row, line.text, label, fee=fee))
         page = _PAGE.fullmatch(base_ref(row.ref))
         if page and page.group(1) not in page_cache:
             page_cache[page.group(1)] = _page_text(row.ref, lines)
@@ -392,17 +458,14 @@ def _rows(parsed: ParsedStatement, lines: Sequence[Line], context_refs: Sequence
     return errors
 
 
-def _sign(row: ParsedRow, text: str, sign_from: str) -> list[str]:
+def _sign(row: ParsedRow, text: str, sign_from: str, *, fee: bool = False) -> list[str]:
     amount = row.amount_pence
     found = _occurrences(text, amount, debit_is_negative=True)
     negatives = [shown for negative, shown in found if negative]
     positives = [shown for negative, shown in found if not negative]
     if negatives and amount >= 0:
         return [f"{row.ref}: sign mismatch (line shows {negatives[0]}, amount is {pounds(amount)})"]
-    # Only the importer's own split-out fee rows (ref "L12#fee", from a separate Fee column) are
-    # printed as a plain charge; a row merely typed "fee" by a CSV Type column or the reader is
-    # still sign-checked.
-    fee = row.ref.endswith("#fee")
+    # A row merely typed "fee" (by a CSV Type column or the reader) is still sign-checked.
     if positives and not negatives and amount <= 0 and not sign_from and not fee:
         return [f"{row.ref}: sign mismatch (line shows {positives[0]}, amount is {pounds(amount)})"]
     if "-" in row.amount_text and amount >= 0 and not negatives:
@@ -448,66 +511,28 @@ def _card_sign(row: ParsedRow, text: str) -> list[str]:
 
 def _credit_showing(text: str, pence: int) -> str | None:
     """The printed figure when this amount is followed by CR, else None."""
-    for rendering in sorted(amount_renderings(pence), key=len, reverse=True):
-        start = 0
-        while (index := text.find(rendering, start)) >= 0:
-            end = index + len(rendering)
-            start = index + 1
-            if not _bounded(text, index, end):
-                continue
-            marker = _CREDIT_MARKER.match(text[end:])
-            if marker:
-                return text[index:end] + marker.group(0)
+    for figure in figures(text):
+        if figure.pence == abs(pence) and (marker := _CREDIT_MARKER.match(text[figure.end :])):
+            return text[figure.start : figure.end] + marker.group(0)
     return None
 
 
 def _occurrences(text: str, pence: int, *, debit_is_negative: bool) -> list[tuple[bool, str]]:
-    """(negative?, as printed) for each place the amount shows.
+    """(negative?, as printed) for each figure on the line the size of this amount.
 
     Negative means a leading minus, brackets, a trailing minus or, on a current account,
     DR. On a card, DR is a plain purchase, so it counts as printed positive.
     """
     found: list[tuple[bool, str]] = []
-    for rendering in sorted(amount_renderings(pence), key=len, reverse=True):
-        start = 0
-        while (index := text.find(rendering, start)) >= 0:
-            end = index + len(rendering)
-            start = index + 1
-            if not _bounded(text, index, end):
-                continue
-            cursor = index
-            if cursor > 0 and text[cursor - 1] in "£$":
-                cursor -= 1
-            negative = cursor > 0 and text[cursor - 1] in "-−"
-            bracketed = cursor > 0 and text[cursor - 1] == "(" and text[end : end + 1] == ")"
-            trailing = text[end : end + 1] in ("-", "−") and not text[end + 1 : end + 2].isalnum()
-            debit = _DEBIT_MARKER.match(text[end:])
-            if negative:
-                shown = text[cursor - 1 : end]
-            elif bracketed:
-                negative, shown = True, text[cursor - 1 : end + 1]
-            elif trailing:
-                negative, shown = True, text[index : end + 1]
-            elif debit and debit_is_negative:
-                negative, shown = True, text[index:end] + debit.group(0)
-            elif index > 0 and text[index - 1] in "£$":
-                shown = text[index - 1 : end]
-            else:
-                shown = rendering
-            found.append((negative, shown))
+    for figure in figures(text):
+        if figure.pence != abs(pence):
+            continue
+        debit = _DEBIT_MARKER.match(text[figure.end :])
+        if not figure.negative and debit and debit_is_negative:
+            found.append((True, text[figure.start : figure.end] + debit.group(0)))
+        else:
+            found.append((figure.negative, figure.shown))
     return found
-
-
-def _bounded(text: str, start: int, end: int) -> bool:
-    # A comma between digits is a thousands separator. A comma before the
-    # amount is just the previous CSV field, and the amount still counts.
-    if start > 0 and (text[start - 1].isdigit() or text[start - 1] == "."):
-        return False
-    if start > 1 and text[start - 1] == "," and text[start - 2].isdigit():
-        return False
-    if end < len(text) and text[end].isdigit():
-        return False
-    return not (end + 1 < len(text) and text[end] == "." and text[end + 1].isdigit())
 
 
 def _cell_direction(label: str, own: str) -> int | None:
