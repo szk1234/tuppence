@@ -9,12 +9,12 @@ LIMITS = ExtractLimits(max_pages=50, timeout_s=180, memory_mb=2048)
 def test_text_pdf_rows_come_from_word_positions(fixtures):
     doc = extract_document(fixtures / "pdf" / "card-text.pdf", "pdf", sha256="x", limits=LIMITS)
     texts = [ln.text for ln in doc.lines]
-    assert "29 Sep 2026   Greenbasket Stores   42.18" in texts
-    assert "02 Oct 2026   Payment received - thank you   150.00 CR" in texts
+    assert "29 Sep 2026 Greenbasket Stores 42.18" in texts
+    assert "02 Oct 2026 Payment received - thank you 150.00 CR" in texts
     assert doc.pages == 2 and doc.ocr_pages == [] and doc.warnings == []
     preamble = {doc.by_ref()[r].text for r in doc.preamble_refs}
-    assert {"Alex Example", "1 Example Road", "EX1 2MP", "Previous balance   £842.16"} <= preamble
-    assert doc.by_ref()[doc.data_refs[0]].text == "Date   Description   Amount"
+    assert {"Alex Example", "1 Example Road", "EX1 2MP", "Previous balance £842.16"} <= preamble
+    assert doc.by_ref()[doc.data_refs[0]].text == "Date Description Amount"
 
 
 def test_scanned_pdf_is_read_on_this_device(fixtures):
@@ -32,8 +32,7 @@ def test_screenshot_is_read_on_this_device(fixtures):
     )
     texts = [ln.text for ln in doc.lines]
     assert (
-        "Mon 5 Oct   Little Cafe   -£3.40" in texts
-        and "Wed 7 Oct   Acme Payroll Ltd   +£250.00" in texts
+        "Mon 5 Oct Little Cafe -£3.40" in texts and "Wed 7 Oct Acme Payroll Ltd +£250.00" in texts
     )
     assert doc.preamble_refs == ["P1L1"] and doc.ocr_pages == [1]  # the title is withheld
 
@@ -83,7 +82,7 @@ class FakeVision:
 
     def transcribe(self, image, media_type):
         self.seen.append((media_type, image[:8]))
-        return ["Mon 5 Oct   Little Cafe   -£3.40"]
+        return ["Mon 5 Oct Little Cafe -£3.40"]
 
 
 def test_vision_model_can_replace_ocr(fixtures):
@@ -98,4 +97,4 @@ def test_vision_model_can_replace_ocr(fixtures):
     shot = extract_document(
         fixtures / "image" / "app-screenshot.png", "image", sha256="x", limits=LIMITS, vision=vision
     )
-    assert [ln.text for ln in shot.lines] == ["Mon 5 Oct   Little Cafe   -£3.40"]
+    assert [ln.text for ln in shot.lines] == ["Mon 5 Oct Little Cafe -£3.40"]

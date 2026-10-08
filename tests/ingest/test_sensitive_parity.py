@@ -505,10 +505,10 @@ def test_a_transaction_line_with_details_is_sent_masked_not_withheld(text):
 
 @pytest.mark.parametrize("text", PLAIN)
 def test_a_line_without_details_is_sent_as_printed(text):
-    from tuppence.ingest.sensitive import mask_line
+    from tuppence.ingest.sensitive import mask_line, normalise
 
     masked = mask_line(text, names=NAMES)
-    assert masked is not None and masked.text == text and masked.hidden == {}
+    assert masked is not None and masked.text == normalise(text) and masked.hidden == {}
 
 
 # --- one classifier, one masker: no differential (scan follow-up) ------------------------------
@@ -567,11 +567,11 @@ def test_an_identifier_anywhere_in_a_row_is_recognised_and_never_sent(text):
 
 @pytest.mark.parametrize("text", PLAIN)
 def test_a_plain_phrase_anywhere_in_a_row_is_left_alone(text):
-    from tuppence.ingest.sensitive import mask_line
+    from tuppence.ingest.sensitive import mask_line, normalise
 
     line = f"02 Oct 2026 Payment {text} 12.00"
     masked = mask_line(line, names=NAMES)
-    assert masked is not None and masked.text == line and masked.hidden == {}
+    assert masked is not None and masked.text == normalise(line) and masked.hidden == {}
 
 
 # The same identifiers printed with what a PDF or OCR may put in them: full-width or other
@@ -633,3 +633,145 @@ def test_a_household_name_with_a_curly_apostrophe_is_found_either_way():
         assert classify(line, names=names), line
         masked = mask_line(line, names=names)
         assert masked is not None and "brien" not in masked.text.casefold(), line
+
+
+# --- names, every embedding, every variant, one normalisation (scan follow-up) -----------------
+
+SMITH = ["John Smith"]  # a household member with a common name
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "02 Oct 2026 FPO J SMITH 25.00",
+        "02 Oct 2026 FPO SMITH J 25.00",
+        "02 Oct 2026 FPO J. Smith 25.00",
+        "02 Oct 2026 FPO MR J SMITH 25.00",
+        "02 Oct 2026 FPO Smith, John 25.00",
+        "02 Oct 2026 FPO JOHN    SMITH 25.00",
+        "02 Oct 2026 FPO JOHN SMITH 25.00",
+        "02 Oct 2026 FPO JOHN​ SMITH 25.00",
+        "02 Oct 2026 FPO john smith 25.00",
+        "02 Oct 2026 FPO JSMITH 25.00",
+        "02 Oct 2026 FPO SMITHJ 25.00",
+        "02 Oct 2026 FPO JOHNSMITH 25.00",
+        "02 Oct 2026 FPO J SMITH-JONES 25.00",
+        "02 Oct 2026 FPO J SMITH‐JONES 25.00",
+        "02 Oct 2026 FPO J SMITH 25.00",
+        "02 Oct 2026 FPO Ｊ ＳＭＩＴＨ 25.00",
+        "02 Oct 2026 FPO J SMÏTH 25.00",
+    ],
+)
+def test_household_names_are_masked_in_every_spelling(line):
+    from tuppence.ingest.sensitive import mask_line
+
+    assert "holder_name" in classify(line, names=SMITH), line
+    masked = mask_line(line, names=SMITH)
+    assert masked is not None, line
+    assert "smith" not in masked.text.casefold().replace("ï", "i"), masked.text
+    assert "25.00" in masked.text and "02 Oct 2026" in masked.text
+
+
+def test_a_name_is_masked_on_its_own_without_any_other_detail():
+    from tuppence.ingest.sensitive import mask_line
+
+    masked = mask_line("02 Oct 2026 Gift from John Smith 25.00", names=SMITH)
+    assert masked is not None and masked.text == "02 Oct 2026 Gift from [hidden-a] 25.00"
+
+
+def test_names_from_the_statement_header_are_masked_in_rows():
+    """The holder printed above the address is masked in the rows too, even when the person
+    isn't in the household's list."""
+    page = [
+        "Example Bank plc",
+        "MR ALEX EXAMPLE & MRS SAM SAMPLE",
+        "1 Example Road",
+        "Exampletown",
+        "EX1 2MP",
+        "Date Description Amount",
+        "02 Oct 2026 Transfer to SAM SAMPLE 25.00",
+        "03 Oct 2026 FPO S SAMPLE 5.00",
+    ]
+    doc = pages_document([page], sha256="x", kind="pdf")
+    sent = [doc.masked[r].text if r in doc.masked else doc.by_ref()[r].text for r in doc.data_refs]
+    assert not any("sample" in s.casefold() for s in sent), sent
+    assert len(sent) == 3
+
+
+# Every way a detail may be printed: as typed, full-width, with invisible characters inside,
+# with non-breaking or doubled spaces, with accents on its letters.
+def _fullwidth(text):
+    return "".join(chr(ord(c) + 0xFEE0) if "!" <= c <= "~" else c for c in text)
+
+
+def _zero_width(text):
+    return "​".join(text)
+
+
+def _accented(text):
+    return text.translate(str.maketrans("aeiouAEIOU", "àéîõüÀÉÎÕÜ"))
+
+
+VARIANTS = {
+    "plain": lambda t: t,
+    "full-width": _fullwidth,
+    "zero-width": _zero_width,
+    "nbsp": lambda t: t.replace(" ", " "),
+    "doubled spaces": lambda t: t.replace(" ", "  "),
+    "accents": _accented,
+}
+POSITIONS = {
+    "start": "{} 02/10/2026 12.00",
+    "middle": "02 Oct 2026 Payment {} 12.00",
+    "end": "02 Oct 2026 Payment 12.00 {}",
+}
+
+
+@pytest.mark.parametrize("variant", list(VARIANTS))
+@pytest.mark.parametrize("text", IDENTIFIERS)
+def test_every_class_in_every_position_and_variant_is_masked_or_withheld(text, variant):
+    from tuppence.ingest.sensitive import mask_line
+
+    shown = VARIANTS[variant](text)
+    for position, template in POSITIONS.items():
+        line = template.format(shown)
+        assert classify(line, names=NAMES), (position, line)
+        masked = mask_line(line, names=NAMES)
+        if masked is None:  # withheld whole: textprep reports it if it holds an amount
+            continue
+        _never_sent(text, masked.text)
+
+
+def test_classify_mask_and_the_send_path_share_one_normalisation(monkeypatch):
+    """The line that is classified, masked, kept and sent is one string: `sensitive.normalise`
+    of the printed line. Swapping that one function changes all of them."""
+    from tuppence.ingest import sensitive
+    from tuppence.ingest.textprep import plan_chunks, render, text_document
+
+    raw = "02/10/2026  Transfer to A/C ８７６５​4321  -250.00"
+    normal = sensitive.normalise(raw)
+    assert normal == "02/10/2026 Transfer to A/C 87654321 -250.00"
+    masked = sensitive.mask_line(raw)
+    assert masked is not None
+    assert _restored(masked) == normal
+    doc = text_document(f"Date Description Amount\n{raw}\n", sha256="x")
+    assert doc.lines[1].text == normal
+    assert doc.masked["L2"] == masked
+    assert masked.text in render(plan_chunks(doc, rows_per_chunk=5)[0].lines)
+
+    calls = []
+    real = sensitive.normalise
+
+    def spy(text):
+        calls.append(text)
+        return real(text)
+
+    monkeypatch.setattr(sensitive, "normalise", spy)
+    sensitive.classify(raw)
+    assert calls, "classify"
+    calls.clear()
+    sensitive.mask_line(raw)
+    assert calls, "mask_line"
+    calls.clear()
+    text_document(f"{raw}\n", sha256="x")
+    assert calls, "text prep"

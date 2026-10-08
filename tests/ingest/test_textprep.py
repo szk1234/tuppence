@@ -113,7 +113,8 @@ def test_chunks_carry_the_headings_and_the_previous_line():
         sha256="x",
     )
     assert all(c.context_refs == ["L1"] for c in plan_chunks(csv, rows_per_chunk=2))
-    assert render(chunks[2].lines).splitlines()[-1] == "P1L11: 09 Oct 2026   Shop   9.00   891.00"
+    # lines are kept and sent normalised: one space between words (sensitive.normalise)
+    assert render(chunks[2].lines).splitlines()[-1] == "P1L11: 09 Oct 2026 Shop 9.00 891.00"
 
 
 # --- R-M3-6: sensitive lines, running headers, robustness -----------------------------
@@ -614,9 +615,8 @@ def test_every_withheld_line_with_an_amount_is_reported_unless_it_is_a_balance_o
         if has_amount(text):
             assert (
                 ref in doc.held_amount_refs
-                or sensitive.is_balance_line(text)
+                or sensitive.is_masked_balance(text, names=["Alex Example"])
                 or is_summary(text)
-                or sensitive.is_balance_line(text.split("   ", 1)[-1])
             ), text
 
 

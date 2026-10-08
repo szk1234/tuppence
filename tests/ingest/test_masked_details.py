@@ -229,11 +229,11 @@ def test_details_printed_with_unicode_tricks_are_masked_end_to_end(ingest_env):
         "Greenbasket Stores",
         "Payment to 12 34 56 41234567",
         "Payment to 20-11-33 41234567",
-        "Refund ALEX EXAMPLE",
+        "Refund ALEXEXAMPLE",  # a zero-width space shows no gap, so it is dropped
         "Transfer to A/C 87654321",
     ]
     sent = _plain(json.dumps(scripted.requests, ensure_ascii=False)).casefold()
-    for detail in ("87654321", "41234567", "20-11-33", "12 34 56", "alex example"):
+    for detail in ("87654321", "41234567", "20-11-33", "12 34 56", "alex example", "alexexample"):
         assert detail not in sent, detail
 
 

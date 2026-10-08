@@ -133,10 +133,59 @@ _DIGIT_RUN = re.compile(r"\d{4,}")
 HIDDEN = "<HIDDEN>"
 
 
+# --- one normalisation for every filter and for what is sent ----------------------------------
+#
+# A statement line is kept, classified, masked and sent as one string: `normalise` of the line
+# as printed. Compatibility forms are folded (NFKC: full-width and styled digits and letters
+# become plain ones, non-breaking and narrow spaces become spaces), invisible format characters
+# (zero-width spaces, soft hyphens) and stray combining marks are dropped, curly apostrophes and
+# Unicode dashes become ' and -, and every run of whitespace is one space. Patterns then read
+# that string with accents folded character by character (é is read as e), which keeps every
+# position, like reading it case-insensitively.
+
+_UNIFY = str.maketrans(
+    {
+        **{c: "'" for c in "\u2018\u2019\u02bc\u201b"},
+        **{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63"},
+    }
+)
+
+
+def normalise(text: str) -> str:
+    """The line as Tuppence keeps, reads and sends it (see above)."""
+    if not text.isascii():
+        text = unicodedata.normalize("NFKC", text)
+        text = "".join(ch for ch in text if unicodedata.category(ch) not in ("Cf", "Mn"))
+        text = text.translate(_UNIFY)
+    return " ".join(text.split())
+
+
+view = normalise  # the line as every filter reads it
+
+
+@lru_cache(maxsize=4096)
+def _base(ch: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", ch)
+    if len(decomposed) > 1 and all(unicodedata.combining(c) for c in decomposed[1:]):
+        return decomposed[0]
+    return ch
+
+
+def _letters(text: str) -> str:
+    """`text` with accents folded one character for one (é → e), so positions are kept."""
+    return text if text.isascii() else "".join(_base(ch) for ch in text)
+
+
+def _seen(text: str) -> tuple[str, str]:
+    """(the normalised line, the same with accents folded): what patterns read."""
+    normal = normalise(text)
+    return normal, _letters(normal)
+
+
 def name_key(text: str) -> str | None:
     """Normalised form of a line that is only a person's name (two to four capitalised
     words, an optional title, no digits), else None."""
-    stripped = _TITLE.sub("", text.strip())
+    stripped = _TITLE.sub("", _seen(text)[1])
     if not _NAME_LINE.fullmatch(stripped) or any(ch.isdigit() for ch in stripped):
         return None
     return " ".join(stripped.casefold().split())
@@ -148,78 +197,37 @@ def _words(text: str) -> list[str]:
 
 @lru_cache(maxsize=64)
 def _name_forms(names: tuple[str, ...]) -> frozenset[str]:
-    """Each household name as it may be printed: in full, first name and surname, an initial
-    and surname ("A EXAMPLE", "A. Example"), or surname first ("Example, Alex", "EXAMPLE A")."""
+    """Each name as it may be printed: in full, first name and surname, initials and surname
+    ("J SMITH", "J. Smith", "J P SMITH"), surname first ("Smith, John", "SMITH J"), and glued
+    into one word ("JSMITH", "SMITHJ", "JOHNSMITH")."""
     forms: set[str] = set()
     for name in names:
-        words = _words(name)
+        words = _words(_seen(name)[1])
         if len(words) < 2:
             continue
+        first, last = words[0], words[-1]
+        initials = [w[0] for w in words[:-1]]
         forms.update(
             {
                 " ".join(words),
-                f"{words[0]} {words[-1]}",
-                f"{words[0][0]} {words[-1]}",
-                " ".join([words[0][0], *words[1:]]),
-                f"{words[-1]} {words[0]}",
-                f"{words[-1]} {words[0][0]}",
+                f"{first} {last}",
+                f"{first[0]} {last}",
+                " ".join([*initials, last]),
+                " ".join([first[0], *words[1:]]),
+                f"{last} {first}",
+                f"{last} {first[0]}",
+                f"{last} {' '.join(initials)}",
             }
         )
+        if len(last) >= 3:  # glued: "JSMITH", "SMITHJ", "JOHNSMITH"
+            forms.update({f"{first[0]}{last}", f"{last}{first[0]}", f"{first}{last}"})
     return frozenset(forms)
-
-
-# --- one view of a line for every filter ------------------------------------------------------
-#
-# Every filter reads a line through the same view: compatibility forms folded (NFKC: full-width
-# and other styled digits and letters become plain ones), invisible format characters dropped
-# (a zero-width space between two letters becomes a space), curly apostrophes made straight,
-# and every run of whitespace (non-breaking and narrow spaces too) one space. Classifying and
-# masking both use it, so a detail one of them sees, the other sees too.
-
-_APOSTROPHES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u02bc": "'", "\u201b": "'"})
-_PLAIN = re.compile(r"[^\x20-\x7e]|\s\s")  # beyond printable ASCII, or a run of spaces
-
-
-def _fold(text: str, *, collapse: bool) -> tuple[str, list[int] | None]:
-    """`text` folded as above, and for each character of the result the index of the
-    character it came from (None when nothing changed)."""
-    if not _PLAIN.search(text):
-        return text, None
-    chars: list[str] = []
-    where: list[int] = []
-    for i, ch in enumerate(text):
-        if unicodedata.category(ch) == "Cf":  # zero-width and other invisible characters
-            between_letters = bool(chars) and chars[-1].isalpha() and text[i + 1 : i + 2].isalpha()
-            if not between_letters:
-                continue
-            piece = " "
-        else:
-            piece = ch if ch.isascii() else unicodedata.normalize("NFKC", ch)
-        for c in piece.translate(_APOSTROPHES):
-            if c.isspace():
-                if collapse and chars and chars[-1] == " ":
-                    continue
-                c = " " if (collapse or c not in "\t") else c
-            chars.append(c)
-            where.append(i)
-    return "".join(chars), where
-
-
-def view(text: str) -> str:
-    """The line as every filter reads it (see above)."""
-    return _fold(text, collapse=True)[0]
-
-
-def normalise(text: str) -> str:
-    """The line as Tuppence keeps and sends it: folded like `view`, but with its runs of spaces
-    (a PDF's column gaps) kept."""
-    return _fold(text, collapse=False)[0]
 
 
 @lru_cache(maxsize=64)
 def _name_pattern(names: tuple[str, ...]) -> re.Pattern[str] | None:
-    """Any printed form of a household name, anywhere in a line."""
-    forms = sorted(_name_forms(tuple(view(n) for n in names)), key=len, reverse=True)
+    """Any printed form of a name, anywhere in a line, in any case."""
+    forms = sorted(_name_forms(names), key=len, reverse=True)
     if not forms:
         return None
     alternatives = (r"[\s.,]+".join(re.escape(w) for w in form.split()) for form in forms)
@@ -228,9 +236,10 @@ def _name_pattern(names: tuple[str, ...]) -> re.Pattern[str] | None:
 
 def _is_holder(text: str, names: Sequence[str]) -> bool:
     """A line that is only one of the household's names (in any of its printed forms)."""
-    if not names or any(ch.isdigit() for ch in text):
+    seen = _seen(text)[1]
+    if not names or any(ch.isdigit() for ch in seen):
         return False
-    return " ".join(_words(view(text))) in _name_forms(tuple(view(n) for n in names))
+    return " ".join(_words(seen)) in _name_forms(tuple(names))
 
 
 def _spelled_sort_codes(text: str) -> list[tuple[int, int]]:
@@ -242,7 +251,7 @@ def _spelled_sort_codes(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _classify_view(seen: str, names: Sequence[str]) -> set[str]:
+def _classify_seen(seen: str, names: Sequence[str]) -> set[str]:
     found = {name for name, pattern in (*LABELS.items(), *VALUES.items()) if pattern.search(seen)}
     if _spelled_sort_codes(seen):
         found.add("sort_code")
@@ -252,16 +261,16 @@ def _classify_view(seen: str, names: Sequence[str]) -> set[str]:
 
 
 def classify(text: str, *, names: Sequence[str] = ()) -> set[str]:
-    """The sensitive classes in `text` (empty when there are none), read through `view`.
-    `names` are the household's own names: one of them anywhere in the line, in any printed
-    form, is a holder name."""
-    return _classify_view(view(text), names)
+    """The sensitive classes in `normalise(text)` (empty when there are none). `names` are the
+    household's names (and the holders printed on the statement): one of them anywhere in the
+    line, in any printed form and any case, is a holder name."""
+    return _classify_seen(_seen(text)[1], names)
 
 
 def is_balance_line(text: str) -> bool:
     """A line that is only balances or limits and their figures ("Balance £1,234.56",
     "£1,184.56 available", "Balance £1,234.56 Available £1,184.56")."""
-    return _BALANCE_LINE.search(view(text)) is not None
+    return _BALANCE_LINE.search(_seen(text)[1]) is not None
 
 
 def is_figure_line(text: str) -> bool:
@@ -291,15 +300,14 @@ def mask(text: str, *, names: Sequence[str] = ()) -> str:
     class, else its `view` with every run of four or more digits replaced by <NUM>."""
     if is_sensitive(text, names=names):
         return HIDDEN
-    return _DIGIT_RUN.sub("<NUM>", view(text))
+    return _DIGIT_RUN.sub("<NUM>", normalise(text))
 
 
 # --- masking details inside a transaction line (I2) -------------------------------------------
 #
-# Masking reads the line through the same `view` as `classify`, finds every detail with the
-# same patterns, and hides the characters of the original line each one came from. So the
-# placeholder covers the whole detail however it was printed (a zero-width space or a
-# non-breaking space inside it), and a detail `classify` sees is a detail `mask_line` hides.
+# Masking reads `normalise(text)` exactly as `classify` does, finds every detail with the same
+# patterns, and replaces it in that same string, which is the string sent. A detail `classify`
+# sees is a detail `mask_line` hides.
 
 # Never masked: an amount (with pence, or after a currency sign) and a real date.
 _KEEP_MONEY = re.compile(
@@ -462,49 +470,35 @@ def _residue_is_balance(masked: MaskedLine) -> bool:
 
 
 def _mask(text: str, names: Sequence[str]) -> MaskedLine | None:
-    seen, where = _fold(text, collapse=True)
-    found = _classify_view(seen, names)
+    normal, seen = _seen(text)
+    found = _classify_seen(seen, names)
     if not found:
-        return MaskedLine(text=text)
-    if "balance_line" in found or _is_holder(text, names):
+        return MaskedLine(text=normal)
+    if "balance_line" in found or _is_holder(normal, names):
         return None
     keep = _kept(seen)
     try:
         spans = _detail_spans(seen, keep, names)
     except _Unmaskable:
         return None
-    hidden_view = [False] * len(seen)
+    hide = [False] * len(normal)
     for start, end in spans:
-        for k in range(max(0, start), min(end, len(seen))):
+        for k in range(max(0, start), min(end, len(normal))):
             if not keep[k]:
-                hidden_view[k] = True
-    # Each run of hidden characters of the view hides every character of the line it came
-    # from, the invisible ones and the gaps between them included.
-    hide = [False] * len(text)
-    k = 0
-    while k < len(seen):
-        if not hidden_view[k]:
-            k += 1
-            continue
-        run = k
-        while k < len(seen) and hidden_view[k]:
-            k += 1
-        first, last = (run, k - 1) if where is None else (where[run], where[k - 1])
-        for j in range(first, last + 1):
-            hide[j] = True
+                hide[k] = True
     runs: list[tuple[int, int]] = []
     k = 0
-    while k < len(text):
+    while k < len(normal):
         if not hide[k]:
             k += 1
             continue
         start = k
-        while k < len(text) and (hide[k] or (_gap(text[k]) and _hidden_after(hide, text, k))):
+        while k < len(normal) and (hide[k] or (_gap(normal[k]) and _hidden_after(hide, normal, k))):
             k += 1
         end = k
-        while end > start and _gap(text[end - 1]):
+        while end > start and _gap(normal[end - 1]):
             end -= 1
-        while start < end and _gap(text[start]):
+        while start < end and _gap(normal[start]):
             start += 1
         if start < end:
             runs.append((start, end))
@@ -513,10 +507,10 @@ def _mask(text: str, names: Sequence[str]) -> MaskedLine | None:
     at = 0
     for n, (start, end) in enumerate(runs):
         placeholder = _placeholder(n)
-        hidden[placeholder] = text[start:end]
-        out += [text[at:start], placeholder]
+        hidden[placeholder] = normal[start:end]
+        out += [normal[at:start], placeholder]
         at = end
-    out.append(text[at:])
+    out.append(normal[at:])
     masked = "".join(out)
     if not _clean(masked, names):
         return None
@@ -538,7 +532,7 @@ def _hidden_after(hide: Sequence[bool], text: str, k: int) -> bool:
 def unmasked_label(text: str) -> bool:
     """A label in `text` with a value still showing after it: a number after "Sort code" or
     "Customer ref", or anything but amounts and dates after "Name:" or "Account holders"."""
-    seen = view(text)
+    seen = _seen(text)[1]
     keep = _kept(seen)
     for pattern in LABELS.values():
         for match in pattern.finditer(seen):

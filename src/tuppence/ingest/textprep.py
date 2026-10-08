@@ -303,6 +303,33 @@ _ADDRESS_WORD = re.compile(
 )
 
 
+_HOLDER_PREFIX = re.compile(
+    r"^(?:(?:statement|prepared)\s+for|name\s*:|account\s+holders?\s*:?|joint\s+account\s*:"
+    r"|holder\s*:?)\s*",
+    re.IGNORECASE,
+)
+_TITLE_WORD = re.compile(r"^(?:mr|mrs|ms|miss|mx|dr|prof)\.?$", re.IGNORECASE)
+_NAME_PART = re.compile(r"[A-Za-z][A-Za-z'.-]*")
+
+
+def header_names(texts: Sequence[str], rows: Sequence[int]) -> list[str]:
+    """The holders' names printed in a statement's header (lines `rows` of `texts`): a line
+    with a title or "Statement for", or a line that is only a name. "MR ALEX EXAMPLE & MRS PAT
+    EXAMPLE" gives both. They are masked wherever they appear in the rows, like the household's
+    own names."""
+    found: list[str] = []
+    for i in rows:
+        text = sensitive.normalise(texts[i])
+        if "holder_name" not in sensitive.classify(text) and sensitive.name_key(text) is None:
+            continue
+        body = _HOLDER_PREFIX.sub("", text)
+        for part in re.split(r"\s*(?:&|\band\b|,)\s*", body, flags=re.IGNORECASE):
+            words = [w for w in part.split() if not _TITLE_WORD.fullmatch(w)]
+            if 2 <= len(words) <= 4 and all(_NAME_PART.fullmatch(w) for w in words):
+                found.append(" ".join(words))
+    return list(dict.fromkeys(found))
+
+
 def _plain_short(text: str) -> bool:
     """A short line with no amount, no date and no column headings: an address line may be."""
     return (
@@ -535,6 +562,12 @@ def _split_preamble(
     for line in lines[: first if first is not None else 0]:
         if key := _name_key(line.text):
             known_names.add(key)
+    # The holders printed above the table are masked in its rows like the household's names.
+    printed = header_names(texts, [i for i in range(first or 0) if i in addresses or i < 12])
+    if printed:
+        names = [*names, *printed]
+        sensitive_at = [is_sensitive(t, names=names) for t in texts]
+        masks = _Masks(texts, names)
     page_headers = _later_page_headers(lines, first, rows, headings)
     out = _Split()
     unsure: set[int] = set()
@@ -636,6 +669,7 @@ def _split_screenshot(
     unsure: set[int] = set()
     for block in blocks:
         unsure |= _unsure(texts, block, first)
+    names = [*names, *header_names(texts, range(min(first, len(texts))))]
     out = _Split()
     for i, line in enumerate(lines):
         tick(i)
