@@ -200,3 +200,19 @@ def test_camt_reversal_flips_the_sign_and_bad_encoding_is_ours():
     assert parse_camt(data).rows[0].amount_pence == 500
     with pytest.raises(CamtError):
         parse_camt(b'<?xml version="1.0" encoding="no-such-codec"?><Document/>')
+
+
+def test_an_ofx_file_in_another_currency_is_refused_plainly(fixtures):
+    """M8: its figures would otherwise be stored as pounds."""
+    text = decode_text((fixtures / "ofx" / "current.ofx").read_bytes())
+    assert "<CURDEF>GBP" in text
+    with pytest.raises(OfxError, match=r"in EUR.*pounds"):
+        parse_ofx(text.replace("<CURDEF>GBP", "<CURDEF>EUR"))
+    assert isinstance(OfxError("x"), UserFacing)
+
+
+def test_a_camt_statement_in_another_currency_is_refused_plainly(fixtures):
+    data = (fixtures / "camt" / "statement.xml").read_bytes()
+    assert b"Ccy>GBP<" in data
+    with pytest.raises(CamtError, match=r"in USD.*pounds"):
+        parse_camt(data.replace(b"Ccy>GBP<", b"Ccy>USD<"))

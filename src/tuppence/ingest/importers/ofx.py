@@ -98,7 +98,20 @@ def ofx_document(text: str, *, sha256: str) -> Document:
     )
 
 
+def _only_pounds(currency: str, what: str) -> str:
+    """Tuppence keeps money in pence of pounds: a statement in another currency is refused
+    rather than stored as if its figures were pounds."""
+    code = (currency or "GBP").strip().upper()
+    if code != "GBP":
+        shown = code if code.isalpha() and len(code) <= 3 else "another currency"
+        raise OfxError(
+            f"This {what} is in {shown}. Tuppence reads statements in pounds (GBP) only."
+        )
+    return code
+
+
 def parse_ofx(text: str) -> ParsedStatement:
+    currency = _only_pounds(_leaves(text).get("CURDEF", "GBP"), "OFX file")
     tranlist = _leaves((_blocks(text, "BANKTRANLIST") or [""])[0].split("<STMTTRN>")[0])
     ledger = _leaves((_blocks(text, "LEDGERBAL") or [""])[0])
     closing = parse_money(ledger.get("BALAMT"))
@@ -108,7 +121,7 @@ def parse_ofx(text: str) -> ParsedStatement:
         period_start=_ofx_date(tranlist.get("DTSTART")),
         period_end=_ofx_date(tranlist.get("DTEND")),
         closing_balance_pence=to_pence(closing) if closing is not None else None,
-        currency=_leaves(text).get("CURDEF", "GBP"),
+        currency=currency,
     )
     for n, block in enumerate(_blocks(text, "STMTTRN"), start=1):
         leaf = _leaves(block)

@@ -236,6 +236,13 @@ def document_from_facts(facts: CamtFacts, *, sha256: str) -> Document:
 
 
 def parsed_from_facts(facts: CamtFacts) -> ParsedStatement:
+    code = (facts.currency or "GBP").strip().upper()
+    if code != "GBP":  # its figures would otherwise be stored as pounds
+        shown = code if code.isalpha() and len(code) <= 3 else "another currency"
+        raise CamtError(
+            f"This CAMT.053 statement is in {shown}. Tuppence reads statements in pounds (GBP) "
+            "only."
+        )
     parsed = ParsedStatement(
         importer="camt053",
         perspective="household",
