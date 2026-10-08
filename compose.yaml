@@ -1,5 +1,6 @@
 # Tuppence on a home server. Keep it on your LAN; use a VPN (e.g. Tailscale) for remote access.
-# Optional local AI: docker compose --profile ollama up -d
+# No image is published yet: from a clone of the repository, docker compose up -d --build
+# Optional local AI: docker compose --profile ollama up -d --build
 services:
   tuppence:
     image: ghcr.io/szk1234/tuppence:${TUPPENCE_VERSION:-latest}

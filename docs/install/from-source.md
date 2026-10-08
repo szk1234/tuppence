@@ -3,10 +3,9 @@
 For contributors and technical users on Windows, macOS or Linux.
 
 1. Install [uv](https://docs.astral.sh/uv/) and Node.js 22 (Node is only needed to build the UI).
-2. Get the code at the preview tag:
+2. Get the code:
    ```bash
    git clone https://github.com/szk1234/tuppence && cd tuppence
-   git checkout v0.2.0-dev.1
    ```
 3. Build the UI once and start Tuppence:
    ```bash
@@ -24,5 +23,5 @@ To try it without any AI model, upload a CSV from one of the supported banks: im
 rules, transfers and commitments all work without AI. Categories for anything your rules don't
 cover wait until you choose a model in Settings › AI.
 
-Updating: `git fetch --tags && git checkout <newer tag>`, then repeat step 3. Tuppence backs up
-its database before every migration (`backups/` in the data folder).
+Updating: `git pull`, then repeat step 3. Tuppence backs up its database before every
+migration (`backups/` in the data folder).
