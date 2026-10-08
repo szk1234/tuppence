@@ -26,6 +26,10 @@ _STREET = (
     r"road|rd|street|st|lane|ln|avenue|ave|close|drive|way|gardens|court|place|terrace"
     r"|crescent|square|hill|grove|mews|walk"
 )
+_BUILDING = (
+    r"house|cottage|court|lodge|mansions|building|hall|villas?|tower|heights|apartments|flats"
+    r"|farm|mill|manor|barn|mews"
+)
 # Balance lines. Every optional piece takes the spaces after it, so no run of spaces can be split
 # more than one way (a long gap must not make matching slow).
 _BALANCE_WORD = (
@@ -115,11 +119,15 @@ VALUES: dict[str, re.Pattern[str]] = {
     ),
     "postcode": re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b", _I),
     # a house number and street, or a flat ("Flat 3", "Apartment 12", "Apt 4B")
+    # (a flat with the building or street named after it, masked whole: "Flat 3 Example House")
     "address": re.compile(
         rf"(?<![\d/.-])\d{{1,3}}[a-z]?,?\s+(?:[A-Za-z']+\s+){{1,2}}(?:{_STREET})\b"
-        r"|\b(?:flat|apartment|apt|unit|suite)\.?\s+\d{1,4}[a-z]?\b(?![.,]\d)",
+        r"|\b(?:flat|apartment|apt|unit|suite)\.?\s+\d{1,4}[a-z]?\b(?![.,]\d)"
+        rf"(?:,?\s+(?:[A-Za-z']+\s+){{0,2}}(?:{_BUILDING}|{_STREET})\b)?",
         _I,
     ),
+    # an email address, local part and domain (PayPal and similar rows print one)
+    "email": re.compile(r"(?<![\w.+\-])[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+", _I),
     # A title and a name. "Dr" before column vocabulary ("Dr Amount") is a debit column.
     "holder_name": re.compile(
         r"^\s*(?:mr|mrs|ms|miss|mx|dr|prof)\.?\s+(?:&\s*(?:mr|mrs|ms|miss|mx|dr)\.?\s+)?"

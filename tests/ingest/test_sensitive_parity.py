@@ -8,7 +8,7 @@ import pytest
 from tuppence.ingest.extract import ExtractLimits, extract_document
 from tuppence.ingest.mapping import HIDDEN, cell_token, header_problem, shown_heading, sketch
 from tuppence.ingest.models import Line
-from tuppence.ingest.sensitive import classify, holds_details, mask
+from tuppence.ingest.sensitive import classify, holds_details, mask, prepare_outbound
 from tuppence.ingest.textprep import pages_document, split_preamble
 
 NAMES = ["Alex Example"]  # the household's own names
@@ -835,3 +835,73 @@ def test_fuzzed_identifiers_never_come_out_of_prepare_outbound(seed):
                 continue
             _never_sent(text, normalise(out.text))
             _never_sent(text, out.text)
+
+
+# Coordinator probe after 1116112 (p4): what classify keys on is masked whole. A flat number
+# keyed the address class, and the building name after it went out; an email address was no
+# class at all.
+SPAN_CASES = {
+    "02/10/2026 FLAT 3 EXAMPLE HOUSE 10.00": ["EXAMPLE", "HOUSE"],
+    "02/10/2026 APARTMENT 12 MILL COURT -650.00": ["MILL", "COURT"],
+    "02/10/2026 RENT FLAT 3, EXAMPLE HOUSE -650.00": ["EXAMPLE", "HOUSE"],
+    "02/10/2026 EMAIL alex@example.com 10.00": ["alex", "example.com"],
+    "02/10/2026 PAYPAL *alex.example@example.co.uk 10.00": ["alex", "example.co.uk"],
+    "02/10/2026 PAYPAL PAT_EXAMPLE+SHOP@MAIL.EXAMPLE.ORG -9.99": ["PAT", "MAIL.EXAMPLE.ORG"],
+}
+
+
+@pytest.mark.parametrize("line", list(SPAN_CASES))
+def test_the_whole_address_or_email_is_masked(line):
+    out = prepare_outbound(line, names=NAMES)
+    assert out is not None, line  # masked, not withheld
+    assert [w for w in SPAN_CASES[line] if w.casefold() in out.text.casefold()] == [], out.text
+
+
+def test_a_flat_number_before_an_ordinary_word_masks_the_number_only():
+    out = prepare_outbound("03/10/2026 FLAT 3 RENT -650.00", names=NAMES)
+    assert out is not None and out.text == "03/10/2026 [hidden-a] RENT -650.00"
+
+
+_PLACEHOLDER = re.compile(r"\[hidden-[a-z]+\]")
+
+
+def _differential_corpus() -> list[str]:
+    from ingest.test_long_numbers import (
+        COORDINATOR,
+        DOTTED,
+        GLUED,
+        LABELLED,
+        LEADING,
+        M3,
+        N3,
+        OCR,
+        PROBE,
+        SEPARATED,
+        SLASHED,
+        TWO_DATES,
+    )  # fmt: skip
+
+    return list(dict.fromkeys([*EVERY, *PLAIN, *REGRESSION, *WITH_DETAILS, *N3, *M3, *DOTTED,
+                               *OCR, *PROBE, *GLUED, *SEPARATED, *SLASHED, *LEADING, *TWO_DATES,
+                               *COORDINATOR, *LABELLED, *SPAN_CASES]))  # fmt: skip
+
+
+def test_nothing_classify_finds_is_left_in_what_is_sent():
+    """The coordinator's differential: for every line classify flags, the outbound text (its
+    placeholders taken out) holds no value class and no label with its value still after it."""
+    from tuppence.ingest.sensitive import LABEL_CLASSES, unmasked_label
+
+    left = {}
+    for line in _differential_corpus():
+        for text in (line, f"02 Oct 2026 Payment {line} 12.00"):
+            if not classify(text, names=NAMES):
+                continue
+            out = prepare_outbound(text, names=NAMES)
+            if out is None:
+                continue  # withheld (and reported by text prep): nothing of it is sent
+            shown = " ".join(_PLACEHOLDER.sub(" ", out.text).split())
+            found = classify(shown, names=NAMES) - LABEL_CLASSES
+            if found or unmasked_label(shown):
+                left[text] = (out.text, sorted(found))
+    if left:
+        pytest.fail(f"{len(left)} lines still show a detail, e.g. {list(left.items())[:5]}")
