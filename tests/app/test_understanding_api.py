@@ -448,3 +448,73 @@ def test_a_failed_correction_leaves_no_merchant_link_behind(client):
             [row["id"]],
         ).fetchone()
     assert logged["merchant_id"] == linked.merchant_id
+
+
+def test_a_wrongly_paired_payment_is_found_from_the_top_figures_and_unpaired(client):
+    """The final review's probe through the app: £50 to J SMITH and a £50 card credit with no
+    transfer words are paired only as a guess, listed behind "moved between your accounts",
+    and "not a transfer" puts the payment back into spending and releases the other side."""
+    services = client.app.state.services
+    owner = client.post(
+        "/api/household/people", json={"display_name": "Alex Example", "role": "adult"}
+    ).json()["id"]
+    accounts = {}
+    for provider, kind, nickname in (
+        ("starling", "current", "Main"),
+        ("amex", "credit_card", "Amex"),
+    ):
+        accounts[kind] = client.post(
+            "/api/accounts",
+            json={"provider": provider, "kind": kind, "nickname": nickname, "owner_ids": [owner]},
+        ).json()["id"]
+    for sha, kind, (day, pence, text) in (
+        ("c", "current", (date(2026, 10, 3), -5000, "J SMITH")),
+        ("d", "credit_card", (date(2026, 10, 5), 5000, "GREENBASKET STORES")),
+    ):
+        record = services.statements.create(
+            sha256=sha * 64, ext="csv", filename=f"{sha}.csv", kind="csv"
+        )
+        row = ParsedRow(
+            ref="L2",
+            date=day,
+            amount_pence=pence,
+            amount_text=f"{-pence / 100:.2f}",
+            raw_description=text,
+            merchant=text,
+        )
+        parsed = ParsedStatement(
+            importer="csv:test",
+            period_start=date(2026, 10, 1),
+            period_end=date(2026, 10, 31),
+            rows=[row],
+        )
+        services.statements.persist(
+            record.id, accounts[kind], parsed, balance_verified=False, stats={}
+        )
+        enqueue_analysis(services.queue, record.id)
+    analyse(services)
+    on = {"on": "2026-10-20"}
+    top = client.get("/api/spending", params=on).json()
+    assert (top["total"], top["moved"], top["money_in"], top["saved"]) == (
+        "0.00",
+        "50.00",
+        "0.00",
+        "0.00",
+    )
+    listed = client.get("/api/spending/transactions", params={**on, "category": "transfers"}).json()
+    rows = {t["description"]: t for t in listed["transactions"]}
+    assert {t["status"] for t in rows.values()} == {"guessed"}  # a guess, not "Sorted"
+    friend = rows["J SMITH"]
+    r = client.patch(
+        f"/api/transactions/{friend['id']}/understanding",
+        json={
+            "category_id": "gifts.presents",
+            "is_transfer": False,
+            "expected_version": friend["version"],
+        },
+    )
+    assert r.status_code == 200 and r.json()["understanding"]["is_transfer"] is False
+    top = client.get("/api/spending", params=on).json()
+    assert (top["total"], top["moved"]) == ("50.00", "0.00")
+    credit = services.understanding.get(rows["GREENBASKET STORES"]["id"])
+    assert credit.status == "unknown" and not credit.is_transfer and credit.transfer_pair_id is None

@@ -101,3 +101,29 @@ def test_unsorted_counts_only_money_out_and_opens_as_a_flat_list(kenv):
     assert [c.label for c in flat.path] == ["All spending", "Not sorted yet"]
     assert (flat.total_pence, flat.direct_pence, flat.tiles) == (2500, 2500, [])
     assert [r.description for r in rows] == ["MYSTERY"]
+
+
+def test_money_moved_between_accounts_and_the_lists_behind_the_top_figures(kenv):
+    """Money in, savings and transfers aren't spending, but each top-level figure opens its
+    own list so a wrong filing can be found and changed (a payment wrongly paired, say)."""
+    kenv.add_account("a_card", "credit_card", owners=["p_alex"])
+    put(kenv, -5000, "J SMITH", "transfers.card-repayment")
+    put(kenv, 5000, "GREENBASKET STORES", "transfers.card-repayment", account_id="a_card")
+    put(kenv, -3000, "CASH MACHINE", "transfers.cash")
+    put(kenv, -20000, "ISA PLATFORM", "savings.investments")
+    put(kenv, 165000, "ACME PAYROLL", "income.salary")
+    put(kenv, -400, "LITTLE CAFE", "food.eating-out")
+    with kenv.db.connection() as conn:
+        tree = kenv.categories.tree()
+        top = breakdown(conn, tree, OCT)
+        moved = transactions(conn, tree, OCT, category_id="transfers")
+        saved = transactions(conn, tree, OCT, category_id="savings")
+        came_in = transactions(conn, tree, OCT, category_id="income")
+    assert (top.total_pence, top.money_in_pence, top.saved_pence) == (400, 165000, 20000)
+    assert top.moved_pence == 8000  # money out to your own accounts or as cash
+    assert {r.description for r in moved} == {"J SMITH", "GREENBASKET STORES", "CASH MACHINE"}
+    assert [r.description for r in saved] == ["ISA PLATFORM"]
+    assert [r.description for r in came_in] == ["ACME PAYROLL"]
+    with kenv.db.connection() as conn:
+        inside = breakdown(conn, tree, OCT, "transfers")
+    assert inside.moved_pence == 0  # the figure is the top level's only

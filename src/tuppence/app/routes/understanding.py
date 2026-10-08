@@ -67,6 +67,7 @@ class SpendingView(BaseModel):
     direct: str
     money_in: str
     saved: str
+    moved: str  # to the household's own accounts, or taken as cash
     tiles: list[TileView]
     waiting_for_ai: int
 
@@ -227,6 +228,7 @@ def spending(
         direct=format_pounds(b.direct_pence),
         money_in=format_pounds(b.money_in_pence),
         saved=format_pounds(b.saved_pence),
+        moved=format_pounds(b.moved_pence),
         tiles=[
             TileView(
                 id=t.id,

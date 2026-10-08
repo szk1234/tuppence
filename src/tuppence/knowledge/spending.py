@@ -61,6 +61,7 @@ class Breakdown(BaseModel):
     direct_pence: int  # spending filed exactly at this category, not in a child
     money_in_pence: int  # income in the period (whole household view only)
     saved_pence: int  # moved to savings & investments outside Tuppence's accounts
+    moved_pence: int = 0  # money out to the household's own accounts, or taken as cash
 
 
 class TxnRow(BaseModel):
@@ -95,7 +96,8 @@ def breakdown(
 ) -> Breakdown:
     where, params = f.sql()
     sums = conn.execute(
-        "SELECT u.category_id, SUM(t.amount_pence) AS pence, COUNT(*) AS n"  # noqa: S608
+        "SELECT u.category_id, SUM(t.amount_pence) AS pence, COUNT(*) AS n,"  # noqa: S608
+        " -SUM(MIN(t.amount_pence, 0)) AS out_pence"
         ' FROM "transaction" t JOIN understanding u ON u.transaction_id = t.id'
         f" WHERE {where} GROUP BY u.category_id",
         params,
@@ -113,7 +115,7 @@ def breakdown(
     level = 0 if category_id is None else len(tree.path(category_id))
     tiles: dict[str, list[int]] = {}
     direct = [0, 0]
-    money_in = saved = 0
+    money_in = saved = moved = 0
     for r in sums:
         cid, pence, n = r["category_id"], r["pence"], r["n"]
         if cid is None:
@@ -125,6 +127,8 @@ def breakdown(
         if kind == "transfer":
             if cid == "savings" or cid.startswith("savings."):
                 saved -= pence
+            else:  # both sides of a transfer net to nothing: count the money that left
+                moved += r["out_pence"]
             continue  # money moving between the household's own accounts isn't spending
         path = tree.path(cid)
         if category_id is not None and (len(path) < level or path[level - 1].id != category_id):
@@ -171,6 +175,7 @@ def breakdown(
         direct_pence=max(0, direct[0]),
         money_in_pence=money_in if category_id is None else 0,
         saved_pence=max(0, saved) if category_id is None else 0,
+        moved_pence=moved if category_id is None else 0,
     )
 
 
