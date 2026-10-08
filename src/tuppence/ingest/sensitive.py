@@ -12,15 +12,18 @@ heading row is refused only for a value.
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
 from functools import lru_cache
 from typing import NamedTuple
 
 from tuppence.ingest.models import MaskedLine
 from tuppence.ingest.textnum import parse_date
+
+_log = logging.getLogger(__name__)
 
 _I = re.IGNORECASE
 _STREET = (
@@ -341,7 +344,7 @@ def mask(text: str, *, names: Sequence[str] = ()) -> str:
     return _DIGIT_RUN.sub("<NUM>", out.text)
 
 
-def scrub(text: str) -> str:
+def scrub(text: str, *, failed: Callable[[], None] | None = None) -> str:
     """`text` (a transaction's description, merchant or bank category) as the understanding
     specialists may put it in a prompt (spec §4.6), from `prepare_outbound`, the one builder of
     outbound statement text: HIDDEN when it can't be sent at all; otherwise what it sends, with
@@ -351,9 +354,22 @@ def scrub(text: str) -> str:
     are kept, so the merchant still reads. The household's names are left to the Pseudonymise
     setting, so none are passed here.
 
+    It fails closed without failing the caller: if the masking code itself fails on a text,
+    that text is HIDDEN, a warning naming only the error's class is logged, and `failed` (the
+    caller's counter) is told. Never the raw text.
+
     Scrub the whole text before shortening it: a cut can leave part of a number that no
     longer looks like one."""
-    out = prepare_outbound(text)
+    try:
+        out = prepare_outbound(text)
+    except Exception as exc:  # fail closed: the text is hidden, never sent raw
+        _log.warning(
+            "A text couldn't be checked for account details (%s), so it was hidden.",
+            type(exc).__name__,
+        )
+        if failed is not None:
+            failed()
+        return HIDDEN
     if out is None:
         return HIDDEN
     sent = out.text

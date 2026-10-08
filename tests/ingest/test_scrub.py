@@ -7,6 +7,7 @@ governs them); words, dates and amounts are kept."""
 from __future__ import annotations
 
 import functools
+import logging
 import re
 
 import pytest
@@ -65,6 +66,24 @@ def test_no_account_or_card_detail_survives(text, secrets):
 )
 def test_words_dates_amounts_and_names_are_kept(text, expected):
     assert scrub(text) == expected
+
+
+def test_text_the_masking_code_fails_on_is_hidden_never_raw(monkeypatch, caplog):
+    """M2: fail closed without failing the caller: HIDDEN, a warning that names no text, and
+    the caller's counter told."""
+
+    def broken(text, **kw):
+        raise RuntimeError(f"cannot read {text}")
+
+    monkeypatch.setattr(sensitive, "prepare_outbound", broken)
+    failures: list[str] = []
+    with caplog.at_level(logging.WARNING, logger="tuppence.ingest.sensitive"):
+        assert scrub("ACC 12345678", failed=lambda: failures.append("x")) == HIDDEN
+        assert scrub("ACC 12345678") == HIDDEN  # no counter: still hidden
+    assert failures == ["x"]
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 2 and all("12345678" not in m and "cannot" not in m for m in messages)
+    assert "RuntimeError" in messages[0]
 
 
 def test_what_prepare_outbound_cannot_send_is_hidden_whole():
