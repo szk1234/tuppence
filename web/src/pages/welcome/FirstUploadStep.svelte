@@ -1,2 +1,15 @@
-<p>Statement import arrives in the next update. You can skip this for now.</p>
-<p class="hint">When it arrives, you'll be able to drop in bank statements and Tuppence will read them on your machine, or with the AI you chose.</p>
+<script lang="ts">
+  import UploadDropzone from '../../components/UploadDropzone.svelte'
+  import { link } from '../../lib/router.svelte'
+
+  let added = $state(0)
+</script>
+
+<p>Drop in your last 3 months of statements. Bank and card exports are read on this device; PDFs and screenshots are read by the AI model you chose in the last step.</p>
+<UploadDropzone onuploaded={(statements) => (added += statements.length)} />
+{#if added}
+  <p role="status">
+    {added} file{added === 1 ? '' : 's'} added and being read now. Follow their progress on the
+    <a href="/statements" onclick={link}>Statements page</a>.
+  </p>
+{/if}

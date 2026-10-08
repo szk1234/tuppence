@@ -120,7 +120,7 @@ it('Finish on the last step records it and goes Home', async () => {
   const calls = api('first_upload')
   router.path = '/welcome'
   render(Welcome)
-  expect(await screen.findByText('Statement import arrives in the next update. You can skip this for now.')).toBeInTheDocument()
+  expect(await screen.findByText(/Drop in your last 3 months of statements/)).toBeInTheDocument()
   await fireEvent.click(screen.getByRole('button', { name: 'Finish' }))
   await waitFor(() => expect(router.path).toBe('/'))
   expect(posted(calls, 'first_upload')?.body).toEqual({ status: 'done' })

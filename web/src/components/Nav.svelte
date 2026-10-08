@@ -9,6 +9,7 @@
   }
   const top = [
     { href: '/', label: 'Home' },
+    { href: '/statements', label: 'Statements' },
     { href: '/usage', label: 'Usage' },
   ]
   const settings = [
@@ -28,7 +29,7 @@
   <a class="brand" href="/" onclick={link}>Tuppence</a>
   <ul>
     {#each top as item}
-      <li><a href={item.href} onclick={link} aria-current={router.path === item.href ? 'page' : undefined}>{item.label}</a></li>
+      <li><a href={item.href} onclick={link} aria-current={router.path === item.href || (item.href === '/statements' && router.path.startsWith('/statements/')) ? 'page' : undefined}>{item.label}</a></li>
     {/each}
   </ul>
   <h2 class="group" id="nav-settings">Settings</h2>

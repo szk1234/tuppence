@@ -18,11 +18,12 @@ const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 export async function api<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   const method = (opts.method ?? 'GET').toUpperCase()
   const headers = new Headers({ Accept: 'application/json' })
-  if (opts.body !== undefined) headers.set('Content-Type', 'application/json')
+  const isForm = opts.body instanceof FormData // the browser sets the multipart boundary itself
+  if (opts.body !== undefined && !isForm) headers.set('Content-Type', 'application/json')
   if (UNSAFE.has(method) && csrf) headers.set('X-CSRF-Token', csrf)
   const res = await fetch(path, {
     method, headers, credentials: 'same-origin',
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    body: opts.body === undefined ? undefined : isForm ? (opts.body as FormData) : JSON.stringify(opts.body),
   })
   if (res.status === 204) return undefined as T
   let data: any = null

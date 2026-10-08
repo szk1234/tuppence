@@ -18,12 +18,14 @@
   import Income from './pages/settings/Income.svelte'
   import Privacy from './pages/settings/Privacy.svelte'
   import Timeline from './pages/settings/Timeline.svelte'
+  import StatementDetail from './pages/StatementDetail.svelte'
+  import Statements from './pages/Statements.svelte'
   import Usage from './pages/Usage.svelte'
   import Welcome from './pages/Welcome.svelte'
 
   const routes: Record<string, typeof Home> = { '/': Home, '/login': Home, '/setup': Home, '/settings/household': Household, '/settings/accounts': Accounts,
     '/settings/income': Income, '/settings/debts': Debts, '/settings/goals': Goals, '/settings/timeline': Timeline, '/settings/agents': Agents,
-    '/settings/ai': AI, '/settings/privacy': Privacy, '/usage': Usage, '/welcome': Welcome }
+    '/settings/ai': AI, '/settings/privacy': Privacy, '/usage': Usage, '/welcome': Welcome, '/statements': Statements }
   let failed = $state(false)
   onMount(() => { loadSession().catch(() => { failed = true }) })
 
@@ -40,6 +42,9 @@
       .then((o) => { if (o?.started === false && router.path === '/') navigate('/welcome') })
       .catch(() => {})
   })
+  const statementId = $derived(
+    router.path.startsWith('/statements/') ? decodeURIComponent(router.path.slice('/statements/'.length)) : null,
+  )
   const Page = $derived(routes[router.path] ?? NotFound)
 </script>
 
@@ -55,5 +60,11 @@
   </main>
 {:else}
   <Nav />
-  <main><Page /></main>
+  <main>
+    {#if statementId}
+      {#key statementId}<StatementDetail id={statementId} />{/key}
+    {:else}
+      <Page />
+    {/if}
+  </main>
 {/if}

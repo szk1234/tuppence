@@ -11,3 +11,13 @@ it('lists the settings links as plain links under a visible Settings heading', (
   }
   expect(within(nav).getByRole('link', { name: 'Timeline' })).toHaveAttribute('href', '/settings/timeline')
 })
+
+it('links Statements after Home and keeps it current on a statement page', async () => {
+  const { router } = await import('../lib/router.svelte')
+  router.path = '/statements/s_1'
+  render(Nav)
+  const nav = screen.getByRole('navigation', { name: 'Main' })
+  expect(within(nav).getByRole('link', { name: 'Statements' })).toHaveAttribute('aria-current', 'page')
+  expect(within(nav).getByRole('link', { name: 'Home' })).not.toHaveAttribute('aria-current')
+  router.path = '/'
+})

@@ -122,7 +122,7 @@ test.describe('onboarding wizard @fresh', () => {
 
     await heading(page, 'Your first statements')
     await step(page, 9)
-    await expect(page.getByText('Statement import arrives in the next update. You can skip this for now.')).toBeVisible()
+    await expect(page.getByText(/Drop in your last 3 months of statements/)).toBeVisible()
     await page.getByRole('button', { name: 'Finish' }).click()
 
     // Home shows how complete the profile is, and still asks for an AI model.
