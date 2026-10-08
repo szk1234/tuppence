@@ -379,7 +379,8 @@ class IngestService:
         if record.status == "imported":
             # Its rows may change (Wrong account? moves them to another account), so
             # transfers and commitments are worked out again. The new read's import hands the
-            # statement over too; within the 30 s debounce the two merge into one run.
+            # statement over too: when the read finishes within the 30 s debounce the two
+            # merge into one run; a slower read means a run now and another after its import.
             request_analysis(self.queue, "statement_reread")
         return reopened
 

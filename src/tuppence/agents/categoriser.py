@@ -390,6 +390,7 @@ class Categoriser:
 
     def code(self, state: CategoriserState, runtime: Runtime[AnalysisContext]) -> dict[str, Any]:
         """Rules first, then confirmed memory, then clear inferred memory. No AI."""
+        runtime.context.budget(NAME)  # the Categoriser's own time limit starts with its step
         run_id = runtime.context.run_id
         ids = list(dict.fromkeys(state.get("scope_ids", [])))
         min_rows = self._limit("memory_min_rows", 3)
@@ -644,14 +645,18 @@ class Categoriser:
     ) -> tuple[set[str], dict[str, float]]:
         """Check each answer and write the usable ones. Returns (answered ids, {id: confidence}
         for rows that changed). Refs are batch-local, so a reply can only reach its own batch;
-        an invented or repeated ref, or a category outside the tree, is ignored."""
+        an invented or repeated ref, or a category outside the tree, is ignored. A row removed
+        while the model was answering (its statement removed or read again) is gone: it
+        counts as answered and nothing is written for it."""
         seen: set[str] = set()
         answered: set[str] = set()
         decided: dict[str, float] = {}
         with self.d.db.transaction() as conn:
+            present = set(self.d.understanding.many_in(conn, list(refs.values())))
+            answered.update(i for i in refs.values() if i not in present)
             for item in items:
                 txn_id = refs.get(item.ref.strip())
-                if txn_id is None or txn_id in seen:
+                if txn_id is None or txn_id in seen or txn_id not in present:
                     continue
                 seen.add(txn_id)
                 category = item.category_id.strip()

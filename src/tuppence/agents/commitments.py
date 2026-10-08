@@ -365,7 +365,7 @@ class Commitments:
         with self.d.db.transaction() as conn:
             for merchant_id, kind in labels.items():
                 self.d.merchants.set_business_type(conn, merchant_id, kind, "llm")  # type: ignore[arg-type]
-            detected = self._detected(found, labels, coverage)
+            detected = self._still_there(conn, self._detected(found, labels, coverage))
             counts: dict[str, Any] = dict(
                 self.d.store.sync(conn, detected, keep_merchants=unlabelled)
             )
@@ -379,6 +379,26 @@ class Commitments:
         if labelling.ai_problem:
             counts["ai_problem"] = labelling.ai_problem
         return counts
+
+    @staticmethod
+    def _still_there(conn: sqlite3.Connection, detected: list[Detected]) -> list[Detected]:
+        """Payments removed while the model was labelling (a statement removed or read again)
+        are left out; a commitment with none left isn't stored. The next run (a removal
+        always queues one) works the series out again."""
+        ids = sorted({t for d in detected for t in d.payment_ids})
+        alive = {
+            r[0]
+            for r in conn.execute(
+                'SELECT id FROM "transaction" WHERE id IN (SELECT value FROM json_each(?))',
+                [json.dumps(ids)],
+            )
+        }
+        kept: list[Detected] = []
+        for d in detected:
+            payments = [t for t in d.payment_ids if t in alive]
+            if payments:
+                kept.append(d.model_copy(update={"payment_ids": payments}))
+        return kept
 
     def _detected(
         self,

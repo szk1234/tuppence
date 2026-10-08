@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -103,12 +103,19 @@ class LayeredBudget:
 
 @dataclass
 class AnalysisContext:
-    """LangGraph run context: never checkpointed, rebuilt for every job attempt."""
+    """LangGraph run context: never checkpointed, rebuilt for every job attempt.
+
+    A specialist's budget comes from `budgets`, or is made by its entry in `factories` the
+    first time it is asked for (when its step begins): its own time limit then counts from
+    its own start, not the run's, while the run-wide layer inside it keeps the run's."""
 
     run_id: str
     budgets: dict[str, LayeredBudget] = field(default_factory=dict)  # by specialist name
+    factories: dict[str, Callable[[], LayeredBudget]] = field(default_factory=dict)
 
     def budget(self, name: str) -> LayeredBudget:
+        if name not in self.budgets:
+            self.budgets[name] = self.factories[name]()
         return self.budgets[name]
 
 

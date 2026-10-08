@@ -19,8 +19,9 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Required, TypedDict
 
@@ -47,6 +48,8 @@ LLM_SPECIALISTS = ("categoriser", "commitments")
 # A correction kept while its statement is read again (`understanding_carry`) waits this
 # long for the same transaction to come back (R-M4-2).
 CARRY_DAYS = 90
+INTERRUPTED = "Tuppence stopped during this run."
+WILL_RETRY = "Something went wrong during this run. Tuppence will try again."
 
 
 class AnalysisState(TypedDict, total=False):
@@ -317,6 +320,12 @@ def waiting_rows(conn: sqlite3.Connection, kinds: tuple[str, ...] | None = None)
     return {r[0]: int(r[1]) for r in rows if kinds is None or r[0] in kinds}
 
 
+def triggers(statement_ids: list[str], reasons: list[str]) -> list[str]:
+    """Why a run happens: statements imported, the reasons merged into its job, or the
+    schedule."""
+    return (["statement_imported"] if statement_ids else []) + reasons or ["scheduled"]
+
+
 def usage(context: AnalysisContext) -> tuple[int, int, float]:
     """(calls, tokens, £) the AI specialists used in this attempt of the run."""
     budgets = [context.budgets[n] for n in LLM_SPECIALISTS if n in context.budgets]
@@ -339,9 +348,11 @@ class AnalysisService:
         queue: Any,
         manifest: Callable[[str], AgentManifest],
         run_cap_gbp: Callable[[], float],
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.db, self.queue, self.checkpointer = db, queue, checkpointer
         self.manifest, self.run_cap_gbp = manifest, run_cap_gbp
+        self.monotonic = monotonic  # the budgets' clock
         self.deps = graph.d
         self.graph = graph.build(checkpointer)
 
@@ -352,7 +363,9 @@ class AnalysisService:
     def context(self, run_id: str) -> AnalysisContext:
         """Each AI specialist's own caps (its manifest, its £ lowered to the per-run cap)
         inside the whole run's caps (the sum of theirs, and the `llm.run_cap_gbp` setting for
-        money). Rebuilt for every attempt: budgets are never checkpointed."""
+        money). The run's clock starts now; a specialist's own clock starts when its step
+        first asks for its budget, so a slow Categoriser doesn't use up Commitments' time.
+        Rebuilt for every attempt: budgets are never checkpointed."""
         cap = float(self.run_cap_gbp())
         manifests = {n: self.manifest(n) for n in LLM_SPECIALISTS}
         run = RunBudget(
@@ -360,14 +373,17 @@ class AnalysisService:
             max_tokens=sum(m.budgets.max_tokens for m in manifests.values()),
             max_gbp=cap,
             max_seconds=sum(m.budgets.max_seconds for m in manifests.values()),
+            monotonic=self.monotonic,
         )
-        return AnalysisContext(
-            run_id=run_id,
-            budgets={
-                n: LayeredBudget(RunBudget.from_manifest(m.budgets, cap), run)
-                for n, m in manifests.items()
-            },
-        )
+
+        def own(manifest: AgentManifest) -> Callable[[], LayeredBudget]:
+            def make() -> LayeredBudget:
+                budget = RunBudget.from_manifest(manifest.budgets, cap)
+                return LayeredBudget(replace(budget, monotonic=self.monotonic, started=-1.0), run)
+
+            return make
+
+        return AnalysisContext(run_id=run_id, factories={n: own(m) for n, m in manifests.items()})
 
     def handle_job(self, job: Any) -> dict[str, Any]:
         """Run (or carry on) the household's analysis. A run a crash or a restart cut short
@@ -379,50 +395,92 @@ class AnalysisService:
         }
         statement_ids = sorted(set(job.payload.get("statement_ids", [])))
         reasons = sorted(set(job.payload.get("reasons", [])))
-        context = self.context(run_id)
+        context: AnalysisContext | None = None
+        begun: dict[str, Any] | None = None
         try:
+            context = self.context(run_id)
             with tracing_context(enabled=False):  # an analysis run is never sent to LangSmith
                 snapshot = self.graph.get_state(config)
             run_input: Any
             if snapshot.next:  # carry on from the last checkpoint (a retry, or a restart)
                 run_input = None
                 begun = snapshot.values
-                self._mark(run_id, "running")
+                self._resume(run_id)
             else:
-                begun = None
-                triggers = (["statement_imported"] if statement_ids else []) + reasons
                 run_input = {
                     "run_id": run_id,
                     "job_id": job.id,
                     "statement_ids": statement_ids,
-                    "triggers": triggers or ["scheduled"],
+                    "triggers": triggers(statement_ids, reasons),
                 }
             with tracing_context(enabled=False):
                 out = self.graph.invoke(run_input, config, context=context, durability="sync")
         except Exception:
             # The last resort: a bug or a database problem (an AI problem never gets here).
-            # The job is retried and carries on from the last checkpoint.
+            # The job is retried and carries on from the last checkpoint; after its last try
+            # nothing will, so its checkpoints go.
+            last = int(job.attempts) >= int(job.max_attempts)
             with contextlib.suppress(sqlite3.Error):
-                self._mark(run_id, "failed", context=context)
+                self._failed(job, run_id, statement_ids, reasons, context, last=last)
+            if last:
+                with contextlib.suppress(sqlite3.Error):
+                    self.checkpointer.delete_thread(self.thread_id(job.id))
             raise
         self.checkpointer.delete_thread(self.thread_id(job.id))
         if begun is not None:
             self._follow_up(begun, statement_ids, reasons)
         return {"run_id": run_id, "summary": out.get("summary", "")}
 
-    def _mark(self, run_id: str, status: str, *, context: AnalysisContext | None = None) -> None:
-        calls, tokens, cost = usage(context) if context is not None else (0, 0, 0.0)
+    def _resume(self, run_id: str) -> None:
         with self.db.transaction() as conn:
             conn.execute(
-                "UPDATE analysis_run SET status = ?, finished_at = ?, llm_calls = llm_calls + ?,"
-                " tokens = tokens + ?, cost_gbp = cost_gbp + ? WHERE id = ?",
+                "UPDATE analysis_run SET status = 'running', finished_at = NULL, summary = '',"
+                " stopped_reason = NULL WHERE id = ?",
+                [run_id],
+            )
+
+    def _failed(
+        self,
+        job: Any,
+        run_id: str,
+        statement_ids: list[str],
+        reasons: list[str],
+        context: AnalysisContext | None,
+        *,
+        last: bool,
+    ) -> None:
+        """Mark the run failed, adding what this attempt spent on the AI. A run that failed
+        before it began (its budget couldn't be made) is recorded all the same."""
+        calls, tokens, cost = usage(context) if context is not None else (0, 0, 0.0)
+        summary = (
+            f"Something went wrong during this run, so it stopped after {job.attempts} tries."
+            " The next run picks up what's left."
+            if last
+            else WILL_RETRY
+        )
+        now = to_iso(self.deps.clock())
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO analysis_run (id, job_id, triggers, statement_ids, status,"
+                " knowledge_version_start, summary, llm_calls, tokens, cost_gbp, stopped_reason,"
+                " started_at, finished_at) VALUES (?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?, 'error',"
+                " ?, ?) ON CONFLICT(id) DO UPDATE SET status = 'failed',"
+                " summary = excluded.summary, stopped_reason = 'error',"
+                " llm_calls = llm_calls + excluded.llm_calls,"
+                " tokens = tokens + excluded.tokens, cost_gbp = cost_gbp + excluded.cost_gbp,"
+                " finished_at = excluded.finished_at",
                 [
-                    status,
-                    None if status == "running" else to_iso(utcnow()),
+                    run_id,
+                    job.id,
+                    json.dumps(triggers(statement_ids, reasons)),
+                    json.dumps(statement_ids),
+                    self.deps.versions.current_in(conn),
+                    summary,
                     calls,
                     tokens,
                     cost,
-                    run_id,
+                    now,
+                    now,
                 ],
             )
 
@@ -438,15 +496,29 @@ class AnalysisService:
             request_analysis(self.queue, reason)
 
     def sweep(self) -> int:
-        """At start-up, after the ingest sweep: drop the checkpoints of analysis runs whose
-        job has gone (done, failed, cancelled or pruned). A queued or running job keeps its
-        thread, so a run a restart interrupted carries on. Returns how many were dropped."""
-        live = {
-            self.thread_id(job.id)
+        """At start-up, after the ingest sweep (and the queue's recovery of interrupted jobs):
+        drop the checkpoints of analysis runs whose job has gone (done, failed, cancelled or
+        pruned), and close the runs a stop left `running` that nothing will carry on. A
+        queued or running job keeps its thread, so a run a restart interrupted carries on.
+
+        An interrupted job that couldn't be queued again because another analysis job was
+        waiting was folded into that one (its statements and reasons merged): that job
+        analyses them afresh, and rows already filed aren't sent to the AI again. Returns how
+        many checkpoint threads were dropped."""
+        jobs = {
+            job.id
             for status in ("queued", "running")
             for job in self.queue.list(status=status, limit=100_000)
             if job.kind == ANALYSIS_JOB
         }
+        live = {self.thread_id(job_id) for job_id in jobs}
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE analysis_run SET status = 'failed', stopped_reason = 'interrupted',"
+                " summary = ?, finished_at = ? WHERE status = 'running'"
+                " AND (job_id IS NULL OR job_id NOT IN (SELECT value FROM json_each(?)))",
+                [INTERRUPTED, to_iso(self.deps.clock()), json.dumps(sorted(jobs))],
+            )
         with self.checkpointer.cursor(transaction=False) as cur:
             threads = [r[0] for r in cur.execute("SELECT DISTINCT thread_id FROM checkpoints")]
         dropped = 0
