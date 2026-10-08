@@ -494,7 +494,11 @@ def _fuzz_wrap(seed: int, count: int = 200) -> list[tuple[list[str], str]]:
         figures = rnd.choice([" -250.00 707.82", " -12.00", ""])
         tail = rnd.choice([" RENT", " GYM", ""])
         last = " -1.00 706.82" if not figures else ""
-        out.append(([f"03 Oct 2026 {lead}{first}{figures}", f"{second}{tail}{last}"], number))
+        # a separator at the break (re-review 3 M2): "8765-" / "4321", "8765" / "(4321)"
+        end, start, close = rnd.choice([("", "", ""), ("", "", ""), ("-", "", ""), ("", "-", ""),
+                                        ("", "/", ""), ("", "(", ")"), ("/", "", "")])  # fmt: skip
+        out.append(([f"03 Oct 2026 {lead}{first}{end}{figures}",
+                     f"{start}{second}{close}{tail}{last}"], number))  # fmt: skip
     return out
 
 
@@ -676,3 +680,47 @@ def test_the_guard_catches_a_named_dates_year_read_from_any_group(monkeypatch):
 def _outbound(line: str) -> str:
     out = sensitive.prepare_outbound(line, names=NAMES)
     return "" if out is None else out.text
+
+
+# Re-review 3 M3 (R-M3-25 (6)): card-ending label forms. "_" is a word character, so
+# "ENDING_9012" had no word boundary; "ENDING WITH 9012" had a word between.
+CARD_LABEL_FORMS = [
+    "03/10/2026 CARD ENDING_9012 -10.00", "03/10/2026 CARD ENDING WITH 9012 -10.00",
+    "03/10/2026 CARD ENDING WITH: 9012 -10.00", "03/10/2026 ENDING_IN_9012 -10.00",
+    "03/10/2026 CARD_9012 TESCO -10.00", "03/10/2026 VISA ENDING WITH 9012 -10.00",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("line", CARD_LABEL_FORMS)
+def test_a_card_ending_after_an_underscore_or_with_is_masked(line):
+    out = sensitive.prepare_outbound(line, names=NAMES)
+    assert out is None or "9012" not in out.text, out
+    assert sensitive.classify(line, names=NAMES), line
+
+
+# Re-review 3 M2 (R-M3-25 (6)): a number split by a line wrap with its separator at the break,
+# or a card label at the end of the line above. The reader got the last four digits.
+WRAP_SEPARATORS = {
+    "separator at the end": (["03 Oct 2026 FPO J SMITH 20-11-33 8765- -250.00 707.82", "4321 RENT"],
+                             ["8765", "4321"]),
+    "separator at the start": (["03 Oct 2026 FPO J SMITH 20-11-33 8765 -250.00 707.82",
+                                "-4321 RENT"], ["8765", "4321"]),
+    "slash at the start": (["03 Oct 2026 FPO J SMITH 20-11-33 8765 -250.00 707.82", "/4321 RENT"],
+                           ["8765", "4321"]),
+    "bracketed": (["03 Oct 2026 FPO J SMITH 20-11-33 8765 -250.00 707.82", "(4321) RENT"],
+                  ["8765", "4321"]),
+    "card label at the end": (["03 Oct 2026 PAYMENT CARD ENDING -25.00 425.00", "9012 SHOP"],
+                              ["9012"]),
+    "no amount on the first line, separator": (["03 Oct 2026 TO 20-11-33 8765-",
+                                                "4321 RENT -250.00 707.82"], ["8765", "4321"]),
+    "no amount on the first line, card label": (["03 Oct 2026 PAYMENT CARD ENDING",
+                                                 "9012 SHOP -25.00 425.00"], ["9012"]),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("name", list(WRAP_SEPARATORS))
+def test_a_wrap_with_its_separator_or_label_at_the_break_is_masked(name):
+    lines, secrets = WRAP_SEPARATORS[name]
+    sent = _sent_wrap(lines)
+    flat = " ".join(sent)
+    assert [s for s in secrets if s in flat] == [], sent

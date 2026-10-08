@@ -105,6 +105,10 @@ VALUES: dict[str, re.Pattern[str]] = {
         r"|\bending(?:\s*in)?\s*\d{4}(?!\d)|(?<![\w*])\*\s?\d{4}(?!\d)|(?<![a-z0-9])x\s?\d{4}(?!\d)"
         # after punctuation (re-review 2 R2): "ENDING IN: 9012", "ENDING-9012", "CARD #9012"
         r"|\bending(?:\s*in)?\s*[:#\-]\s*\d{3,4}(?!\d)|\bcard\s*[:#]\s*\d{4}(?!\d)"
+        # re-review 3 M3: an underscore ("ENDING_9012", "CARD_9012"), or "with" ("ENDING WITH
+        # 9012"); every gap is short, so a long run of underscores is read once
+        r"|(?<![a-z0-9])ending(?:[\s_]{0,3}(?:in|with))?[\s_]{0,3}(?:[:#\-][\s_]{0,3})?\d{3,4}(?!\d)"
+        r"|(?<![a-z0-9])card_{1,3}\d{4}(?!\d)"
         r"|\b\d{4}[\s-]*(?:[*•●·∙◦∗]{2,}|[xX]{4})"
         # the last digits behind bullets, dots or an ellipsis: "•••• 4242", "...4242", "…4242"
         # (a mask run is tried from its first character only, so a long run stays fast)
@@ -458,9 +462,11 @@ _ROW_DATE = re.compile(
     re.IGNORECASE,
 )
 _WELL_FORMED = re.compile(r"(?<![\d,])(?<!\d\.)(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d|[.,]\d)")
+# A label ends at anything but a letter or a digit: "ENDING_9012" and "CARD_9012" are labelled
+# too (re-review 3 M3), and so is "ENDING WITH 9012".
 _GROUP_LABEL = re.compile(
-    r"\b(?:ending(?:\s+in)?|card(?:\s+(?:no|number))?|acc(?:t|ount)?(?:\s+(?:no|number))?"
-    r"|a/c(?:\s+no)?|no)\b\.?",
+    r"(?<![A-Za-z0-9])(?:ending(?:[\s_]{1,3}(?:in|with))?|card(?:\s+(?:no|number))?"
+    r"|acc(?:t|ount)?(?:\s+(?:no|number))?|a/c(?:\s+no)?|no)(?![A-Za-z0-9])\.?",
     re.IGNORECASE,
 )
 _LOOKALIKES = frozenset("OoSslI|BZz")
@@ -680,30 +686,46 @@ def _description_end(seen: str) -> int:
     return end
 
 
+def _joins(seen: str, start: int, end: int) -> bool:
+    """`seen[start:end]` is nothing, or a short separator that may join two groups of digits
+    across a line wrap ("8765-" / "4321", "8765" / "(4321)")."""
+    return end - start <= _MAX_JOIN and all(_separator(ch) for ch in seen[start:end])
+
+
+class _Edges(NamedTuple):
+    head: tuple[int, int, int] | None  # the group of digits the line starts with
+    tail: tuple[int, int, int] | None  # the group its description ends with
+    label: bool  # its description ends with a card or account label ("CARD ENDING")
+
+
 @lru_cache(maxsize=8)
-def _edges(seen: str) -> tuple[tuple[int, int, int] | None, tuple[int, int, int] | None]:
-    """The group of digits `seen` starts with, and the one its description ends with (kept for
-    a few lines: each line is read as itself and as the neighbour above and below)."""
+def _edges(seen: str) -> _Edges:
+    """The group of digits `seen` starts with, the one its description ends with, and whether
+    that ends with a label instead, a short separator allowed at either edge (kept for a few
+    lines: each line is read as itself and as the neighbour above and below)."""
     groups = _groups(seen)
-    head = groups[0] if groups and groups[0][0] == 0 else None
+    head = groups[0] if groups and _joins(seen, 0, groups[0][0]) else None
     end = _description_end(seen)
-    tail = next((g for g in reversed(groups) if g[1] == end), None)
-    return head, tail
+    tail = next((g for g in reversed(groups) if g[1] <= end and _joins(seen, g[1], end)), None)
+    cut = seen[:end].rstrip()
+    labels = [m.end() for m in _GROUP_LABEL.finditer(cut, max(0, len(cut) - 24))]
+    return _Edges(head, tail, bool(labels) and _joins(cut, labels[-1], len(cut)))
 
 
 def _wrapped(seen: str, before: str | None, after: str | None) -> list[tuple[int, int]]:
     """Spans of `seen` that are part of a number of six or more digits split by a line wrap
-    from the line `before` it or `after` it."""
+    from the line `before` it or `after` it, or the group after a label the line above ends
+    with ("PAYMENT CARD ENDING" / "9012 SHOP")."""
     if before is None and after is None:
         return []
-    head, tail = _edges(seen)
+    head, tail, _ = _edges(seen)
     spans = []
     if head is not None and before is not None:
-        above = _edges(_seen(before)[1])[1]
-        if above is not None and above[2] + head[2] >= LONG_RUN:
+        above = _edges(_seen(before)[1])
+        if above.label or (above.tail is not None and above.tail[2] + head[2] >= LONG_RUN):
             spans.append(head[:2])
     if tail is not None and after is not None:
-        below = _edges(_seen(after)[1])[0]
+        below = _edges(_seen(after)[1]).head
         if below is not None and tail[2] + below[2] >= LONG_RUN:
             spans.append(tail[:2])
     return spans
