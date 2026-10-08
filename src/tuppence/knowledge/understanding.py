@@ -246,10 +246,18 @@ class UnderstandingStore:
         reason: str,
         run_id: str | None = None,
     ) -> bool:
-        """Forget an agent's decision (its basis has gone). Never touches a confirmed row."""
+        """Forget an agent's decision (its basis has gone). Never touches a confirmed row.
+
+        Un-pairing is symmetric: the partner of a transfer pair is released too, unless the
+        person confirmed it. That one is left as the person set it, and this row's evidence
+        says so."""
         current = self.get_in(conn, transaction_id)
         if current.status in ("confirmed", "unknown"):
             return False
+        partner = self._partner(conn, current)
+        evidence: dict[str, Any] = {"released": reason}
+        if partner is not None and partner.status == "confirmed":
+            evidence["partner_confirmed"] = partner.transaction_id
         after = current.model_copy(
             update={
                 "status": "unknown",
@@ -259,7 +267,7 @@ class UnderstandingStore:
                 "rule_id": None,
                 "is_transfer": False,
                 "transfer_pair_id": None,
-                "evidence": {"released": reason},
+                "evidence": evidence,
             }
         )
         self._write(
@@ -274,7 +282,28 @@ class UnderstandingStore:
         conn.execute(
             "UPDATE understanding SET waiting = 'queued' WHERE transaction_id = ?", [transaction_id]
         )
+        if partner is not None and partner.status != "confirmed":
+            self.release(
+                conn,
+                partner.transaction_id,
+                actor=actor,
+                reason="the other side of this transfer was released",
+                run_id=run_id,
+            )
         return True
+
+    @staticmethod
+    def _partner(conn: sqlite3.Connection, row: Understanding) -> Understanding | None:
+        """The row this one is paired with, when it still points back."""
+        if row.transfer_pair_id is None:
+            return None
+        found = conn.execute(
+            "SELECT * FROM understanding WHERE transaction_id = ?", [row.transfer_pair_id]
+        ).fetchone()
+        if found is None:
+            return None
+        partner = _row(found)
+        return partner if partner.transfer_pair_id == row.transaction_id else None
 
     def set_waiting(self, conn: sqlite3.Connection, ids: Iterable[str], waiting: Waiting) -> int:
         count = 0
@@ -364,6 +393,7 @@ class UnderstandingStore:
                 raise VersionConflict(
                     "understanding", transaction_id, expected_version, current.version
                 )
+            partner = self._partner(conn, current)
             after = current.model_copy(
                 update={
                     "status": "unknown",
@@ -371,6 +401,8 @@ class UnderstandingStore:
                     "decided_by": None,
                     "authority": 0,
                     "rule_id": None,
+                    "is_transfer": False,
+                    "transfer_pair_id": None,
                     "evidence": {"released_by": "person"},
                 }
             )
@@ -387,4 +419,11 @@ class UnderstandingStore:
                 "UPDATE understanding SET waiting = 'queued' WHERE transaction_id = ?",
                 [transaction_id],
             )
+            if partner is not None and partner.status != "confirmed":
+                self.release(
+                    conn,
+                    partner.transaction_id,
+                    actor="person",
+                    reason="its pair was released",
+                )
             return self.get_in(conn, transaction_id)
