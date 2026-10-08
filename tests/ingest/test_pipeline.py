@@ -649,6 +649,7 @@ def connect_attempts_while_importing(services, fixtures, monkeypatch, *, flush=T
 
     add_account(services, "monzo", "current", "Monzo")
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_TRACING_V2", "true")  # the session sets it false (conftest)
     monkeypatch.setenv("LANGSMITH_API_KEY", "x")
     # Should anything get past the blocked socket (a tracer thread outliving the test), it can
     # only reach a closed port on this machine, never the real service.
